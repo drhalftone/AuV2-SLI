@@ -46,6 +46,24 @@ set_property -dict { PACKAGE_PIN "M14"   IOSTANDARD LVCMOS33    SLEW FAST} [get_
 set_property -dict { PACKAGE_PIN "M12"   IOSTANDARD LVCMOS33    SLEW FAST} [get_ports { led[6] }];                      # IO_L24P_T3_RS1_15             Sch = led6
 set_property -dict { PACKAGE_PIN "P14"   IOSTANDARD LVCMOS33    SLEW FAST} [get_ports { led[7] }];                      # IO_L24N_T3_RS0_15             Sch = led7
 
+####################################################################################################################
+#                              USB serial (FT2232H channel B) - status telemetry, TX only                          #
+####################################################################################################################
+# Stock Alchitry Au (V1) USB-UART pin: FPGA TX -> PC. usb_rx (P15) left unconnected (one-way telemetry).
+set_property -dict { PACKAGE_PIN "P16"   IOSTANDARD LVCMOS33    SLEW SLOW} [get_ports { usb_tx }];
+set_false_path -to [get_ports usb_tx]
+
+####################################################################################################################
+#                       HDMI-OUT DDC/HPD (Hd V2 port 1, bank 35) - TX-side EDID reading                            #
+####################################################################################################################
+# Open-drain DDC (internal weak pull-ups; the Hd V2 also level-shifts/pulls these). HPD is an input.
+set_property -dict { PACKAGE_PIN "C7"   IOSTANDARD LVCMOS33   PULLUP TRUE } [get_ports { hdmi_tx_scl }];   # A72
+set_property -dict { PACKAGE_PIN "C6"   IOSTANDARD LVCMOS33   PULLUP TRUE } [get_ports { hdmi_tx_sda }];   # A70
+set_property -dict { PACKAGE_PIN "B7"   IOSTANDARD LVCMOS33   PULLDOWN TRUE } [get_ports { hdmi_tx_hpd }]; # A78
+set_false_path -from [get_ports hdmi_tx_hpd]
+set_false_path -to   [get_ports {hdmi_tx_scl hdmi_tx_sda}]
+set_false_path -from [get_ports {hdmi_tx_scl hdmi_tx_sda}]
+
 
 
 ####################################################################################################################
@@ -89,7 +107,7 @@ set_property -dict  { PACKAGE_PIN "F2"   IOSTANDARD LVCMOS33   SLEW FAST } [get_
 ## A29  first frame
 set_property -dict  { PACKAGE_PIN "G5"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[1]}];                      # IO_L20P_T3_A20_15             Sch = GPIO_18_P
 ## A35 hdmi switch
-set_property -dict  { PACKAGE_PIN "G2"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_in[1]}];                      # IO_L19P_T3_A22_15             Sch = GPIO_17_P
+set_property -dict  { PACKAGE_PIN "G2"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {C1_in[1]}];        # IO_L19P_T3_A22_15  Sch = GPIO_17_P  (pulled low: default passthrough for color-bar test)
 #####################################################################################################################
 ##                                          Bank A for    Camera 2                                                  #
 #####################################################################################################################
@@ -106,13 +124,13 @@ set_property -dict  { PACKAGE_PIN "H5"   IOSTANDARD LVCMOS33   SLEW FAST } [get_
 ##                                          Bank A for    newSW                                                #
 #####################################################################################################################
 ## A5   Scan Orientation 
-set_property -dict  { PACKAGE_PIN "M6"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {newSW[0]}];                      # IO_L2P_T0_16                  Sch = GPIO_40_P
+set_property -dict  { PACKAGE_PIN "M6"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {newSW[0]}];        # A5 orientation: default 0 = vertical stripes
 ## A6    Blue Enable
-set_property -dict  { PACKAGE_PIN "N9"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {newSW[1]}];                      # IO_L1P_T0_16                  Sch = GPIO_39_P
+set_property -dict  { PACKAGE_PIN "N9"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[1]}];          # A6 Blue enable: default ON
 ## A11    Green Enable
-set_property -dict  { PACKAGE_PIN "K1"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {newSW[2]}];                      # IO_L4P_T0_16                  Sch = GPIO_38_P  
+set_property -dict  { PACKAGE_PIN "K1"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[2]}];          # A11 Green enable: default ON
 ## A12   Red Enable
-set_property -dict  { PACKAGE_PIN "L3"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {newSW[3]}]; 
+set_property -dict  { PACKAGE_PIN "L3"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[3]}];          # A12 Red enable: default ON
 
 #####inter-clock false path######
 #set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT1]] -to [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]]

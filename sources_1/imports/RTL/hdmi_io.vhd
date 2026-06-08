@@ -29,9 +29,6 @@ entity hdmi_io is
         --HDMI input signals
         -------------------------------
         hdmi_rx_cec   : inout std_logic;
-        hdmi_rx_hpa   : out   std_logic;
-        hdmi_rx_scl   : in    std_logic;
-        hdmi_rx_sda   : inout std_logic;
         hdmi_rx_clk_n : in    std_logic;
         hdmi_rx_clk_p : in    std_logic;
         hdmi_rx_n     : in    std_logic_vector(2 downto 0);
@@ -102,23 +99,23 @@ architecture Behavioral of hdmi_io is
         clk125   : in  std_logic;      -- Local clock
         clk625   : in  std_logic;      -- Local clock
         clk10   : in  std_logic;      -- Local clock for plug detection
+        data_valid : in std_logic;     -- symbol_sync: gate sel on real TMDS decode (reject ghost clock)
         oclk      : out std_logic;
         oclk5      : out std_logic;
         oclk1      : out std_logic;
         sel      : out std_logic
     );
     end component;
-    
+
    signal oclk : std_logic;
    signal oclk1 : std_logic;
    signal oclk5 : std_logic;
+   signal data_synced_i  : std_logic;   -- hdmi_input symbol_sync (internal tap)
+   signal clock_locked_i : std_logic;   -- hdmi_input pll_locked  (internal tap)
+   signal sel_i          : std_logic;   -- internal sel (also used for debug)
    
-    component edid_rom is
-    port ( clk      : in    std_logic;
-           sclk_raw : in    std_logic;
-           sdat_raw : inout std_logic;
-           edid_debug : out std_logic_vector(2 downto 0));
-    end component;
+    -- edid_rom removed: the host EDID is now served by edid_merge in the top
+    -- (dynamic merge of the display's modes), wired to hdmi_rx_scl/sda/hpa there.
 
     component hdmi_input is 
     port (
@@ -322,17 +319,21 @@ architecture Behavioral of hdmi_io is
 begin
    -- pixel_clk <= pixel_clk_i;
    pixel_clk<=oclk;
-    hdmi_rx_hpa  <= '1';
+    -- hdmi_rx_hpa now driven by edid_merge (cache-defeat HPD pulse) in the top
     hdmi_rx_cec  <= 'Z';
 
     debug(7)          <= raw_hsync;
     debug(6)          <= raw_vsync;
     debug(5)          <= is_second_field_i;  
     debug(4)          <= is_interlaced_i;      
-    debug(3) <=  '0';
-    debug(2) <= '0';
-    debug(1) <= '0';
+    debug(3) <= data_synced_i;   -- symbol_sync: real TMDS decode locked
+    debug(2) <= clock_locked_i;  -- pll_locked: RX MMCM locked to tmds_clk
+    debug(1) <= sel_i;           -- clock-source select (1=HDMI passthrough, 0=offline)
     debug(0)          <= counter(31);
+    -- expose internal taps on the (otherwise open) status outputs
+    data_synced  <= data_synced_i;
+    clock_locked <= clock_locked_i;
+    sel          <= sel_i;
     
 i_clk_sel: clk_selector port map(
         vsync => raw_vsync, rx=> tmds_in_ch1,
@@ -341,15 +342,12 @@ i_clk_sel: clk_selector port map(
         hdmi_clk1=> pixel_io_clk_x1,
         hdmi_clk5=> pixel_io_clk_x5,
         clk125=>clk125, clk625=>clk625, clk10=>clk10,
-        oclk=>oclk, oclk1=>oclk1, oclk5=>oclk5, 
-        sel => sel
+        data_valid => data_synced_i,
+        oclk=>oclk, oclk1=>oclk1, oclk5=>oclk5,
+        sel => sel_i
 );    
     
-i_edid_rom: edid_rom  port map (
-             clk      => clk100,
-             sclk_raw => hdmi_rx_scl,
-             sdat_raw => hdmi_rx_sda,
-             edid_debug => open);
+-- i_edid_rom removed (host EDID now served by edid_merge in the top)
 
     ---------------------
     -- Input buffers
@@ -380,8 +378,8 @@ i_hdmi_input : hdmi_input port map (
         hdmi_in_ch1   => tmds_in_ch1,
         hdmi_in_ch2   => tmds_in_ch2,
         -- are the HDMI symbols in sync? 
-        symbol_sync   => data_synced,
-        pll_locked    => clock_locked, 
+        symbol_sync   => data_synced_i,
+        pll_locked    => clock_locked_i,
         -- VGA internal Signals
         hdmi_detected => in_hdmi_detected,
         raw_blank     => raw_blank,

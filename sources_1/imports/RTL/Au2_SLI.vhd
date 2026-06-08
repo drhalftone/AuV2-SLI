@@ -16,6 +16,11 @@ use IEEE.NUMERIC_STD.ALL;      -- Required for unsigned arithmetic
 entity Au2_SLI is
     Port ( 
         clk100    : in STD_LOGIC;
+        usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port), TX only (EDID dump)
+        -- HDMI-OUT DDC/HPD (Hd V2 port 1, bank 35) for TX-side EDID reading
+        hdmi_tx_scl : inout STD_LOGIC;  -- C7 (header A72)
+        hdmi_tx_sda : inout STD_LOGIC;  -- C6 (header A70)
+        hdmi_tx_hpd : in    STD_LOGIC;  -- B7 (header A78)
         led           : out   std_logic_vector(7 downto 0) :=(others => '0');
         newSW            : in    std_logic_vector(3 downto 0) :=(others => '0');
         -- four-line handsake signals for two camera interfaces
@@ -77,9 +82,6 @@ architecture Behavioral of Au2_SLI is
         --HDMI input signals
         -------------------------------
         hdmi_rx_cec   : inout std_logic;
-        hdmi_rx_hpa   : out   std_logic;
-        hdmi_rx_scl   : in    std_logic;
-        hdmi_rx_sda   : inout std_logic;
         hdmi_rx_clk_n : in    std_logic;
         hdmi_rx_clk_p : in    std_logic;
         hdmi_rx_n     : in    std_logic_vector(2 downto 0);
@@ -163,7 +165,8 @@ architecture Behavioral of Au2_SLI is
         Port ( clk : in STD_LOGIC;  clk10 : in STD_LOGIC; 
         sw : in std_logic_vector(3 downto 0); -- switches
         trig    : out STD_LOGIC;  f_frm   : out STD_LOGIC; 
-        mode    : in STD_LOGIC;  rdy   : in STD_LOGIC;  
+        mode    : in STD_LOGIC;  rdy   : in STD_LOGIC;
+        vid_valid : in STD_LOGIC;
             ------------------
             in_blank  : in std_logic;
             in_hsync  : in std_logic;
@@ -179,8 +182,9 @@ architecture Behavioral of Au2_SLI is
             out_vsync : out std_logic;
             out_red   : out std_logic_vector(7 downto 0);
             out_green : out std_logic_vector(7 downto 0);
-            out_blue  : out std_logic_vector(7 downto 0)
-            
+            out_blue  : out std_logic_vector(7 downto 0);
+            tlp_dbg      : out std_logic_vector(7 downto 0);
+            trig_cnt_dbg : out std_logic_vector(7 downto 0)
     );
     end component;
 
@@ -226,8 +230,71 @@ architecture Behavioral of Au2_SLI is
     signal trig : std_logic;
     signal f_frm : std_logic;
     signal debug : std_logic_vector(7 downto 0);
+    signal led_i : std_logic_vector(7 downto 0);  -- mirror of the LED status byte for telemetry
+    signal vid_valid : std_logic;  -- HDMI input validly decoding (symbol_sync & pll_locked)
+    signal tlp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red (diagnostic)
+    signal trig_cnt  : std_logic_vector(7 downto 0);  -- trigger pulse count (diagnostic)
+
+    component edid_reader is
+        Port ( clk100 : in  STD_LOGIC;
+               led    : in  STD_LOGIC_VECTOR(7 downto 0);
+               dbg    : in  STD_LOGIC_VECTOR(7 downto 0);
+               mrg    : in  STD_LOGIC_VECTOR(7 downto 0);
+               tlp    : in  STD_LOGIC_VECTOR(7 downto 0);
+               tcnt   : in  STD_LOGIC_VECTOR(7 downto 0);
+               usb_tx : out STD_LOGIC );
+    end component;
+
+    component edid_merge is
+        Port ( clk100       : in    STD_LOGIC;
+               rst          : in    STD_LOGIC;
+               hdmi_tx_rscl : inout STD_LOGIC;
+               hdmi_tx_rsda : inout STD_LOGIC;
+               hdmi_tx_hpd  : in    STD_LOGIC;
+               hdmi_rx_scl  : in    STD_LOGIC;
+               hdmi_rx_sda  : inout STD_LOGIC;
+               hdmi_rx_hpa  : out   STD_LOGIC;
+               dbg          : out   STD_LOGIC_VECTOR(5 downto 0);
+               dbg2         : out   STD_LOGIC_VECTOR(15 downto 0) );
+    end component;
+
+    signal merge_dbg2 : std_logic_vector(15 downto 0);
+    signal merge_dbg  : std_logic_vector(7 downto 0);
+    signal por        : std_logic := '1';
+    signal por_cnt    : integer range 0 to 15 := 0;
 begin
-    debug_pmod <= debug;    
+    debug_pmod <= debug;
+    -- Power-up reset for the EDID merge unit
+    process(clk100) begin
+        if rising_edge(clk100) then
+            if por_cnt /= 15 then por_cnt <= por_cnt + 1; por <= '1';
+            else por <= '0'; end if;
+        end if;
+    end process;
+
+    -- Status telemetry over usb_tx: led status byte + hdmi_io decode dbg + edid_merge state.
+    -- led_i bit layout: 7=vsync 6=hsync 5=VPolarity 4=sel 3=mode 2=rdy 1=f_frm 0=trig
+    led_i <= vsync & hsync & VPolarity & sel & C1_in(1) & C1_in(0) & f_frm & trig;
+    vid_valid <= debug(3) and debug(2);  -- symbol_sync AND pll_locked (passthrough decode valid)
+    i_edid_reader: edid_reader port map (
+        clk100 => clk100, led => led_i, dbg => debug, mrg => merge_dbg,
+        tlp => tlp_val, tcnt => trig_cnt, usb_tx => usb_tx );
+
+    -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
+    -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
+    -- and drive hdmi_rx_hpa with the cache-defeat HPD pulse so Windows re-reads.
+    i_edid_merge: edid_merge port map (
+        clk100       => clk100,
+        rst          => por,
+        hdmi_tx_rscl => hdmi_tx_scl,
+        hdmi_tx_rsda => hdmi_tx_sda,
+        hdmi_tx_hpd  => hdmi_tx_hpd,
+        hdmi_rx_scl  => hdmi_rx_scl,
+        hdmi_rx_sda  => hdmi_rx_sda,
+        hdmi_rx_hpa  => hdmi_rx_hpa,
+        dbg          => open,
+        dbg2         => merge_dbg2 );
+    merge_dbg <= merge_dbg2(7 downto 0);
     led (7) <= vsync;
     led (6) <= hsync;
     -- for test GPIO input pins
@@ -273,9 +340,6 @@ i_hdmi_io: hdmi_io port map (
         -- HDMI input signals
         ---------------------
         hdmi_rx_cec   => hdmi_rx_cec,
-        hdmi_rx_hpa   => hdmi_rx_hpa,
-        hdmi_rx_scl   => hdmi_rx_scl,
-        hdmi_rx_sda   => hdmi_rx_sda,
         hdmi_rx_clk_n => hdmi_rx_clk_n,
         hdmi_rx_clk_p => hdmi_rx_clk_p,
         hdmi_rx_p     => hdmi_rx_p,
@@ -362,22 +426,22 @@ hsync<= in_hsync when sel_buf='1' else local_hsync;
 red<= in_red when sel_buf='1' else local_red;
 green<= in_green when sel_buf='1' else local_green;
 blue<= in_blue when sel_buf='1' else local_blue;
-vsync_Pos <= vsync when VPolarity='1' else (not vsync when blank = '1' else '0');
--- Tricky part is in_vysnc can be uncertain during visible time when V polarity is neg
+-- Robust VSYNC polarity: during ACTIVE video (blank=0) vsync sits at its INACTIVE
+-- level (stable, many cycles/frame, never the sync pulse). Sample it as VPolarity and
+-- XOR to get a clean active-high vsync_Pos. (Old code re-latched on every horizontal
+-- blank and flipped during the vsync lines -> vsync_Pos wobbled at the V->B->O
+-- boundary -> the TLP-trigger FSM mis-sampled -> spurious passthrough triggers.)
+vsync_Pos <= vsync xor VPolarity;
 process(pixel_clk)
 begin
     if rising_edge(pixel_clk) then
         rdy_buf    <= C1_in(0);
-        mode_buf   <= C1_in(1); 
+        mode_buf   <= C1_in(1);
         sel_buf<=sel;
-        in_vsync_reg  <= in_vsync; 
+        in_vsync_reg  <= in_vsync;
         in_blank_reg  <= in_blank;
-        -- decide VSYNC polarity
-        if (sel_buf = '0') then
-            VPolarity <= '1';
-        elsif (in_blank ='1' and in_blank_reg='0') then --when just enter blanking
-            VPolarity <= not in_vsync;
-        else VPolarity <=VPolarity;    
+        if (blank = '0') then        -- active video: capture vsync's inactive level
+            VPolarity <= vsync;
         end if;
     end if;
 end process;
@@ -387,7 +451,7 @@ i_processing: pixel_pipe Port map (
         sw =>newSW,
         trig =>trig, f_frm=> f_frm, 
         mode=>mode_buf, rdy=> rdy_buf ,
-          
+        vid_valid => vid_valid,
         --
         in_blank        => blank,
         in_hsync        => hsync,
@@ -401,7 +465,9 @@ i_processing: pixel_pipe Port map (
         out_vsync => out_vsync,
         out_red   => out_red,
         out_green => out_green,
-        out_blue  => out_blue
+        out_blue  => out_blue,
+        tlp_dbg      => tlp_val,
+        trig_cnt_dbg => trig_cnt
     );
 --Vs  <= out_vsync; 
     -- Swap to this if you want to capture the HDMI symbols

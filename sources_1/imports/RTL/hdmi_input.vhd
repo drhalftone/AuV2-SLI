@@ -468,7 +468,12 @@ hdmi_section_decode: process(clk_pixel)
             if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch1_ctl_valid = '1' then
                 if ch1_ctl = "01" and ch2_ctl = "00" then
                     vdp_prefix_detect(0) <=  '1';
-                    if vdp_prefix_detect = "01111111" then
+                    -- Keep vdp_prefix_seen asserted for EVERY preamble char from the 8th
+                    -- onward (not just the exact 8th), so a GPU emitting a longer-than-8-char
+                    -- HDMI video preamble (e.g. AMD Radeon) still has it high when the guard
+                    -- band arrives -> in_vdp enters. (Was: = "01111111", a 1-cycle pulse that
+                    -- expired before the guard band -> in_vdp never entered -> black.)
+                    if vdp_prefix_detect(6 downto 0) = "1111111" then
                         vdp_prefix_seen <= '1';
                     end if;
                 end if;

@@ -1,0 +1,9 @@
+# Unzipped Vivado project + runs (regenerate from Au2_SLI.zip; build via build/build_uart.tcl)
+/build/
+
+# Vivado transient files
+*.jou
+*.log
+.Xil/
+vivado_*.str
+*.str
