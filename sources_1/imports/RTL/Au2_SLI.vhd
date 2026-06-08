@@ -153,6 +153,16 @@ architecture Behavioral of Au2_SLI is
     
     component vga is
     Port ( pixelClock : in  STD_LOGIC;
+           hRez        : in  STD_LOGIC_VECTOR(11 downto 0);
+           hStartSync  : in  STD_LOGIC_VECTOR(11 downto 0);
+           hEndSync    : in  STD_LOGIC_VECTOR(11 downto 0);
+           hMaxCount   : in  STD_LOGIC_VECTOR(11 downto 0);
+           hsyncActive : in  STD_LOGIC;
+           vRez        : in  STD_LOGIC_VECTOR(11 downto 0);
+           vStartSync  : in  STD_LOGIC_VECTOR(11 downto 0);
+           vEndSync    : in  STD_LOGIC_VECTOR(11 downto 0);
+           vMaxCount   : in  STD_LOGIC_VECTOR(11 downto 0);
+           vsyncActive : in  STD_LOGIC;
            Red        : out STD_LOGIC_VECTOR (7 downto 0);
            Green      : out STD_LOGIC_VECTOR (7 downto 0);
            Blue       : out STD_LOGIC_VECTOR (7 downto 0);
@@ -262,6 +272,31 @@ architecture Behavioral of Au2_SLI is
     signal merge_dbg  : std_logic_vector(7 downto 0);
     signal por        : std_logic := '1';
     signal por_cnt    : integer range 0 to 15 := 0;
+
+    -- Reconfigurable OFFLINE output clock generator (replaces ref_clk's static
+    -- clk125/clk625 for the output path). See OUTPUT_CLK_EDID_DESIGN.md.
+    -- Proven Mimas A7 13-mode DRP pixel-clock generator (ported; M/D/O table was
+    -- computed for a 100 MHz input = same as the Au V2, so it ports unchanged).
+    component drp_clkgen13 is
+        port ( clk100   : in  std_logic;
+               mode_idx : in  std_logic_vector(3 downto 0);
+               sen      : in  std_logic;
+               srdy     : out std_logic;
+               pixel_clk       : out std_logic;
+               pixel_io_clk_x1 : out std_logic;
+               pixel_io_clk_x5 : out std_logic;
+               locked   : out std_logic );
+    end component;
+
+    signal offline_pix, offline_pix_x1, offline_pix_x5 : std_logic;
+    signal clk125_u, clk625_u : std_logic;     -- ref_clk's old offline clocks, now unused
+    signal clkgen_srdy, clkgen_locked : std_logic;
+    signal clkgen_sen     : std_logic := '0';
+    signal clkgen_srdy_d  : std_logic := '0';
+    signal clkgen_applied : std_logic := '0';
+    -- BRING-UP: hardcode offline mode idx 11 = 800x600@60 (matches the vga timing
+    -- constants below). Phase 2 drives mode_idx from the projector's EDID.
+    constant OFFLINE_MODE_IDX : std_logic_vector(3 downto 0) := "1011";  -- idx 11
 begin
     debug_pmod <= debug;
     -- Power-up reset for the EDID merge unit
@@ -398,17 +433,50 @@ i_hdmi_io: hdmi_io port map (
  --------------------------------------------
 ref_clk_pll : ref_clk
     port map (
-        clk_in  => clk100,    
+        clk_in  => clk100,
         clk_out => clk200,
-        clk125 => clk125, clk625 => clk625,
+        clk125 => clk125_u, clk625 => clk625_u,   -- old static offline clocks: unused now
         clk10 => clk10
     );
+
+    -- OFFLINE pixel/serializer clocks now come from the reconfigurable generator.
+    clk125 <= offline_pix;        -- offline pixel + word clock (clk_selector I0)
+    clk625 <= offline_pix_x5;     -- offline 5x serializer clock (clk_selector I0)
+
+i_drp_clkgen13 : drp_clkgen13 port map (
+        clk100   => clk100,
+        mode_idx => OFFLINE_MODE_IDX,
+        sen      => clkgen_sen,
+        srdy     => clkgen_srdy,
+        pixel_clk       => offline_pix,
+        pixel_io_clk_x1 => offline_pix_x1,
+        pixel_io_clk_x5 => offline_pix_x5,
+        locked   => clkgen_locked );
+
+    -- One-shot: pulse SEN to apply OFFLINE_MODE_IDX once the generator first reports
+    -- ready (drp_recfg in WAIT_SEN), retargeting the MMCM from its idx2 power-up to
+    -- the bring-up mode.  Phase 2 replaces this with an EDID-driven mode_idx + apply.
+    process(clk100) begin
+        if rising_edge(clk100) then
+            clkgen_sen    <= '0';
+            clkgen_srdy_d <= clkgen_srdy;
+            if (clkgen_srdy = '1' and clkgen_srdy_d = '0' and clkgen_applied = '0') then
+                clkgen_sen     <= '1';
+                clkgen_applied <= '1';
+            end if;
+        end if;
+    end process;
 
  --------------------------------------------
   --   Cretae the output VGA pattern  with on-board clock
  --------------------------------------------
 i_DVID_input: vga port map(
      pixelClock => pixel_clk,
+           -- 800x600@60 timing (bring-up); EDID-driven descriptor replaces these later
+           hRez        => x"320",  hStartSync => x"348",
+           hEndSync    => x"3C8",  hMaxCount  => x"420",  hsyncActive => '1',
+           vRez        => x"258",  vStartSync => x"259",
+           vEndSync    => x"25D",  vMaxCount  => x"274",  vsyncActive => '1',
            Red       =>local_red,
            Green     =>local_green,
            Blue     =>local_blue,

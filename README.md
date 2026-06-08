@@ -40,7 +40,21 @@ The **Active Signal Mode** is the actual setting of the HDMI signal, if it is no
 - The start frame LUTs for both scanning orientations are defined in `LUT2coe.m`, which outputs `LUT.coe` and `LUT_V.coe` so that they can be hardcoded through read-only memory (ROM) modules.
 - The FPGA increments the frame index and triggers the camera on VSYNC, as long as the camera signals that it is ready (by sending a rising edge).
 ### 3. Offline Mode
-When the HDMI input is absent, the FPGA enters offline mode. This mode is similar to Mode #2, but the pattern is generated using the local oscillator clock. The pattern is projected at a fixed resolution of 1280x720 at 120Hz.
+When the HDMI input is absent, the FPGA enters offline mode. This mode is similar to Mode #2, but the pattern is generated from the local 100 MHz oscillator instead of the recovered HDMI-Rx clock.
+
+The offline output **pixel clock and timing are reconfigured at runtime to match the projector's EDID** (ported from the proven MimasA7-SLI design): an `MMCME2_ADV` is retuned over DRP (`drp_clkgen13`/`drp_recfg`) and the video timing generator is driven from the same curated mode table, so the FPGA drives the projector at whatever resolution/frame rate it advertises.
+
+> **Offline output resolution ceiling — ~85 MHz pixel clock.** The supported modes
+> are a curated table (`mode_table.vh`), all at or below an **85 MHz pixel-clock
+> ceiling** set by what the output TMDS serializer can drive (5× serializer clock
+> ≈ 425 MHz). The top mode is 1024×768@75; failsafe is 640×480@60. This ceiling is
+> inherited verbatim from the Mimas A7 (a −1 50T part). The Au V2 is a faster **−2**
+> grade, so its serializer/BUFG ceiling is higher (≈120 MHz pixel); the table can be
+> extended above 85 MHz (e.g. 1280×1024@60, 1080p60) once validated on this board.
+>
+> Note: this ceiling applies to the **offline** (FPGA-generated) path only. The
+> **pass-through** path is separately limited by the input-recovery MMCM's ~60–77 MHz
+> lock window (what the served EDID lets the PC send).
 ## GPIO pin assignments
 | Camera Interface  | FPGA Pins | DB9 Pins | Purpose                                         | I/O (from FPGA's POV)             |
 |------------|-----------|----------|-------------------------------------------------|-----------------------------------|
