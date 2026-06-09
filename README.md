@@ -73,9 +73,18 @@ the block-0 timings **and the CEA-861 extension's Video Data Block**, so a mode 
 advertises only as a CEA VIC (e.g. **720p60 via VIC 4**) is still picked up and offered.
 
 ### Offline output ceiling
-The offline (FPGA-generated) path is limited to a curated table at or below an **~85 MHz pixel-clock
-ceiling** (set by what the output TMDS serializer can drive). The top offline mode is **1024×768@75**;
-the failsafe is **640×480@60**. This ceiling applies only to the offline path.
+The offline (FPGA-generated) path is limited to a curated table (`mode_table.vh`) at or below an
+**~85 MHz pixel-clock ceiling** (set by what the output TMDS serializer can drive, 5× ≈ 425 MHz).
+The top offline mode is **1024×768@75**; the failsafe is **640×480@60**. This ceiling applies only
+to the offline path.
+
+This 85 MHz figure is inherited verbatim from the Mimas A7 (a −1 50T part). The Au V2 is a faster
+**−2** grade, so its serializer/BUFG ceiling is higher (≈120 MHz pixel); the table can be extended
+above 85 MHz, up to ~120 MHz (e.g. 1280×1024@60 = 108 MHz, 1680×1050@60 RB = 119 MHz) once validated
+on this board. **1080p60 (148.5 MHz) is NOT reachable** — ×5 = 742.5 MHz exceeds the ~600 MHz
+OSERDES/BUFG ceiling, and the HDMI I/O is on 3.3 V TMDS HR banks (~1.2 Gb/s/ch). Raising the
+*pass-through* window toward the same ~120 MHz silicon ceiling is scoped in
+[`sources_1/imports/RTL/INPUT_HIRES_PASSTHRU_DESIGN.md`](sources_1/imports/RTL/INPUT_HIRES_PASSTHRU_DESIGN.md).
 
 ---
 
