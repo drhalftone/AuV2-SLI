@@ -30,15 +30,19 @@ module i2c_master_edid #(
     output reg         nack_err,   // latched: a device byte was NACKed
     output reg [8:0]   edid_len,   // 128 or 256
     output reg         chk0_ok,    // block-0 checksum valid (sum mod 256 == 0)
-    // debug read-back port
+    // read-back port 1 (edid_builder)
     input  wire [7:0]  rd_addr,
-    output reg  [7:0]  rd_data
+    output reg  [7:0]  rd_data,
+    // read-back port 2 (mode_select; independent reader of the same captured RAM)
+    input  wire [7:0]  rd_addr2,
+    output reg  [7:0]  rd_data2
 );
     localparam integer QUARTER = CLK_HZ / (SCL_HZ * 4);
 
     // ---- captured EDID storage ----
     reg [7:0] mem [0:255];
-    always @(posedge clk) rd_data <= mem[rd_addr];
+    always @(posedge clk) rd_data  <= mem[rd_addr];
+    always @(posedge clk) rd_data2 <= mem[rd_addr2];
 
     //--------------------------------------------------------------------------
     // Quarter-bit timebase. Free-runs while `active`. qstrobe marks the end of a

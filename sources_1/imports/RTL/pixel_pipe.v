@@ -130,9 +130,24 @@ module pixel_pipe(
     end
     //index mapping; find the correspoding index in the input LUT, according to current row,frq, and fra
     wire [9:0] index;//target index
-    wire [10:0] indexV;
     indexMap MAP(.a({frq,fra,row}), .qspo(index), .clk(clk));
-    indexMapV MAPV(.a({frq,fra,in_blank?11'd0:(col+11'd1)}), .qspo(indexV), .clk(clk));
+
+    // On-the-fly VERTICAL phase -- replaces the 917 KB indexMapV ROM.
+    //   ROM held indexV = (fra*160 + offset*(col+1)) mod 1280, offset = 1/6/30 per frq
+    //   (see indexMapping.m). A phase accumulator reproduces that sequence CYCLE-FOR-CYCLE
+    //   (incl. the ROM's 1-clk latency): reset to fra*160 during blank, +offset each active
+    //   pixel, wrap at 1280. One add + one compare per pixel -> trivially fast (fixes the
+    //   78.67 MHz timing), frees the ROM, and works at any width (no fixed-size table).
+    wire [4:0]  voff       = (frq==2'd2) ? 5'd30 : (frq==2'd1) ? 5'd6 : 5'd1;
+    wire [10:0] vbase      = fra * 8'd160;            // fra*160  (fra<=7 -> <=1120 < 1280)
+    reg  [11:0] phaseV     = 12'd0;
+    wire [11:0] phaseV_adv = phaseV + voff;
+    always @(posedge clk) begin
+        if (in_blank)                    phaseV <= {1'b0, vbase};
+        else if (phaseV_adv >= 12'd1280) phaseV <= phaseV_adv - 12'd1280;
+        else                             phaseV <= phaseV_adv;
+    end
+    wire [10:0] indexV = phaseV[10:0];
     //top-left pixel detection
     reg [7:0] TL; //-the top left pixel of current frame
     //FSM

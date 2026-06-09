@@ -25,8 +25,33 @@ set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv
 set_false_path -from [get_clocks -of_objects [get_pins i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT0]] -to [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]]
 set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]] -to [get_clocks -of_objects [get_pins i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT1]]
 set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]] -to [get_clocks -of_objects [get_pins i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT2]]
-set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT1]] 
+set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT1]]
 set_false_path -to [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT1]]
+
+# --- Offline + recovered pixel clocks are asynchronous to all other domains ---
+# The OFFLINE (drp_clkgen13 MMCM) and PASSTHROUGH (recovered HDMI-input MMCM) pixel
+# clocks are mutually exclusive (clk_selector muxes between them) AND only meet clk100
+# at true CDCs (status/telemetry sampling, quasi-static mode_idx, the DRP control port).
+# A single-group -asynchronous makes each pixel domain async to EVERYTHING else, which
+# covers offline<->recovered, offline<->clk100, and recovered<->clk100. Otherwise STA
+# analyses those crossings with ~0ns requirements -> phantom violations through the
+# pixel datapath (e.g. phaseV -> DVID TMDS, VPolarity -> edid_reader telemetry).
+# (Supersedes the stale line 24-27 false-paths that pointed at ref_clk's old offline clk625.
+#  clk10 is already false-pathed everywhere by the CLKOUT1 false-paths above.)
+# NOTE: -of_objects [get_pins ...] (not clock names) so it resolves regardless of the
+# order IP-generated clocks are created during constraint processing.
+# THREE explicit, mutually-asynchronous groups (one set_clock_groups so they compose
+# correctly): [offline pixel] | [recovered pixel] | [system: clk100 + ref_clk MMCM].
+# Cross-group paths (offline<->recovered, offline<->system telemetry/mode_idx, recovered
+# <->system) are all CDCs handled by 2FF/toggle syncs or quasi-static; cutting them removes
+# the phantom ~0ns-requirement violations. Intra-group stays timed (e.g. clk100<->clk200).
+# System group lists ref_clk's MMCM outputs by pin wildcard + sys_clk_pin; it deliberately
+# EXCLUDES offline_pix (a different MMCM) so offline_pix is only in group 1.
+set_clock_groups -name pix_domains_async -asynchronous \
+  -group [get_clocks -of_objects [get_pins {i_drp_clkgen13/i_mmcm/CLKOUT0 i_drp_clkgen13/i_mmcm/CLKOUT1 i_drp_clkgen13/i_mmcm/CLKOUT2}]] \
+  -group [get_clocks -of_objects [get_pins {i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT0 i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT1 i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT2}]] \
+  -group "[get_clocks sys_clk_pin] [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT*]]"
+
 # set CE false path
 set_max_delay 26.0 -from [get_pins {i_hdmi_io/i_hdmi_input/CE_Delay/m_reg[1]/C}] -to [get_pins i_hdmi_io/i_hdmi_input/ch1/i_deser/ISERDESE2_slave/CE1] 
 set_max_delay 26.0 -from [get_pins {i_hdmi_io/i_hdmi_input/CE_Delay/m_reg[1]/C}] -to [get_pins i_hdmi_io/i_hdmi_input/ch2/i_deser/ISERDESE2_slave/CE1] 

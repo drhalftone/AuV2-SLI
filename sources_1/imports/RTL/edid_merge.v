@@ -27,7 +27,11 @@ module edid_merge (
     // debug taps for LEDs
     output wire [5:0] dbg,
     // wide debug for UART telemetry (see assign at end of module)
-    output wire [15:0] dbg2
+    output wire [15:0] dbg2,
+    // 2nd read port into the captured display EDID (for the offline mode picker)
+    input  wire [7:0] mode_rd_addr,
+    output wire [7:0] mode_rd_data,
+    output wire       edid_ok        // display EDID block-0 checksum good
 );
     //--------------------------------------------------------------------------
     // Synchronize / debounce the output-display hot-plug
@@ -65,7 +69,10 @@ module edid_merge (
         .sda_i(hdmi_tx_rsda), .sda_oe(sda_oe),
         .busy(i2c_busy), .done(i2c_done), .nack_err(nack_err),
         .edid_len(edid_len), .chk0_ok(chk0_ok),
-        .rd_addr(bld_rd_addr), .rd_data(mem_rd_data));
+        .rd_addr(bld_rd_addr), .rd_data(mem_rd_data),
+        .rd_addr2(mode_rd_addr), .rd_data2(mode_rd_data));
+
+    assign edid_ok = chk0_ok;   // expose EDID-valid to the offline mode picker
 
     //--------------------------------------------------------------------------
     // Builder + RAM-backed serve slave

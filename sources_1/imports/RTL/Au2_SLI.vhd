@@ -265,7 +265,29 @@ architecture Behavioral of Au2_SLI is
                hdmi_rx_sda  : inout STD_LOGIC;
                hdmi_rx_hpa  : out   STD_LOGIC;
                dbg          : out   STD_LOGIC_VECTOR(5 downto 0);
-               dbg2         : out   STD_LOGIC_VECTOR(15 downto 0) );
+               dbg2         : out   STD_LOGIC_VECTOR(15 downto 0);
+               mode_rd_addr : in    STD_LOGIC_VECTOR(7 downto 0);
+               mode_rd_data : out   STD_LOGIC_VECTOR(7 downto 0);
+               edid_ok      : out   STD_LOGIC );
+    end component;
+
+    -- EDID -> best supported curated mode (runs on the slow clk10; combinationally
+    -- too deep for 100 MHz). Reads the display EDID via edid_merge's 2nd read port.
+    component mode_select is
+        generic ( CEIL_KHZ : integer := 85000 );
+        port ( clk : in std_logic; rst : in std_logic; start : in std_logic;
+               edid_addr  : out std_logic_vector(7 downto 0);
+               edid_data  : in  std_logic_vector(7 downto 0);
+               mode_valid : out std_logic;
+               mode_idx   : out std_logic_vector(3 downto 0);
+               o_hact : out std_logic_vector(11 downto 0); o_vact : out std_logic_vector(11 downto 0);
+               o_hfp  : out std_logic_vector(11 downto 0); o_hsync: out std_logic_vector(11 downto 0);
+               o_hbp  : out std_logic_vector(11 downto 0); o_vfp  : out std_logic_vector(11 downto 0);
+               o_vsync: out std_logic_vector(11 downto 0); o_vbp  : out std_logic_vector(11 downto 0);
+               o_hpol : out std_logic; o_vpol : out std_logic;
+               o_refr : out std_logic_vector(7 downto 0);
+               o_pclk_khz : out std_logic_vector(16 downto 0);
+               o_supported: out std_logic_vector(12 downto 0) );
     end component;
 
     signal merge_dbg2 : std_logic_vector(15 downto 0);
@@ -288,15 +310,49 @@ architecture Behavioral of Au2_SLI is
                locked   : out std_logic );
     end component;
 
+    -- Per-mode video geometry ROM (same curated table as drp_clkgen13's M/D/O).
+    component mode_timing_rom is
+        port ( mode_idx : in  std_logic_vector(3 downto 0);
+               h_active : out std_logic_vector(11 downto 0);
+               h_fp     : out std_logic_vector(11 downto 0);
+               h_sync   : out std_logic_vector(11 downto 0);
+               h_bp     : out std_logic_vector(11 downto 0);
+               v_active : out std_logic_vector(11 downto 0);
+               v_fp     : out std_logic_vector(11 downto 0);
+               v_sync   : out std_logic_vector(11 downto 0);
+               v_bp     : out std_logic_vector(11 downto 0);
+               h_pol    : out std_logic;
+               v_pol    : out std_logic;
+               pclk_khz : out std_logic_vector(16 downto 0) );
+    end component;
+
     signal offline_pix, offline_pix_x1, offline_pix_x5 : std_logic;
     signal clk125_u, clk625_u : std_logic;     -- ref_clk's old offline clocks, now unused
     signal clkgen_srdy, clkgen_locked : std_logic;
-    signal clkgen_sen     : std_logic := '0';
-    signal clkgen_srdy_d  : std_logic := '0';
-    signal clkgen_applied : std_logic := '0';
-    -- BRING-UP: hardcode offline mode idx 11 = 800x600@60 (matches the vga timing
-    -- constants below). Phase 2 drives mode_idx from the projector's EDID.
-    constant OFFLINE_MODE_IDX : std_logic_vector(3 downto 0) := "1011";  -- idx 11
+    signal clkgen_sen : std_logic := '0';
+
+    -- ===== Phase 2 step 2: offline mode index driven by the projector's EDID =====
+    signal ms_start, ms_valid, edid_ok : std_logic;
+    signal ms_idx        : std_logic_vector(3 downto 0);
+    signal mode_rd_addr  : std_logic_vector(7 downto 0);
+    signal mode_rd_data  : std_logic_vector(7 downto 0);
+    signal edid_ok_s0, edid_ok_s1 : std_logic := '0';
+    signal applied_idx : std_logic_vector(3 downto 0) := "0010";  -- default idx 2 (MMCM power-up)
+    signal apply_arm   : std_logic := '0';
+    signal sen_tgl     : std_logic := '0';
+    signal ms_ptmr     : std_logic_vector(19 downto 0) := (others => '0');
+    -- CDC of the picked index + apply into the clk100 / DRP domain
+    signal idx_s0, idx_s1 : std_logic_vector(3 downto 0) := "0010";
+    signal sen_s          : std_logic_vector(2 downto 0) := "000";
+    signal clkgen_mode_idx : std_logic_vector(3 downto 0);  -- = idx_s1 (drives drp + timing rom)
+
+    -- mode_timing_rom outputs + conversion to vga's start/end/max format.
+    signal mt_hact, mt_hfp, mt_hs, mt_hbp : std_logic_vector(11 downto 0);
+    signal mt_vact, mt_vfp, mt_vs, mt_vbp : std_logic_vector(11 downto 0);
+    signal mt_hpol, mt_vpol : std_logic;
+    signal mt_pclk : std_logic_vector(16 downto 0);
+    signal vg_hStart, vg_hEnd, vg_hMax : std_logic_vector(11 downto 0);
+    signal vg_vStart, vg_vEnd, vg_vMax : std_logic_vector(11 downto 0);
 begin
     debug_pmod <= debug;
     -- Power-up reset for the EDID merge unit
@@ -328,7 +384,10 @@ begin
         hdmi_rx_sda  => hdmi_rx_sda,
         hdmi_rx_hpa  => hdmi_rx_hpa,
         dbg          => open,
-        dbg2         => merge_dbg2 );
+        dbg2         => merge_dbg2,
+        mode_rd_addr => mode_rd_addr,
+        mode_rd_data => mode_rd_data,
+        edid_ok      => edid_ok );
     merge_dbg <= merge_dbg2(7 downto 0);
     led (7) <= vsync;
     led (6) <= hsync;
@@ -443,9 +502,11 @@ ref_clk_pll : ref_clk
     clk125 <= offline_pix;        -- offline pixel + word clock (clk_selector I0)
     clk625 <= offline_pix_x5;     -- offline 5x serializer clock (clk_selector I0)
 
+    clkgen_mode_idx <= idx_s1;   -- synced picked index drives both clock and timing
+
 i_drp_clkgen13 : drp_clkgen13 port map (
         clk100   => clk100,
-        mode_idx => OFFLINE_MODE_IDX,
+        mode_idx => clkgen_mode_idx,
         sen      => clkgen_sen,
         srdy     => clkgen_srdy,
         pixel_clk       => offline_pix,
@@ -453,30 +514,73 @@ i_drp_clkgen13 : drp_clkgen13 port map (
         pixel_io_clk_x5 => offline_pix_x5,
         locked   => clkgen_locked );
 
-    -- One-shot: pulse SEN to apply OFFLINE_MODE_IDX once the generator first reports
-    -- ready (drp_recfg in WAIT_SEN), retargeting the MMCM from its idx2 power-up to
-    -- the bring-up mode.  Phase 2 replaces this with an EDID-driven mode_idx + apply.
-    process(clk100) begin
-        if rising_edge(clk100) then
-            clkgen_sen    <= '0';
-            clkgen_srdy_d <= clkgen_srdy;
-            if (clkgen_srdy = '1' and clkgen_srdy_d = '0' and clkgen_applied = '0') then
-                clkgen_sen     <= '1';
-                clkgen_applied <= '1';
+i_mode_select : mode_select generic map ( CEIL_KHZ => 85000 )
+    port map (
+        clk => clk10, rst => por, start => ms_start,
+        edid_addr => mode_rd_addr, edid_data => mode_rd_data,
+        mode_valid => ms_valid, mode_idx => ms_idx,
+        o_hact=>open, o_vact=>open, o_hfp=>open, o_hsync=>open, o_hbp=>open,
+        o_vfp=>open, o_vsync=>open, o_vbp=>open, o_hpol=>open, o_vpol=>open,
+        o_refr=>open, o_pclk_khz=>open, o_supported=>open );
+
+    -- EDID picker controller (clk10): periodically re-parse the projector EDID; when a
+    -- NEW valid mode is picked (and the block-0 checksum is good), latch it and arm an
+    -- apply. The SEN edge is raised one clk10 cycle AFTER the index is latched, so the
+    -- clk100-synced index is settled before drp_recfg samples it on the SEN edge.
+    process(clk10) begin
+        if rising_edge(clk10) then
+            ms_start   <= '0';
+            edid_ok_s0 <= edid_ok; edid_ok_s1 <= edid_ok_s0;   -- 2FF sync edid_ok
+            if ms_ptmr = x"F423F" then                          -- ~0.1 s at 10 MHz
+                ms_ptmr <= (others => '0'); ms_start <= '1';
+            else
+                ms_ptmr <= ms_ptmr + 1;
+            end if;
+            if apply_arm = '1' then
+                apply_arm <= '0';
+                sen_tgl   <= not sen_tgl;                       -- raise cross-domain apply edge
+            elsif ms_valid = '1' and edid_ok_s1 = '1' and ms_idx /= applied_idx then
+                applied_idx <= ms_idx;                          -- set index first
+                apply_arm   <= '1';                             -- toggle SEN next cycle
             end if;
         end if;
     end process;
 
+    -- CDC into the clk100 / DRP domain: quasi-static index (2FF) + apply edge (3FF -> pulse).
+    process(clk100) begin
+        if rising_edge(clk100) then
+            idx_s0 <= applied_idx; idx_s1 <= idx_s0;
+            sen_s  <= sen_s(1 downto 0) & sen_tgl;
+            clkgen_sen <= sen_s(2) xor sen_s(1);                -- 1-clk100 SEN pulse per apply
+        end if;
+    end process;
+
  --------------------------------------------
-  --   Cretae the output VGA pattern  with on-board clock
+  --   Offline geometry from the curated table (same index as the clock),
+  --   converted to the vga generator's start/end/max format.
+ --------------------------------------------
+i_mode_timing : mode_timing_rom port map (
+        mode_idx => clkgen_mode_idx,
+        h_active => mt_hact, h_fp => mt_hfp, h_sync => mt_hs, h_bp => mt_hbp,
+        v_active => mt_vact, v_fp => mt_vfp, v_sync => mt_vs, v_bp => mt_vbp,
+        h_pol => mt_hpol, v_pol => mt_vpol, pclk_khz => mt_pclk );
+
+    vg_hStart <= mt_hact + mt_hfp;
+    vg_hEnd   <= mt_hact + mt_hfp + mt_hs;
+    vg_hMax   <= mt_hact + mt_hfp + mt_hs + mt_hbp;
+    vg_vStart <= mt_vact + mt_vfp;
+    vg_vEnd   <= mt_vact + mt_vfp + mt_vs;
+    vg_vMax   <= mt_vact + mt_vfp + mt_vs + mt_vbp;
+
+ --------------------------------------------
+  --   Create the output VGA pattern with the offline clock + table geometry
  --------------------------------------------
 i_DVID_input: vga port map(
      pixelClock => pixel_clk,
-           -- 800x600@60 timing (bring-up); EDID-driven descriptor replaces these later
-           hRez        => x"320",  hStartSync => x"348",
-           hEndSync    => x"3C8",  hMaxCount  => x"420",  hsyncActive => '1',
-           vRez        => x"258",  vStartSync => x"259",
-           vEndSync    => x"25D",  vMaxCount  => x"274",  vsyncActive => '1',
+           hRez        => mt_hact,  hStartSync => vg_hStart,
+           hEndSync    => vg_hEnd,  hMaxCount  => vg_hMax,  hsyncActive => mt_hpol,
+           vRez        => mt_vact,  vStartSync => vg_vStart,
+           vEndSync    => vg_vEnd,  vMaxCount  => vg_vMax,  vsyncActive => mt_vpol,
            Red       =>local_red,
            Green     =>local_green,
            Blue     =>local_blue,
@@ -488,17 +592,9 @@ i_DVID_input: vga port map(
  --------------------------------------------
   --   Pixel-wise alteration
  --------------------------------------------
-blank<= in_blank when sel_buf='1' else local_blank;
-vsync<= in_vsync when sel_buf='1' else local_vsync;
-hsync<= in_hsync when sel_buf='1' else local_hsync;
-red<= in_red when sel_buf='1' else local_red;
-green<= in_green when sel_buf='1' else local_green;
-blue<= in_blue when sel_buf='1' else local_blue;
 -- Robust VSYNC polarity: during ACTIVE video (blank=0) vsync sits at its INACTIVE
 -- level (stable, many cycles/frame, never the sync pulse). Sample it as VPolarity and
--- XOR to get a clean active-high vsync_Pos. (Old code re-latched on every horizontal
--- blank and flipped during the vsync lines -> vsync_Pos wobbled at the V->B->O
--- boundary -> the TLP-trigger FSM mis-sampled -> spurious passthrough triggers.)
+-- XOR to get a clean active-high vsync_Pos.
 vsync_Pos <= vsync xor VPolarity;
 process(pixel_clk)
 begin
@@ -506,6 +602,19 @@ begin
         rdy_buf    <= C1_in(0);
         mode_buf   <= C1_in(1);
         sel_buf<=sel;
+        -- REGISTERED offline/passthrough mux (was 6 concurrent combinational muxes).
+        -- sel_buf was a high-fanout select at the head of a long combinational path into
+        -- pixel_pipe (indexMapV ROM address + TLP compare) -> 81 setup violations at the
+        -- fast offline modes (78.67 MHz: 1024x768@75, 800x600@120). Registering the mux
+        -- outputs breaks that path; the uniform 1-pixel datapath delay is absorbed in
+        -- blanking (all of blank/sync/rgb shift together, so framing stays consistent).
+        if sel_buf = '1' then
+            blank <= in_blank; vsync <= in_vsync; hsync <= in_hsync;
+            red   <= in_red;   green <= in_green; blue  <= in_blue;
+        else
+            blank <= local_blank; vsync <= local_vsync; hsync <= local_hsync;
+            red   <= local_red;   green <= local_green; blue  <= local_blue;
+        end if;
         in_vsync_reg  <= in_vsync;
         in_blank_reg  <= in_blank;
         if (blank = '0') then        -- active video: capture vsync's inactive level
