@@ -17,6 +17,12 @@
 //  identity (serial) for cache-defeat, recomputes the checksum. Copying in-window
 //  *display DTDs* verbatim is a v2 enhancement (see EDID_MERGE_DESIGN.md).
 //
+//  CEA VICs: TV-style sinks often advertise 720p60 ONLY via the CEA-861 extension
+//  Video Data Block (VIC 4), not in block-0 std/established timings. We walk the VDB
+//  and, if VIC 4 is present, inject 1280x720@60 (std code 0x81C0) into a free standard
+//  slot so it survives to the served EDID. (720p60 is the only in-window CEA mode
+//  expressible as a standard timing; 720p50 / 1080p24-30 would need an injected DTD.)
+//
 //  DRAFT - unsimulated. See test plan in the design note.
 //==============================================================================
 module edid_builder #(
@@ -128,6 +134,18 @@ module edid_builder #(
     reg        have_survivor;
     reg [31:0] build_count;          // -> serial (identity bump per build)
 
+    // CEA-861 extension VIC parsing (pick up 720p60 advertised only via the VDB)
+    reg        ext_present;          // block-0 byte 126 (extension count) > 0
+    reg        has_cea;              // block-1 byte 128 == 0x02 (CEA-861 tag)
+    reg [7:0]  cea_dtd_off;          // block-1 byte 130 (DTD offset within the ext block)
+    reg [7:0]  cea_p;                // data-block-collection walk pointer (abs addr)
+    reg [4:0]  cea_len;              // current data block payload length
+    reg [4:0]  cea_k;                // SVD index within the current Video Data Block
+    reg        force_720p60;         // a VDB advertised VIC 4 (1280x720@60)
+    integer    j2;
+    reg        already720;
+    reg [3:0]  freeslot;
+
     //--------------------------------------------------------------------------
     // FSM
     //--------------------------------------------------------------------------
@@ -137,7 +155,10 @@ module edid_builder #(
                S_DESC   = 4'd5,
                S_STREAM = 4'd6,
                S_COMMIT = 4'd7,
-               S_DONE   = 4'd8;
+               S_DONE   = 4'd8,
+               // CEA-861 VDB walk to pick up VIC-only modes (e.g. 720p60)
+               S_CEA0   = 4'd9,  S_CEA1    = 4'd10, S_CEA2   = 4'd11,
+               S_CEAWK  = 4'd12, S_CEASVD  = 4'd13, S_CEAPL  = 4'd14;
 
     reg [3:0]  st;
     reg [4:0]  i;            // small loop index
@@ -218,10 +239,69 @@ module edid_builder #(
                             if (!have_survivor || cmp_j > best_cand) best_cand <= cmp_j;
                         end
                         if (cmp_j == NCAND-1) begin
-                            if (i == 5'd7) begin i <= 5'd0; st <= S_DESC; end
+                            if (i == 5'd7) begin i <= 5'd0; rdph <= 2'd0; st <= S_CEA0; end
                             else begin i <= i + 1'b1; rdph <= 2'd0; st <= S_STD_RD; end
                         end else cmp_j <= cmp_j + 1'b1;
                        end
+            //----- CEA-861 extension: walk the VDB, note any VIC-only modes -----
+            S_CEA0: case (rdph)                                   // read block-0 byte 126 (ext count)
+                      2'd0: begin rd_addr <= 8'd126; rdph <= 2'd1; end
+                      2'd1: rdph <= 2'd2;
+                      default: begin ext_present <= (rd_data != 8'd0); rdph <= 2'd0; st <= S_CEA1; end
+                    endcase
+            S_CEA1: case (rdph)                                   // read block-1 byte 128 (CEA tag)
+                      2'd0: begin rd_addr <= 8'd128; rdph <= 2'd1; end
+                      2'd1: rdph <= 2'd2;
+                      default: begin has_cea <= (rd_data == 8'h02); rdph <= 2'd0; st <= S_CEA2; end
+                    endcase
+            S_CEA2: case (rdph)                                   // read block-1 byte 130 (DTD offset)
+                      2'd0: begin rd_addr <= 8'd130; rdph <= 2'd1; end
+                      2'd1: rdph <= 2'd2;
+                      default: begin
+                          cea_dtd_off <= rd_data; cea_p <= 8'd132; force_720p60 <= 1'b0; rdph <= 2'd0;
+                          // no extension, not CEA, or no data-block collection (offset <= 4) -> skip
+                          if (!ext_present || !has_cea || rd_data <= 8'd4) st <= S_CEAPL;
+                          else st <= S_CEAWK;
+                      end
+                    endcase
+            S_CEAWK: case (rdph)                                  // read a data-block header byte
+                      2'd0: if (cea_p >= (8'd128 + cea_dtd_off)) st <= S_CEAPL;   // walked the whole collection
+                            else begin rd_addr <= cea_p; rdph <= 2'd1; end
+                      2'd1: rdph <= 2'd2;
+                      default: begin
+                          cea_len <= rd_data[4:0]; cea_k <= 5'd1; rdph <= 2'd0;
+                          if (rd_data[7:5] == 3'd2) st <= S_CEASVD;               // tag 2 = Video Data Block
+                          else begin cea_p <= cea_p + 8'd1 + {3'd0, rd_data[4:0]}; st <= S_CEAWK; end
+                      end
+                    endcase
+            S_CEASVD: case (rdph)                                 // read one SVD (VIC) byte
+                      2'd0: begin rd_addr <= cea_p + {3'd0, cea_k}; rdph <= 2'd1; end
+                      2'd1: rdph <= 2'd2;
+                      default: begin
+                          if ((rd_data & 8'h7F) == 8'd4) force_720p60 <= 1'b1;    // VIC 4 = 1280x720@60
+                          rdph <= 2'd0;
+                          if (cea_k >= cea_len) begin
+                              cea_p <= cea_p + 8'd1 + {3'd0, cea_len}; st <= S_CEAWK;
+                          end else cea_k <= cea_k + 1'b1;
+                      end
+                    endcase
+            S_CEAPL: begin                                        // inject 720p60 into a free std slot
+                        if (force_720p60) begin
+                            already720 = 1'b0; freeslot = 4'd8;
+                            for (j2 = 0; j2 < 8; j2 = j2 + 1) begin
+                                if (std_out[j2*2] == 8'h81 && std_out[j2*2+1] == 8'hC0)
+                                    already720 = 1'b1;
+                                else if (std_out[j2*2] == 8'h01 && std_out[j2*2+1] == 8'h01 && freeslot == 4'd8)
+                                    freeslot = j2[3:0];
+                            end
+                            if (!already720 && freeslot != 4'd8) begin
+                                std_out[freeslot*2]     <= 8'h81;
+                                std_out[freeslot*2 + 1] <= 8'hC0;
+                                have_survivor <= 1'b1;
+                            end
+                        end
+                        st <= S_DESC;
+                    end
             //----- descriptors are emitted from ROMs during streaming; nothing
             //      to precompute in v1 (preferred DTD = DTD_PREF blob). ---------
             S_DESC: begin
