@@ -85,7 +85,7 @@ Each `.bin` is checked against a known **SHA-256** hash after download. A mismat
 **aborts the flash**, so a corrupted or tampered file never reaches the board:
 
 ```
-Au2_SLI.bin       9A0A3A294D40CABA098034FE8F12A6535D685474A8CECB7A7E45A7AACBB6CC81
+Au2_SLI.bin       E35AAEDDB0C43463B5638DE78E7B2818059AF74223B43C62AC0F6DCC49FF50A5
 optomaML1080.bin  87BD50378A2D8B0E8CB3F12614F384F79E82BE5EBA6E69FF42095A21020345E9
 ```
 
