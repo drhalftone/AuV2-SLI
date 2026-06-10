@@ -158,15 +158,36 @@ isn't the one you want, set it manually via **Adapter Properties → List All Mo
 | 1 | On if the current frame is the first frame of the pattern |
 | 0 | Trigger output |
 
+## Camera-trigger PCB & wiring
+
+The cameras connect to the FPGA through a small breakout board,
+[`LauCameraTrigger_Alchitry/`](LauCameraTrigger_Alchitry/), which adapts the **Alchitry Br V2 GPIO**
+to a **DB-9 camera port** carrying the 4-line protocol above. The folder holds the minimum KiCad
+project to fabricate and assemble it (`.kicad_pro` / `.kicad_sch` / `.kicad_pcb` — self-contained,
+so you can plot Gerbers or upload the `.kicad_pcb` straight to a fab), plus the camera-wiring guides:
+
+| Document | Covers |
+|---|---|
+| [Basler ACE USB 3.0 wiring](LauCameraTrigger_Alchitry/Basler_ACE_USB_GPIO_Wiring_Guide.md) | Basler ACE (Hirose 6-pin / Opto-GP-I/O Y-cable) → DB-9; opto-isolated vs. TTL lines, pull-up & level-shift notes, Pylon SDK config |
+| [Allied Vision Alvium 1800 wiring](LauCameraTrigger_Alchitry/Alvium_1800_GPIO_Wiring_Guide.md) | Alvium 1800 USB (JST 7-pin) → DB-9; 3.3 V push-pull GPIO (no pull-ups), Vimba SDK config |
+| [Three-camera DB-9 harness](LauCameraTrigger_Alchitry/Alvium_Three_Camera_DB9_Harness.md) | Combine three Alvium cameras into one DB-9 (1 master + 2 slaves) |
+| [On-board JST-7 PCB variant](LauCameraTrigger_Alchitry/Alvium_Three_Camera_Onboard_JST_PCB.md) | A variant of the board that replaces the DB-9 with three on-board **JST-7** connectors (cameras plug in directly with 1:1 JST cables) |
+| [Vimba FPGA timing guide](LauCameraTrigger_Alchitry/Vimba_FPGA_LCG_Timing_Guide.md) | Camera trigger / exposure / FrameTriggerWait handshake timing for FPGA-driven capture |
+
+See the [folder README](LauCameraTrigger_Alchitry/README.md) for ordering/assembly steps and the
+build notes — DB-9 vs. JST connector choice, the Basler open-collector pull-up requirement on the
+Br V2, the `A28/29/31/32`-vs-`Au2.xdc` pin-label check, and the Camera-2 outputs-only caveat.
+
 ## Repository layout
 ```
-├── README.md            # this file
-├── Bitstream/           # prebuilt bitstreams (Au2_SLI.bin is the default)
-├── sources_1/           # HDL sources (sources_1/imports/RTL)
-├── constrs_1/           # Xilinx design constraints (XDC)
-├── Matlab/              # .m scripts + LUT outputs (legacy pattern generation)
-├── AlchitryFlasher/     # one-click Windows flasher (GUI + docs)
-├── Au2_SLI.zip          # archived Vivado project
+├── README.md                  # this file
+├── Bitstream/                 # prebuilt bitstreams (Au2_SLI.bin is the default)
+├── sources_1/                 # HDL sources (sources_1/imports/RTL)
+├── constrs_1/                 # Xilinx design constraints (XDC)
+├── Matlab/                    # .m scripts + LUT outputs (legacy pattern generation)
+├── AlchitryFlasher/           # one-click Windows flasher (GUI + docs)
+├── LauCameraTrigger_Alchitry/ # camera-trigger breakout PCB (KiCad) + camera-wiring docs
+├── Au2_SLI.zip                # archived Vivado project
 └── LICENSE
 ```
 
