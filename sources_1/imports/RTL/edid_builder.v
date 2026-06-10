@@ -20,14 +20,16 @@
 //  DRAFT - unsimulated. See test plan in the design note.
 //==============================================================================
 module edid_builder #(
-    parameter [15:0] F_MIN_10K = 16'd6000,    // 60.00 MHz (AuV2 hdmi_input MMCM is x10: VCO=pixel*10>=600)
-    parameter [15:0] F_MAX_10K = 16'd7700,    // 77.00 MHz (deserialiser-alignment ceiling, CLKIN1_PERIOD=13ns)
-    // AuV2 x10 lock band = 60-77 MHz. Keep every established mode BOTH in-band AND on the
-    // display. In-window established positions (pixel clocks):
-    //   B36 bit3 = 1024x768@60 (65.0)   bit2 = 1024x768@70 (75.0)
-    //   Excluded: all 640x480/720x400/800x600 (<60, below floor); 1024x768@75 (78.75) & 1280x1024@75 (135, over).
-    parameter [7:0]  EST_MASK35 = 8'h00,      // nothing in B35 is in [60,77]
-    parameter [7:0]  EST_MASK36 = 8'h0C,      // 1024x768@60 (bit3) + 1024x768@70 (bit2)
+    parameter [15:0] F_MIN_10K = 16'd4000,    // 40.00 MHz (hdmi_input MMCM now x15: VCO=pixel*15>=600)
+    parameter [15:0] F_MAX_10K = 16'd9000,    // 90.00 MHz (x15 on the -2 part: VCO<=1440 -> pixel<=96; 90=margin)
+    // x15 lock band = 40-90 MHz -> the 75 Hz modes now fit. Keep every established mode BOTH
+    // in-band AND on the display. In-window established positions (pixel clocks):
+    //   B35 bit0 = 800x600@60 (40.0)
+    //   B36 bit7 = 800x600@72 (50.0)  bit6 = 800x600@75 (49.5)
+    //        bit3 = 1024x768@60 (65.0) bit2 = 1024x768@70 (75.0) bit1 = 1024x768@75 (78.75)
+    //   Excluded: 640x480/720x400 (<40, below floor); 1280x1024@75 (135, over).
+    parameter [7:0]  EST_MASK35 = 8'h01,      // 800x600@60 (bit0)
+    parameter [7:0]  EST_MASK36 = 8'hCE,      // 800x600@72/75 (b7,b6) + 1024x768@60/70/75 (b3,b2,b1)
     parameter [7:0]  EST_MASK37 = 8'h00
 )(
     input  wire        clk,
@@ -49,16 +51,19 @@ module edid_builder #(
     // (pixel clocks are all in [60,120] MHz by construction, so membership in the
     // display's slots is the only runtime test needed.)
     //--------------------------------------------------------------------------
-    localparam integer NCAND = 4;
-    // packed {hi,lo} per candidate - in-window (60-77 MHz) standard timings only.
-    // 800x600@120 (0x800C) deliberately dropped: 120 Hz, not wanted on the projector.
+    localparam integer NCAND = 8;
+    // packed {hi,lo} per candidate - in-window (40-90 MHz) standard timings, incl. 75 Hz.
     reg [15:0] CAND [0:NCAND-1];
     // higher index = higher pixel clock (used to pick the "best" survivor)
     initial begin
-        CAND[0]  = 16'h6140; // 1024x768@60   65.00
-        CAND[1]  = 16'h8100; // 1280x800@60   71.00 (RB; CVT non-RB is 83.5 -> over)
-        CAND[2]  = 16'h614A; // 1024x768@70   75.00
-        CAND[3]  = 16'h81C0; // 1280x720@60   74.25
+        CAND[0]  = 16'h4540; // 800x600@60    40.00
+        CAND[1]  = 16'h454F; // 800x600@75    49.50
+        CAND[2]  = 16'h454C; // 800x600@72    50.00
+        CAND[3]  = 16'h6140; // 1024x768@60   65.00
+        CAND[4]  = 16'h8100; // 1280x800@60   71.00 (RB)
+        CAND[5]  = 16'h81C0; // 1280x720@60   74.25
+        CAND[6]  = 16'h614A; // 1024x768@70   75.00
+        CAND[7]  = 16'h614F; // 1024x768@75   78.75
     end
 
     //--------------------------------------------------------------------------

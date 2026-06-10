@@ -17,13 +17,14 @@ module status_line (
     input  wire [7:0]  mrg,
     input  wire [7:0]  tlp,
     input  wire [7:0]  tcnt,
+    input  wire [7:0]  olp,        // pipe-OUTPUT top-left red (diagnostic; passthrough should == tlp)
     input  wire [15:0] vs_lat,
     output reg  [7:0]  tx_data,
     output reg         tx_send,
     input  wire        tx_busy,
     output reg         busy
 );
-    localparam integer LEN = 57;
+    localparam integer LEN = 62;
     reg [7:0] msg [0:LEN-1];
     integer k;
     initial begin
@@ -39,8 +40,9 @@ module status_line (
         msg[36]="D"; msg[37]="="; msg[40]=" ";
         msg[41]="G"; msg[42]="="; msg[45]=" ";
         msg[46]="P"; msg[47]="="; msg[50]=" ";
-        msg[51]="C"; msg[52]="=";
-        msg[55]=8'h0D; msg[56]=8'h0A;
+        msg[51]="C"; msg[52]="="; msg[55]=" ";
+        msg[56]="O"; msg[57]="=";
+        msg[60]=8'h0D; msg[61]=8'h0A;
         busy = 1'b0; tx_send = 1'b0;
     end
 
@@ -62,6 +64,7 @@ module status_line (
                 msg[43] <= h2a(mrg[7:4]);   msg[44] <= h2a(mrg[3:0]);
                 msg[48] <= h2a(tlp[7:4]);   msg[49] <= h2a(tlp[3:0]);
                 msg[53] <= h2a(tcnt[7:4]);  msg[54] <= h2a(tcnt[3:0]);
+                msg[58] <= h2a(olp[7:4]);   msg[59] <= h2a(olp[3:0]);
                 idx <= 6'd0; st <= 1'b0; busy <= 1'b1;
             end
         end else begin

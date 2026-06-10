@@ -41,7 +41,8 @@ module pixel_pipe(
     output  out_hsync,
     output out_vsync,
     output out_blank,
-    output reg [7:0] tlp_dbg,      // last sampled top-left red value (diagnostic)
+    output reg [7:0] tlp_dbg,      // last sampled top-left red value (diagnostic, pipe INPUT)
+    output reg [7:0] olp_dbg,      // same sample point on the pipe OUTPUT (diagnostic)
     output reg [7:0] trig_cnt_dbg  // free-running count of trigger pulses (diagnostic)
     );
     parameter V=2'b01; parameter B=2'b10; parameter O=2'b11; //states for Vsync, V back porch + 1st hysnc period, others.
@@ -151,6 +152,7 @@ module pixel_pipe(
             else begin
                 smp_pend <= 1'b0;
                 tlp_dbg  <= in_red;                     // capture the sampled TLP every frame (diagnostic)
+                olp_dbg  <= out_red;                    // same instant on the pipe OUTPUT (passthrough should == in_red)
                 if (vid_valid) begin
                     // trigger only on a change bigger than TLP_THRESH (rejects +-1 LSB
                     // GPU dither on a "static" pixel; real pattern changes are large)

@@ -234,7 +234,13 @@ module pattern_gen #(
 
     wire [ACC_W-1:0] sel_acc  = orient ? colacc : rowacc;
     wire [COS_AW-1:0] int_phase = sel_acc[ACC_W-1 : FRAC];          // top 12 bits
-    wire [COS_AW-1:0] maddr     = int_phase + {frm_use, 9'd0};      // + frm*512, mod 4096
+    // Per-frame phase step = frm*512 (exact 1/8 of the master period -> no banding).
+    // Its SIGN sets the apparent scroll direction. Row-coordinate fringes (orient=0) use a
+    // NEGATIVE step so the pattern moves DOWN the screen (was +, which scrolled upward);
+    // column fringes (orient=1) keep the original (+) direction. Subtraction wraps mod 4096.
+    wire [COS_AW-1:0] frm_shift = {frm_use, 9'd0};
+    wire [COS_AW-1:0] maddr     = orient ? (int_phase + frm_shift)
+                                         : (int_phase - frm_shift);
 
     // -------------------------------------------------------------------------
     // 6) Master ROM read (1-cycle) + aligned output mux.

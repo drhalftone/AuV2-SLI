@@ -107,9 +107,21 @@ architecture Behavioral of hdmi_io is
     );
     end component;
 
+    -- Elastic phase buffer: recovered video (decode clock pixel_clk_i) -> output clock oclk.
+    component video_phase_fifo is
+    port (
+        wclk  : in  std_logic;
+        wdata : in  std_logic_vector(26 downto 0);
+        rclk  : in  std_logic;
+        rdata : out std_logic_vector(26 downto 0)
+    );
+    end component;
+
    signal oclk : std_logic;
    signal oclk1 : std_logic;
    signal oclk5 : std_logic;
+   signal vbuf_w : std_logic_vector(26 downto 0);  -- packed recovered video (decode domain)
+   signal vbuf_r : std_logic_vector(26 downto 0);  -- packed recovered video (oclk domain)
    signal data_synced_i  : std_logic;   -- hdmi_input symbol_sync (internal tap)
    signal clock_locked_i : std_logic;   -- hdmi_input pll_locked  (internal tap)
    signal sel_i          : std_logic;   -- internal sel (also used for debug)
@@ -127,6 +139,8 @@ architecture Behavioral of hdmi_io is
         pixel_clk       : out std_logic;  -- Driven by BUFG
         pixel_io_clk_x1 : out std_logic;  -- Driven by BUFFIO
         pixel_io_clk_x5 : out std_logic;  -- Driven by BUFFIO
+        pixel_clk_raw       : out std_logic;  -- raw CLKOUT0 (no BUFG) for output BUFGMUX
+        pixel_io_clk_x5_raw : out std_logic;  -- raw CLKOUT2 (no BUFG) for output BUFGMUX
         -- HDMI input signals
         hdmi_in_clk   : in    std_logic;
         hdmi_in_ch0   : in    std_logic;
@@ -301,6 +315,8 @@ architecture Behavioral of hdmi_io is
    
     -- Clocks for the pixel clock domain
     signal pixel_clk_i     : std_logic;
+    signal pixel_clk_raw_i       : std_logic;   -- raw recovered CLKOUT0 (for output BUFGMUX)
+    signal pixel_io_clk_x5_raw_i : std_logic;   -- raw recovered CLKOUT2 (for output BUFGMUX)
     signal pixel_io_clk_x1 : std_logic;
     signal pixel_io_clk_x5 : std_logic;
     signal pixel_io_nclk_x5 : std_logic;
@@ -338,9 +354,10 @@ begin
 i_clk_sel: clk_selector port map(
         vsync => raw_vsync, rx=> tmds_in_ch1,
         tmds_clk => tmds_in_clk,
-        hdmi_clk =>  pixel_clk_i,
-        hdmi_clk1=> pixel_io_clk_x1,
-        hdmi_clk5=> pixel_io_clk_x5,
+        -- Output BUFGMUX fed from RAW recovered CLKOUTs (no BUFG cascade); see clk_selector note.
+        hdmi_clk =>  pixel_clk_raw_i,
+        hdmi_clk1=> pixel_io_clk_x1,         -- (unused by the mux now; kept wired)
+        hdmi_clk5=> pixel_io_clk_x5_raw_i,
         clk125=>clk125, clk625=>clk625, clk10=>clk10,
         data_valid => data_synced_i,
         oclk=>oclk, oclk1=>oclk1, oclk5=>oclk5,
@@ -371,7 +388,9 @@ i_hdmi_input : hdmi_input port map (
         -- Pixel and serializer clocks 
         pixel_clk       => pixel_clk_i,
         pixel_io_clk_x1 => pixel_io_clk_x1,
-        pixel_io_clk_x5 => pixel_io_clk_x5,  
+        pixel_io_clk_x5 => pixel_io_clk_x5,
+        pixel_clk_raw       => pixel_clk_raw_i,
+        pixel_io_clk_x5_raw => pixel_io_clk_x5_raw_i,
         --- HDMI input signals
         hdmi_in_clk   => tmds_in_clk,
         hdmi_in_ch0   => tmds_in_ch0,
@@ -470,12 +489,20 @@ i_hdmi_input : hdmi_input port map (
 --    in_green <= rgb_G(11 downto 4);
 --    in_red   <= rgb_R(11 downto 4);
     
-    in_blank <= raw_blank;
-    in_hsync <= raw_hsync;
-    in_vsync <= raw_vsync;
-    in_blue  <= raw_ch0;
-    in_green <= raw_ch1;
-    in_red   <= raw_ch2;
+    -- Recovered video crosses from the decode clock (pixel_clk_i, BUFG CLKOUT0) into the
+    -- output/serialiser clock (oclk, BUFGMUX of the same CLKOUT0). Same frequency, fixed
+    -- phase -> a plain register crossing (in the Au2_SLI mux) was metastable (drifting black
+    -- line + sync dropouts). An elastic phase FIFO decouples them. Pack {blank,hsync,vsync,
+    -- red,green,blue} = 27b; red=raw_ch2, green=raw_ch1, blue=raw_ch0 (unchanged mapping).
+    vbuf_w <= raw_blank & raw_hsync & raw_vsync & raw_ch2 & raw_ch1 & raw_ch0;
+    i_vphase : video_phase_fifo port map (
+        wclk => pixel_clk_i, wdata => vbuf_w, rclk => oclk, rdata => vbuf_r );
+    in_blank <= vbuf_r(26);
+    in_hsync <= vbuf_r(25);
+    in_vsync <= vbuf_r(24);
+    in_red   <= vbuf_r(23 downto 16);
+    in_green <= vbuf_r(15 downto 8);
+    in_blue  <= vbuf_r(7 downto 0);
 
     ------------------------------------------------
     -- Processing the non-video data #1

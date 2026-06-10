@@ -194,6 +194,7 @@ architecture Behavioral of Au2_SLI is
             out_green : out std_logic_vector(7 downto 0);
             out_blue  : out std_logic_vector(7 downto 0);
             tlp_dbg      : out std_logic_vector(7 downto 0);
+            olp_dbg      : out std_logic_vector(7 downto 0);
             trig_cnt_dbg : out std_logic_vector(7 downto 0)
     );
     end component;
@@ -242,7 +243,8 @@ architecture Behavioral of Au2_SLI is
     signal debug : std_logic_vector(7 downto 0);
     signal led_i : std_logic_vector(7 downto 0);  -- mirror of the LED status byte for telemetry
     signal vid_valid : std_logic;  -- HDMI input validly decoding (symbol_sync & pll_locked)
-    signal tlp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red (diagnostic)
+    signal tlp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe INPUT (diagnostic)
+    signal olp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe OUTPUT (diagnostic)
     signal trig_cnt  : std_logic_vector(7 downto 0);  -- trigger pulse count (diagnostic)
 
     component edid_reader is
@@ -252,6 +254,7 @@ architecture Behavioral of Au2_SLI is
                mrg    : in  STD_LOGIC_VECTOR(7 downto 0);
                tlp    : in  STD_LOGIC_VECTOR(7 downto 0);
                tcnt   : in  STD_LOGIC_VECTOR(7 downto 0);
+               olp    : in  STD_LOGIC_VECTOR(7 downto 0);
                usb_tx : out STD_LOGIC );
     end component;
 
@@ -369,7 +372,7 @@ begin
     vid_valid <= debug(3) and debug(2);  -- symbol_sync AND pll_locked (passthrough decode valid)
     i_edid_reader: edid_reader port map (
         clk100 => clk100, led => led_i, dbg => debug, mrg => merge_dbg,
-        tlp => tlp_val, tcnt => trig_cnt, usb_tx => usb_tx );
+        tlp => tlp_val, tcnt => trig_cnt, olp => olp_val, usb_tx => usb_tx );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -644,6 +647,7 @@ i_processing: pixel_pipe Port map (
         out_green => out_green,
         out_blue  => out_blue,
         tlp_dbg      => tlp_val,
+        olp_dbg      => olp_val,
         trig_cnt_dbg => trig_cnt
     );
 --Vs  <= out_vsync; 

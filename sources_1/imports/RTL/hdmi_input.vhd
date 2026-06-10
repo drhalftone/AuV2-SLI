@@ -21,6 +21,11 @@ entity hdmi_input is
         pixel_clk       : out std_logic;  -- Driven by BUFG
         pixel_io_clk_x1 : out std_logic;  -- Driven by BUFFIO
         pixel_io_clk_x5 : out std_logic;  -- Driven by BUFFIO
+        -- RAW MMCM CLKOUTs (NO BUFG) for the output BUFGMUX: feeding the output serializer
+        -- through a BUFG->BUFGMUX cascade blacked the 78.67MHz passthrough (skew). These raw
+        -- CLKOUTs go straight into the BUFGMUX (single buffer, mirrors the offline path).
+        pixel_clk_raw       : out std_logic;  -- raw CLKOUT0
+        pixel_io_clk_x5_raw : out std_logic;  -- raw CLKOUT2 (5x)
         -- HDMI input signals
         hdmi_in_clk   : in    std_logic;
         hdmi_in_ch0   : in    std_logic;
@@ -242,17 +247,25 @@ IDELAYCTRL_inst : IDELAYCTRL
    --------------------------------
 hdmi_MMCME2_BASE_inst : MMCME2_BASE
    generic map (
-      BANDWIDTH => "OPTIMIZED",      -- Jitter programming (OPTIMIZED, HIGH, LOW)
+      -- x15 recovery (ported from MimasA7-SLI): VCO = pixel x 15. The Au V2 is a -2 part
+      -- (Fvco max 1440 MHz vs the Mimas -1's 1200), so the input lock band is ~40-96 MHz
+      -- (was 60-77 at x10) -> covers 75 Hz modes (1024x768@75=78.67, 800x600@75=49.5).
+      -- x5 deserialiser clock at 96 MHz = 480 MHz, within the -2 BUFIO/ISERDES limit.
+      -- HIGH = widest loop bandwidth -> tracks a wandering source (PC GPUs run spread-spectrum
+      -- by default) and HOLDS LOCK. "LOW" (tried at x15) gave the narrowest tracking and the PLL
+      -- chattered lock ~7% of frames (telemetry pll_locked drops) -> drifting line + brief blackouts,
+      -- while symbol_sync stayed up = classic marginally-locked PLL. x10 used OPTIMIZED and was stable.
+      BANDWIDTH => "HIGH",
       DIVCLK_DIVIDE   => 1,          -- Master division value (1-106)
-      CLKFBOUT_MULT_F => 10.0,        -- Multiply value for all CLKOUT (2.000-64.000).
+      CLKFBOUT_MULT_F => 15.0,        -- VCO = pixel x 15
       CLKFBOUT_PHASE => 0.0,         -- Phase offset in degrees of CLKFB (-360.000-360.000).
       CLKIN1_PERIOD => 13.000,  -- Input clock period in ns to ps resolution (i.e. 33.333 is 30 MHz).
       --CLKIN1_PERIOD => 6.734,
-      
+
       -- CLKOUT0_DIVIDE - CLKOUT6_DIVIDE: Divide amount for each CLKOUT (1-128)
-      CLKOUT0_DIVIDE_F => 10.0,       -- Divide amount for CLKOUT0 (1.000-128.000).
-      CLKOUT1_DIVIDE   => 10,
-      CLKOUT2_DIVIDE   => 2,
+      CLKOUT0_DIVIDE_F => 15.0,       -- pixel = VCO/15
+      CLKOUT1_DIVIDE   => 15,         -- pixel x1
+      CLKOUT2_DIVIDE   => 3,          -- clk_x5 = VCO/3 = 5x pixel
       CLKOUT3_DIVIDE   => 10,
       CLKOUT4_DIVIDE   => 2,
       CLKOUT5_DIVIDE   => 2,
@@ -332,6 +345,9 @@ BUFG_inst : BUFG
       pixel_clk       <= clk_pixel;
       pixel_io_clk_x1 <= clk_pixel_x1;
       pixel_io_clk_x5 <= clk_pixel_x5;
+      -- raw MMCM CLKOUTs straight out (no BUFG) for the output BUFGMUX in clk_selector
+      pixel_clk_raw       <= clk_pixel_raw;
+      pixel_io_clk_x5_raw <= clk_pixel_x5_raw;
 ch0: input_channel Port map ( 
         clk_mgmt        => system_clk,
         clk             => clk_pixel,

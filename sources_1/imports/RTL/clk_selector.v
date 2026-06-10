@@ -54,7 +54,15 @@ module clk_selector (
         if (~dv_db) sel <= 1'b0;              // no valid decode -> force offline now
     end
 
+    // The output serializer's TMDS symbol is ENCODED on oclk (=pixel_clk) but PARALLEL-LOADED
+    // on oclk1. In offline both mux to the same net (clk125), so that handoff has zero skew and
+    // closes at 78.67 MHz. In passthrough oclk1 used to take hdmi_clk1 (CLKOUT1) while oclk took
+    // hdmi_clk (CLKOUT0) -- two distinct clock nets with independent BUFG->BUFGMUX skew, which
+    // ate the OSERDES parallel-load setup margin at 78.67 MHz (1024x768@75) and blacked the
+    // output, while 65 MHz (60 Hz) survived. Drive oclk1's passthrough input from hdmi_clk too,
+    // so pixel-clock and word-clock are ONE net (mirrors the working offline path). hdmi_clk1
+    // (CLKOUT1) is unaffected -- the RX deserialiser still uses it internally in hdmi_input.
     BUFGMUX mux    (.O(oclk),  .I0(clk125), .I1(hdmi_clk),  .S(sel));
-    BUFGMUX mux_x1 (.O(oclk1), .I0(clk125), .I1(hdmi_clk1), .S(sel));
+    BUFGMUX mux_x1 (.O(oclk1), .I0(clk125), .I1(hdmi_clk),  .S(sel));
     BUFGMUX mux_x5 (.O(oclk5), .I0(clk625), .I1(hdmi_clk5), .S(sel));
 endmodule
