@@ -7,3 +7,6 @@
 .Xil/
 vivado_*.str
 *.str
+
+# Internal planning doc — keep out of the public repo
+AlchitryFlasher/CAMERA_USB_PLAN.md
