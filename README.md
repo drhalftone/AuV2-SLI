@@ -117,17 +117,25 @@ isn't the one you want, set it manually via **Adapter Properties → List All Mo
 ---
 
 ## GPIO pin assignments
-| Camera Interface | FPGA Pins | DB9 Pins | Purpose | I/O (from FPGA's POV) |
-|------------|-----------|----------|-------------------------------------------------|-----------|
-| Line 1 (Cam1) | A23 | 5 | Trigger the camera | Output |
-| Line 2 (Cam1) | A35 | 9 | Mode (1 local patterns, 0 pass-through) | Input |
-| Line 3 (Cam1) | A29 | 4 | First frame of the pattern | Output |
-| Line 4 (Cam1) | A17 | 8 | Camera is ready for the next trigger | Input |
-| Line 1 (Cam2) | A24 | 6 | Trigger the camera | Output |
-| Line 2 (Cam2) | A36 | 2 | Mode (1 local patterns, 0 pass-through) | Input |
-| Line 3 (Cam2) | A30 | 3 | First frame of the pattern | Output |
-| Line 4 (Cam2) | A18 | 7 | Camera is ready for the next trigger | Input |
-| GND | G | 1 | Ground | - |
+| Camera Interface | FPGA Pins | DB9 Pins | Purpose | I/O (from FPGA's POV) | Status in this bitstream |
+|------------|-----------|----------|-------------------------------------------------|-----------|-----------|
+| Line 1 (Cam1) | A23 | 5 | Trigger the camera | Output | Active |
+| Line 2 (Cam1) | A35 | 9 | Mode (1 local patterns, 0 pass-through) | Input | Active |
+| Line 3 (Cam1) | A29 | 4 | First frame of the pattern | Output | Active |
+| Line 4 (Cam1) | A17 | 8 | Camera is ready for the next trigger | Input | Active |
+| Line 1 (Cam2) | A24 | 6 | Trigger the camera | Output | Active (mirrors Cam1) |
+| Line 3 (Cam2) | A30 | 3 | First frame of the pattern | Output | Active (mirrors Cam1) |
+| Line 2 (Cam2) | A36 | 2 | Mode (in) | Input | **Reserved — not connected** |
+| Line 4 (Cam2) | A18 | 7 | Camera ready (in) | Input | **Reserved — not connected** |
+| GND | G | 1 | Ground | - | - |
+
+> **Cam2 is trigger-out only in the current bitstream.** Both cameras receive the *same*
+> trigger and first-frame pulses (`C2_out` mirrors `C1_out`), so Cam2 fires in sync with Cam1.
+> However, the frame-pacing handshake reads only **Cam1's** *ready* line (`A17`) and the **Mode**
+> input comes only from **Cam1** (`A35`). Cam2's *Mode* (`A36`) and *ready* (`A18`) inputs are
+> left unconnected (the pins are commented out in `Au2.xdc` and unused in RTL) — so Cam2's
+> readiness does not gate the capture rate. Wiring Cam2's inputs into the handshake (e.g. advance
+> only when *both* cameras are ready) is a future enhancement.
 
 | Other Signals | FPGA Pins | Function |
 |------------|----------|----------------------------------------|
