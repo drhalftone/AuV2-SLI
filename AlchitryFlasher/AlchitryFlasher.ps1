@@ -30,7 +30,7 @@ Add-Type -AssemblyName System.Drawing
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-$RepoRaw = 'https://raw.githubusercontent.com/qishi-hu/AuV2-SLI/main/Bitstream'
+$RepoRaw = 'https://raw.githubusercontent.com/drhalftone/AuV2-SLI/main/Bitstream'
 
 # Bitstreams shipped in this repo, next to the flasher (..\Bitstream). When the
 # local file is present it is flashed directly - no download. Url is kept only as a
@@ -42,7 +42,7 @@ $BinChoices = [ordered]@{
     'Au2_SLI.bin (SLI system)' = @{
         Path   = (Join-Path $BitstreamDir 'Au2_SLI.bin')
         Url    = "$RepoRaw/Au2_SLI.bin"
-        Sha256 = '9A0A3A294D40CABA098034FE8F12A6535D685474A8CECB7A7E45A7AACBB6CC81'
+        Sha256 = 'E35AAEDDB0C43463B5638DE78E7B2818059AF74223B43C62AC0F6DCC49FF50A5'
     }
     'optomaML1080.bin (720p@60 Optoma)' = @{
         Path   = (Join-Path $BitstreamDir 'optomaML1080.bin')
