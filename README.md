@@ -32,13 +32,11 @@ The **Active Signal Mode** is the actual setting of the HDMI signal, if it is no
 - The host PC waits for confirmation that the camera is ready before playing the next frame.
 
 ### 2. Pass-through with SLI Pattern Generation
-- The FPGA replaces the input HDMI frames with locally generated SLI patterns. If the HDMI input is absent, it simply creates the pattern locally. 
-- The current pattern is a 24-frame sequence, where each row of a frame contains identical pixel values corresponding to the row index.
-- The start frame is defined by a **Look-Up Table (LUT)**, and subsequent frames are derived by modifying the spatial and temporal frequencies of the first frame.
-- For top-down scanning, `indexMapping.m` maps the combination of a pixel’s row index and frame index to an index in the start frame LUT. This MATLAB script outputs the `indexMap.coe` that initializes a read-only memory (ROM) module on the FPGA to store the mapping.
-- For side-to-side scanning, `indexMappingV.m` maps the combination of a pixel’s column index and frame index to an index in the start frame LUT. This MATLAB script outputs the `indexMapV.coe` that initializes a read-only memory (ROM) module on the FPGA to store the mapping.
-- The start frame LUTs for both scanning orientations are defined in `LUT2coe.m`, which outputs `LUT.coe` and `LUT_V.coe` so that they can be hardcoded through read-only memory (ROM) modules.
+- The FPGA replaces the input HDMI frames with locally generated SLI patterns. If the HDMI input is absent, it simply creates the pattern locally.
+- The fringe pattern is generated **on the fly by `pattern_gen.v`** (a resolution-adaptive DDS), not from precomputed ROMs. It measures the active region, sets a base period `b = ceil(F/288)`, sweeps the spatial frequencies `288b : 48b : 8b`, and samples a 4096-entry master cosine — so the fringe frequency **scales with the display resolution** and spans the field at any mode. `frq == 3` emits a flash (black/white) frame.
+- Orientation (`SW[0]`: vertical vs. horizontal stripes), per-channel enables (`SW[3:1]`), and the runtime frame/frequency sequencing drive the generator.
 - The FPGA increments the frame index and triggers the camera on VSYNC, as long as the camera signals that it is ready (by sending a rising edge).
+- *Historical:* earlier builds drove the pattern from precomputed `LUT.coe` / `indexMap.coe` / `indexMapV.coe` ROMs produced by the `Matlab/` scripts (`LUT2coe.m`, `indexMapping.m`, `indexMappingV.m`). These were replaced by the on-the-fly `pattern_gen` to free ~1.7 MB of BRAM and support arbitrary resolutions; the scripts remain under `Matlab/` for reference.
 ### 3. Offline Mode
 When the HDMI input is absent, the FPGA enters offline mode. This mode is similar to Mode #2, but the pattern is generated from the local 100 MHz oscillator instead of the recovered HDMI-Rx clock.
 
@@ -53,8 +51,11 @@ The offline output **pixel clock and timing are reconfigured at runtime to match
 > extended above 85 MHz (e.g. 1280×1024@60, 1080p60) once validated on this board.
 >
 > Note: this ceiling applies to the **offline** (FPGA-generated) path only. The
-> **pass-through** path is separately limited by the input-recovery MMCM's ~60–77 MHz
-> lock window (what the served EDID lets the PC send).
+> **pass-through** path locks the PC's HDMI clock with an **×15 recovery MMCM**
+> (`BANDWIDTH = HIGH`, so it tracks the GPU's spread-spectrum clock and holds lock),
+> giving a **~40–90 MHz** pixel-clock window. The served EDID advertises the in-window
+> modes (the 800×600 and 1024×768 families); **1024×768@75 (78.67 MHz) pass-through is
+> HW-validated**. 640×480@75 (31.5 MHz) sits below the ×15 lock floor and is not served.
 ## GPIO pin assignments
 | Camera Interface  | FPGA Pins | DB9 Pins | Purpose                                         | I/O (from FPGA's POV)             |
 |------------|-----------|----------|-------------------------------------------------|-----------------------------------|
