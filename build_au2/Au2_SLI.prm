@@ -1,0 +1,11 @@
+===================================
+Configuration Memory information
+===================================
+File Format        BIN
+Interface          SPIX1
+Size               16M
+Start Address      0x00000000
+End Address        0x00FFFFFF
+
+Addr1         Addr2         Date                    File(s)
+0x00000000    0x0009FBC7    Jun  7 17:39:48 2026    C:/Users/drhal/Developer/AuV2-SLI/build_au2/Au2_SLI.bit
