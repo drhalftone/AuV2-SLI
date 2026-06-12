@@ -10,3 +10,10 @@ vivado_*.str
 
 # Internal planning doc — keep out of the public repo
 AlchitryFlasher/CAMERA_USB_PLAN.md
+
+# Vivado build outputs / scratch (stale qishi-hu build dir + run reports)
+build_au2/
+*.rpt
+clockInfo.txt
+dfx_runtime.txt
+tight_setup_hold_pins.txt
