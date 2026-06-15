@@ -26,6 +26,19 @@ port it — you *replace* it with Microchip's licensed video IP. The other ~60�
 The hardware is **not** the bottleneck. The MPF300T has the transceivers for 4K60
 HDMI and the DDR4 bandwidth + DSP for the on-chip math.
 
+**In-stream pixel processing is a shipped capability, not a research bet.** Microchip's
+own **DG0849** demo runs **edge detection, picture-in-picture, and image enhancement**
+(brightness / contrast / color balance) on a live video stream displayed over HDMI, with a
+**DDR4 frame buffer** in the middle. Edge detection in particular *reads the pixel stream,
+computes a per-pixel result, and emits a modified stream* — architecturally identical to
+"replace the pixels with SLI patterns." Passthrough (AN4768) is just the degenerate
+"process = nothing" case of the same pipeline. So the swap-pixels-in-the-middle function is
+demonstrated by the vendor; what is new for us is only the *content* of the processing block
+(`pixel_pipe` / `pattern_gen`). DG0849's processing path takes a **1080p HDMI-RX input** and
+a **4K HDMI-TX output**; the 4K-in path (AN4768) is separately proven as passthrough — so the
+exact "4K-in → modify → 4K-out" combination is integration of two shipped halves, not new
+ground.
+
 ---
 
 ## 2. The architectural upgrade this represents
@@ -77,6 +90,70 @@ translate it.
   unwrapping) — the genuine unknown. 4K60 real-time multi-frame phase math is
   doable on the MPF300T's DSPs/DDR4 but is a serious HLS/DSP effort and the place
   to run a feasibility spike before committing.
+
+### How the live pixels are accessed (HDMI RX IP interface)
+You **cannot read the RX IP's internals** — it ships as **encrypted/black-box** netlist
+(free with Libero, not source-visible). You don't need to: the IP **hands you the decoded
+pixels on a documented output bus**, in one of two selectable modes:
+
+- **Native video** — 24-bit RGB + `hsync` + `vsync` + data-enable (active video) + pixel
+  clock. Maps almost 1:1 onto the existing `pixel_pipe` ports.
+- **AXI4-Stream video** — `tdata` (pixels), `tvalid`, `tuser` = start-of-frame,
+  `tlast` = end-of-line, `tready`.
+
+| Au `pixel_pipe` input | PolarFire RX IP native output |
+|---|---|
+| `in_red` / `in_green` / `in_blue` `[7:0]` | 24-bit RGB |
+| `in_hsync` / `in_vsync` | hsync / vsync |
+| `in_blank` | data-enable (inverted) |
+| `vid_valid` | IP video-lock / valid status |
+
+**The 4K pixels-per-clock detail.** The RX IP runs **1 pixel/clock up to 1080p60** but
+**4 pixels/clock at 3840×2160@60** (594 MHz is not a fabric-friendly clock). At 4K the native
+bus is therefore **4×24 = 96-bit RGB at ~148.5 MHz**, so `pixel_pipe` / `pattern_gen` must be
+**widened to a 4-pixel-per-clock datapath** (4 parallel lanes; TLP and VSYNC sampling plus the
+pattern addressing reworked to match). At 1080p (1 ppc) it is a near-drop-in; the 4-lane
+widening is the real porting effort. AN4768's loopback wire (RX-output pixels → TX-input
+pixels) is literally the insertion point — drop the SLI logic onto that bus.
+
+### EDID: read the projector, merge, serve to the PC
+The board **physically supports the full read-edit-serve path** the Au design relies on:
+- **Serve EDID to the PC** — the HDMI **RX** side presents an EDID to the source over DDC and
+  drives **HPD** (the IP supports DDC/E-DDC + HPD). Its *default* EDID is named "Microchip HDMI
+  Display" (up to 1080p60), but the EDID is fully replaceable (see "runtime EDID override" below)
+  — so serving a 4K-capable merged EDID is supported, not a limitation.
+- **Read the projector's EDID** — the HDMI **TX** side has DDC-master access: on the native
+  HDMI 2.0 TX (PI3HDX retimer) the DDC/SCL/SDA reach fabric for a soft I²C master; on the HDMI
+  1.4 TX (ADV7511) the chip's built-in DDC master reads the sink EDID into its EDID memory
+  (regs `0xC4` / `0x7E`), which fabric reads back over the control I²C.
+
+**What ports cleanly:** the **parse / merge / build** logic (`edid_builder.v`, `edid_merge.v`
+— CEA-861 VDB parse, intersect *projector modes ∩ supported window*) is pure vendor-neutral
+byte manipulation → recompiles as-is. This is the genuinely valuable EDID IP and it carries
+over untouched.
+
+**Runtime EDID override — confirmed supported.** The Au does a *runtime, dynamic* merge (read
+the projector → intersect → serve *that* to the PC), which needs the served EDID to be
+**runtime-writable**. UG0863 confirms the RX IP does exactly this: it "**Supports
+Reconfigurable EDID — Compile time and Run time**," selected by the **`Dynamic EDID Config`**
+configurator parameter:
+
+- **`Dynamic EDID Config = No`** — static: the EDID hex is loaded into the IP's EDID RAM
+  (`PF_TPSRAM_C0_0`) at design-initialization (build-time only).
+- **`Dynamic EDID Config = Yes`** — **runtime: the EDID is written over an AXI4-Lite interface**
+  through three dedicated registers — `EDID_ADDR` (0x08, byte address), `EDID_DATA` (0x0C, byte
+  value), `EDID_WEN` (0x04, write-enable) — clocking the merged EDID byte-by-byte into the EDID
+  RAM. Microchip even ships reference C (`edid_load_fun.c`).
+
+So the dynamic merge maps **directly** onto the IP — **no DDC-slave bypass needed**. The Au's
+`edid_builder` / `edid_merge` produce the merged 128/256-byte blob exactly as today; the only
+new glue is a small AXI4-Lite master that walks that blob into `EDID_ADDR`/`EDID_DATA`/`EDID_WEN`
+(256 writes). On the plain MPF300 (no hard CPU) that master is either a **soft Mi-V RISC-V** core
+or a **~20-line fabric FSM** — trivial. (One caveat from the guide: *if HDCP is enabled*, DDC
+must go through CoreI2C IP — not relevant to SLI, which uses no HDCP.)
+
+**Net:** EDID is no longer a friction point — read/parse/merge logic recompiles as-is, and the
+serve side is a supported runtime-writable EDID RAM. The whole read-merge-serve loop ports.
 
 ---
 
@@ -368,7 +445,10 @@ Pt's extra I/O makes a MIPI element easier to *fit*, not easier to *build*. Ultr
 - [Secure HDMI video pipelines with HDCP on PolarFire (4K60)](https://www.microchip.com/en-us/about/media-center/blog/2026/secure-hdmi-video-pipelines-with-hdcp-using-polarfire-fpgas)
 - [HDMI TX IP User Guide](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/ip_cores/directcores/HDMI_TX_IP_UG.pdf)
 - [HDMI RX IP User Guide (UG0863)](https://ww1.microchip.com/downloads/aemdocuments/documents/fpga/ProductDocuments/UserGuides/microsemi_hdmi_rx_ip_user_guide_ug0863_v1.pdf)
+- [HDMI RX IP core tool page (native / AXI4-Stream, 1 vs 4 pixel mode, pre-programmed EDID)](https://www.microchip.com/en-us/products/fpgas-and-plds/ip-core-tools/hdmi-rx)
 - [AN4768 — HDMI Loopback Design Application Note](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ApplicationNotes/ApplicationNotes/PolarFire_FPGA_HDMI_Loopback_Design_Application_Note_AN4768.pdf)
+- [DG0849 — PolarFire 4K Dual Camera Video Kit Demo (edge detection / PiP / image enhancement)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/polarfire_4k_dual_camera_video_kit_dg0849_v5.pdf)
+- [ADV7511 Hardware User Guide (DDC master / sink-EDID read, regs 0xC4/0x7E)](https://www.analog.com/media/en/technical-documentation/user-guides/ADV7511_Hardware_Users_Guide.pdf)
 - [PolarFire Transceiver User Guide](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/PolarFire_FPGA_and_PolarFire_SoC_FPGA_Transceiver_User_Guide_VB.pdf)
 - [Libero SoC licensing](https://www.microchip.com/en-us/products/fpgas-and-plds/fpga-and-soc-design-tools/fpga/licensing)
 - [BenQ TK700 specifications](https://www.benq.com/en-us/projector/gaming/tk700/spec.html)
