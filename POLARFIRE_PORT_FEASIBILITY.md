@@ -402,6 +402,7 @@ against both.
 | **Alchitry Pt V2** (XC7A100T) | ❌ ~1080p | ✅ 4 banks (206 IO, two-sided) | ⚠️ GTP→PCIe (DIY) | ✅ same Vivado/RTL | fixes I/O wall + 3× fabric + 4× 6.25 Gbps GTP; **not** 4K |
 | **AMD ZCU106** (XCZU7EV) | ✅ native dual HDMI, 4K (HDMI through GTH transceivers; retimers only) | ✅ 2× FMC | ✅ Arm A53 + PCIe/USB3/GbE | ✅ Xilinx→Xilinx | `EK-U1-ZCU106-G`, ~$3,234; camera via FMC (e.g. LI-IMX274) |
 | **Microchip PolarFire Video Kit** (MPF300T) | ✅ 4K60 (RX IP often 4K30) | ✅ | ❌ no native USB3/PCIe | ❌ full primitive rewrite | bundles cameras; low power; see §1–8 |
+| **Microchip PolarFire *SoC* Video Kit** (MPFS250T) | ✅ 4K60 (FPGA SerDes2) | ✅ + **mikroBUS GPIO** | ✅ **5× RISC-V (Linux) + GbE/USB2/PCIe** | ❌ rewrite (same IP as MPF300) | adds on-board host + easy GPIO; 250K LE (vs 300K); see §12 |
 
 ### Alchitry stacking facts (verified against pinout source)
 - **Au V2 = 2 banks.** Hd V2 fills **Bank A** (HDMI on A45–A78); Ft+ fills **low Bank A
@@ -460,7 +461,7 @@ exposes **no 0.1″ pin header and no PMOD** (UG0856). User I/O is:
 | On-board I/O | Externally wireable? |
 |---|---|
 | **FMC HPC connector (J14)** — `HA0:12` + `LA0:33` ≈ 47 diff pairs (~90+ single-ended) + 8 XCVR lanes | ✅ the only route to arbitrary GPIO |
-| 12 user LEDs, 2 push-buttons (SW1/SW2), 4 DIP switches (SW6), reset (SW3) | ✗ tied to on-board parts, not broken out |
+| **4** user/debug LEDs (FPGA-driven) + 12 power-rail status LEDs, 2 push-buttons (SW1/SW2), 4 DIP switches (SW6), reset (SW3) | ✗ tied to on-board parts, not broken out |
 
 So it is the **opposite of the Au's problem**: I/O-*rich*, but locked behind one FMC connector.
 To wire 4 camera lines you need an **FMC breakout card**:
@@ -542,6 +543,76 @@ the decoder to the sensor's format/lane count, not IP availability.
 
 ---
 
+## 12. PolarFire SoC Video Kit (MPFS250) — alternative platform
+
+A second board worth weighing: the **PolarFire SoC Video Kit** (`MPFS250-VIDEO-KIT`, device
+**MPFS250TS-1FCG1152I**). Same FCG1152 package and the same video IP as the MPF300 kit, but it
+adds a hardened **5-core RISC-V microprocessor subsystem (MSS)** running Linux, plus far more
+on-board connectivity.
+
+### What it adds over the MPF300 kit
+| Feature | Why it matters here |
+|---|---|
+| **mikroBUS sockets** (J49/J50, 8-pin ea., FPGA I/O on Bank 1) | The **easy GPIO header the MPF300 kit lacks** — the 4-line camera trigger maps straight onto it (no FMC breakout). Plus the MikroElektronika **Click** ecosystem (isolation, level-shift, RS-422). |
+| **RISC-V SoC** (4× U54 + 1× E51, Linux) | On-board host: control plane, sensor I²C init, EDID writes, and the **3-D reconstruction** can move on-board (see below). |
+| **Gigabit Ethernet** (RJ45) | Native **data-out for phase video / results** — the MPF300 kit had none (§8). |
+| **USB 2.0** (ULPI / USB3320), **PCIe Gen2 ×4**, **eMMC / microSD** | Host links + local storage, all native. |
+| **CAN, SPI, multiple UARTs** | Control + telemetry (`status_line` UART ports over). |
+
+Keeps everything the MPF300 kit had: **HDMI 2.0, dual-cam MIPI CSI-2 RX, FMC HPC (8 SerDes), DDR4
++ LPDDR4**. Trade-off: **250K LE vs 300K LE** (slightly less fabric for the §4 phase pipeline),
+SoC/Linux bring-up complexity, and likely higher cost.
+
+### HDMI 2.0 is FPGA-handled (Rx and Tx)
+Confirmed in the board guide: **HDMI 2.0 Tx → Tx SerDes2** and **HDMI 2.0 Rx → Rx SerDes2** of the
+PolarFire SoC — the **FPGA transceivers do the TMDS**. The external **PI3HDX1204B/E** parts are
+**re-drivers/equalizers** (SerDes-CML ↔ HDMI levels), *not* HDMI receiver/transmitter ASICs, so
+they don't touch the pixels. The pixel-access / in-stream-processing story holds fully (vs. the
+MPF300 kit's secondary HDMI **1.4** TX, which *does* use a real ASIC, the ADV7511).
+
+### What the RISC-V is for (if you use it)
+Fabric stays the real-time datapath; the RISC-V absorbs the host PC + external controller:
+- **Control plane** — configure IP over AXI4-Lite, write the merged EDID, run sensor I²C init,
+  drive the scan-sequencing FSM at frame granularity.
+- **Final 3-D reconstruction on-board** — fabric writes a **phase map** to DDR4 over the coherent
+  **FIC**; the RISC-V does unwrapping / calibration / triangulation (your `host/` Qt C++ ports
+  here). Branchy, non-real-time → CPU-friendly.
+- **Data-out / services** — stream results over GbE/USB/PCIe, host a control API or web UI,
+  log to microSD/eMMC.
+
+**The dividing line:**
+| Belongs in **fabric** (per-pixel, line-rate) | Belongs on **RISC-V** (per-frame or slower) |
+|---|---|
+| pattern replacement, TLP trigger, MIPI ingest, demosaic, arctan/phase math | config, sequencing, EDID/I²C writes, unwrap, calibration, triangulation, networking, UI |
+
+> The U54s are **~600 MHz, in-order, no vector unit** — they **cannot** do per-pixel work at video
+> rate (4K60 ≈ 5 CPU-cycles/pixel across all 4 cores). Keep pixels in fabric; even the board's
+> "ML at the edge" demos run the NN in a **fabric NPU**, not on the RISC-V.
+
+### Keeping the control plane in fabric instead (no-processor option)
+The Au model — fabric FSMs + a UART host-command path — **ports directly**; the MSS is optional and
+can be held in reset. `pixel_pipe`/`mode_select`/`cam_pace`, the UART register-control path (your
+`usb-control-port` branch), and the EDID/I²C logic are all vendor-neutral RTL.
+
+- **One adaptation:** where a Microchip IP expects *a processor* to write its AXI4-Lite config
+  (HDMI **Dynamic EDID**, MIPI **sensor I²C init**), supply a small **fabric AXI4-Lite master FSM**
+  (the ~20-line walker we use for EDID) — or drop a **soft Mi-V** into fabric for C convenience
+  (still not the hard MSS).
+- **SoC-specific caveat — DDR lives in the MSS.** On the MPF300 (plain FPGA) kit the DDR4
+  controller is **fabric IP** → a pure-fabric design with frame buffering needs **no processor**.
+  On the **SoC** kit the DDR controller is **inside the MSS**, so even fabric DDR access needs
+  *minimal* MSS bring-up (not full Linux). *(Confirm in Libero.)* If you stay **Au-style** —
+  on-the-fly patterns, no DDR, host PC does reconstruction — the MSS is **entirely unused** on
+  either board.
+
+### Strategic call
+The SoC kit's value *is* the RISC-V host + GbE + mikroBUS. If the intent is **"fabric owns the FSM
++ host commands, like the Au,"** the **plain MPF300 kit is the cleaner match** (fabric DDR, no MSS
+at all). Choose the SoC kit only if you want its **peripherals** (mikroBUS GPIO, native GbE) and/or
+the **on-board reconstruction host** — even if the control plane stays in fabric.
+
+---
+
 ## Sources
 - [PolarFire Video & Imaging Kit](https://www.microchip.com/en-us/development-tool/mpf300-video-kit-ns)
 - [UG0872 — PolarFire MPF300T Video Kit User Guide](https://www.mouser.com/datasheet/2/268/microsemi_polarfire_mpf300t_fpga_video_kit_user_gu-3420302.pdf)
@@ -573,3 +644,6 @@ the decoder to the sensor's format/lane count, not IP availability.
 - [PolarFire MIPI CSI-2 Receiver Decoder IP User Guide (1/2/4/8 lanes, IOD Generic + PLL front-end)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/ip_cores/directcores/MIPI_CSI2_Receiver_Decoder_IP_UG.pdf)
 - [VIDEO-DC-MIPITX — MIPI Transmit FMC Card (TX-only; not for camera input)](https://www.microchip.com/en-us/development-tool/video-dc-mipitx)
 - [CircuitValley FMC LPC MIPI CSI/DSI card (open-source, TX+RX, RPi-style FFC)](https://www.circuitvalley.com/2026/02/fmc-linux-mipi-csi-dsi-camera-pga-zynq-ultrascale-xilinx-fpga-camera-emulation.html)
+- [PolarFire SoC Video Kit (MPFS250-VIDEO-KIT)](https://www.microchip.com/en-us/development-tool/mpfs250-video-kit)
+- [PolarFire SoC FPGA Video Kit User Guide (mikroBUS J49/J50, HDMI 2.0 SerDes2, GbE/USB/PCIe)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/PolarFire_SoC_FPGA_Video_Kit_User_Guide.pdf)
+- [polarfire-soc-video-kit-reference-design (Libero + Linux reference designs)](https://github.com/polarfire-soc/polarfire-soc-video-kit-reference-design)
