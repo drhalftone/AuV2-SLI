@@ -258,6 +258,8 @@ confirm with the distributor.
 | **BenQ TK700 DLP projector** | Dual HDMI 2.0, 4K60-capable, low deterministic lag (16.67 ms @ 4K60 = 1 frame), also 1080p @ 120/240 Hz. *Caveats: XPR pixel-shift (not native 4K addressability); single-chip color-wheel — disable all image processing, use low-latency game mode.* [B&H listing](https://www.bhphotovideo.com/c/product/1686755-REG/benq_tk700_3200_lumen_4k_uhd.html) | **$1,499** |
 | **2nd HDMI cable** (Premium High-Speed, 18 Gbps) | Passthrough = source→FPGA→projector needs two; kit ships one | ≈ $15–30 |
 | **Global-shutter MIPI camera** (+ possible adapter) | *Likely* — bundled IMX334 is rolling-shutter; global shutter is usually preferred for fringe capture synced to projector frames. Skip if rolling shutter is acceptable for your scenes. | varies |
+| **FMC MIPI CSI-2 RX card** (multi-port, FFC/ribbon) | *If using a ribbon-cable camera instead of the bundled J5 daughtercard* — a VITA 57.1 FMC LPC card with standard CSI FFC connectors (e.g. 4× 4-lane). **Must be RX-capable** (Microchip's VIDEO-DC-MIPITX is TX-only). See §11. Consumes the FMC slot. | ≈ $100–300 |
+| **FMC GPIO breakout** (AMD **HW-FMC-XM105-G**) | *Only if driving an external camera over the 4-line GPIO trigger* (the Au DB9 model). The kit has **no 0.1″ GPIO header** — user GPIO is only on the FMC HPC connector (J14), so a breakout is required to reach the pins. See §10. Set VADJ to 3.3 V (J24/J25). NCNR. | ≈ $159 |
 | Lenses (M12/CS-mount) for sensor board | Confirm whether included with the dualcam board | ≈ $20–100 |
 | Host PC meeting Libero specs | Win 10/11 or RHEL/Ubuntu, ≥16–32 GB RAM, tens of GB disk | (likely owned) |
 | HDCP IP | *Only* if passing through copy-protected content; needs NDA. Not needed for SLI. | skip |
@@ -439,6 +441,107 @@ Pt's extra I/O makes a MIPI element easier to *fit*, not easier to *build*. Ultr
 
 ---
 
+## 10. External-camera GPIO access (FMC breakout)
+
+The architecture in §2 pulls the camera **into the fabric over MIPI**. But the Au's simpler
+model — an **external camera over a 4-line GPIO trigger** (trigger-out, first-frame-out,
+mode-in, ready-in, via the Br V2 → DB9) — is still a valid fallback on PolarFire. Two parts to
+it: the logic, and the physical pins.
+
+### The logic ports cleanly
+The 4-line protocol RTL (`cam_pace` debounce/reset, trigger / ready / mode / first-frame
+handshake) is vendor-neutral — it recompiles in Libero and just needs pin assignments. No
+redesign.
+
+### The pins are the catch — there is no easy GPIO header
+Unlike the Au (where the **Br V2** gave a literal 0.1″ GPIO header → DB9), the MPF300 Video Kit
+exposes **no 0.1″ pin header and no PMOD** (UG0856). User I/O is:
+
+| On-board I/O | Externally wireable? |
+|---|---|
+| **FMC HPC connector (J14)** — `HA0:12` + `LA0:33` ≈ 47 diff pairs (~90+ single-ended) + 8 XCVR lanes | ✅ the only route to arbitrary GPIO |
+| 12 user LEDs, 2 push-buttons (SW1/SW2), 4 DIP switches (SW6), reset (SW3) | ✗ tied to on-board parts, not broken out |
+
+So it is the **opposite of the Au's problem**: I/O-*rich*, but locked behind one FMC connector.
+To wire 4 camera lines you need an **FMC breakout card**:
+
+| Option | Price | Notes |
+|---|---|---|
+| **AMD HW-FMC-XM105-G** (XM105 debug card) | ≈ **$159** | **Recommended.** HPC; multiple **0.1″ headers** (jumper-wire ready) + SMA/clock. Passive VITA 57.1 → vendor-neutral, works on J14. NCNR. |
+| IAM Electronic FMC HPC→LPC Breakout | ≈ $234 | Passive; rows C/D/G/H → 1.27 mm pads + 2.54 mm grid (solder, not header). |
+| IAM Electronic FMC (LPC) Breakout | ≈ $170 | LPC seats in the HPC slot; a 4-line trigger lives entirely in the LPC region, so this suffices. |
+
+### Two gotchas
+1. **Set VADJ/VCCIO to 3.3 V** (jumpers **J24 → 3V3**, **J25 → 3.3 V**) so the GPIO bank matches
+   the camera's 3.3 V TTL lines — same level as the Au camera interface. Wrong VADJ → no level
+   match.
+2. **The board has one FMC slot — now three-way contended.** J14 is wanted by (a) this
+   external-GPIO-camera breakout, (b) the §8 host-link cards (USB3 / 10 GbE FMC), and (c) the
+   §11 FMC MIPI-camera card. Pick one. Using the **bundled J5 daughtercard** for the camera frees
+   the FMC for a host link or GPIO breakout; putting the camera on the **FMC** (§11) consumes it.
+
+---
+
+## 11. Camera ingest over FMC (MIPI CSI-2)
+
+The chosen camera path: use the FMC slot for a **multi-port MIPI CSI-2 RX card with standard
+ribbon (FFC) connectors**, rather than the proprietary J5 daughtercard.
+
+### Why FMC instead of J5
+The CSI-2 RX port **J5** is a **Microchip-proprietary board-to-board mezzanine** (2× 4-lane MIPI
++ clk + I²C + power → Bank 2), built only to mate the bundled dual-IMX334 card. There is **no
+off-the-shelf J5 → ribbon adapter** — adapting it directly means a custom mezzanine PCB. The FMC
+route avoids that: a **VITA 57.1 FMC LPC MIPI card** presents standard CSI **FFC** connectors
+(e.g. 4× 4-lane / RPi-style) and routes the D-PHY to FMC LA pairs.
+> **Must be RX-capable.** Microchip's **VIDEO-DC-MIPITX is TX-only** (FPGA→Pi) — not for camera
+> input. Use an RX card (e.g. the open-source CircuitValley FMC LPC MIPI card, or a 4-port equiv.).
+
+### The IP — free, and not locked to J5
+Microchip ships the **MIPI CSI-2 Receiver Decoder IP** (v5.1):
+
+| Property | Value |
+|---|---|
+| Lanes | **1 / 2 / 4 / 8** (4-pixels-per-clock in 4-/8-lane mode) |
+| PHY | D-PHY |
+| Data types | RAW-8/10/12/14/16, RGB-888, embedded |
+| Output | Native, **AXI4-Lite Video**, **AXI4-Stream Video** |
+| Licensing | **Free** as encrypted Verilog (clear-text RTL is license-locked) |
+
+**Why it runs over FMC, not just J5:** the IP does not do the D-PHY electrically — per UG it "must
+be used in conjunction with the PolarFire **MIPI IOD Generic** interface blocks and a **PLL**." That
+front-end is built from PolarFire's **`IOD Generic` (IOG) I/O primitives + PLL**, which are
+**pin/bank-based** — instantiate them on the FMC LA pairs and the same decoder receives the camera
+over the FMC. The bundled card merely happens to route to Bank 2; nothing forces that.
+
+### The ingest chain (all Microchip-provided)
+```
+FMC MIPI card → [PF IOD Generic + PLL] → MIPI CSI-2 Rx Decoder → AXI4-Stream
+                 (D-PHY front-end)         (free IP)               ↓
+  CoreI2C (sensor init) ───────────────────────────────→ Bayer/CFA → image
+                                                           pipeline → Video DMA → DDR4
+```
+- **PF_IOD Generic + PLL** — D-PHY RX front-end
+- **CoreI2C** — per-sensor register init
+- **MIPI Training Lite IP** — recommended for **>500 Mbps/lane**
+- Bayer / image-enhancement / **Video DMA** — the DG0849 / reference-design blocks
+
+For a **4-port** card: instantiate **one Rx Decoder per active camera** (or 8-lane mode for one
+high-bandwidth sensor).
+
+### Verify before committing
+1. **MIPI-D-PHY-capable bank + VCCIO** on the FMC LA pins — D-PHY uses sub-LVDS-class I/O; confirm
+   in the kit pinout that enough FMC LA pairs land on a bank the IOD Generic supports for MIPI (the
+   FMC card supplies the termination). The one electrical check.
+2. **Per-lane rate ceiling (IOD path).** `>500 Mbps` → add Training Lite IP; `≥1.5 Gbps` → de-skew
+   packets unsupported. The IOD/GPIO D-PHY path is lower than the transceiver-based VIDEO-DC-MIPITX
+   (2.5 Gbps/lane) — budget the sensor's HS line rate against it.
+
+**Net:** camera-over-FMC is fully supported by free Microchip IP — same CSI-2 Rx Decoder, just with
+its IOD-Generic front-end placed on FMC pins. The real per-sensor work is the I²C init + matching
+the decoder to the sensor's format/lane count, not IP availability.
+
+---
+
 ## Sources
 - [PolarFire Video & Imaging Kit](https://www.microchip.com/en-us/development-tool/mpf300-video-kit-ns)
 - [UG0872 — PolarFire MPF300T Video Kit User Guide](https://www.mouser.com/datasheet/2/268/microsemi_polarfire_mpf300t_fpga_video_kit_user_gu-3420302.pdf)
@@ -464,3 +567,9 @@ Pt's extra I/O makes a MIPI element easier to *fit*, not easier to *build*. Ultr
 - [Alchitry Pt V2](https://shop.alchitry.com/products/alchitry-pt)
 - [Alchitry-Labs-V2 pinout source (PtV2TopPin / PtV2BottomPin)](https://github.com/alchitry/Alchitry-Labs-V2/tree/master/src/main/kotlin/com/alchitry/labs2/hardware/pinout)
 - [Xilinx XAPP894 — D-PHY (MIPI) solutions on 7-series](https://www.xilinx.com/support/documentation/application_notes/xapp894-d-phy-solutions.pdf)
+- [UG0856 — PolarFire FPGA Video Kit User Guide (board I/O: FMC HPC J14, LEDs, switches)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/PolarFire_FPGA_Video_Kit_UG0856_V2.pdf)
+- [AMD HW-FMC-XM105-G FMC XM105 Debug Card](https://www.xilinx.com/products/boards-and-kits/hw-fmc-xm105-g.html)
+- [IAM Electronic FMC breakout / loopback modules](https://www.iamelectronic.com/shop/produkt/fpga-mezzanine-card-fmc-hpc-to-lpc-breakout-board/)
+- [PolarFire MIPI CSI-2 Receiver Decoder IP User Guide (1/2/4/8 lanes, IOD Generic + PLL front-end)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/ip_cores/directcores/MIPI_CSI2_Receiver_Decoder_IP_UG.pdf)
+- [VIDEO-DC-MIPITX — MIPI Transmit FMC Card (TX-only; not for camera input)](https://www.microchip.com/en-us/development-tool/video-dc-mipitx)
+- [CircuitValley FMC LPC MIPI CSI/DSI card (open-source, TX+RX, RPi-style FFC)](https://www.circuitvalley.com/2026/02/fmc-linux-mipi-csi-dsi-camera-pga-zynq-ultrascale-xilinx-fpga-camera-emulation.html)
