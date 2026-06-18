@@ -266,6 +266,12 @@ function New-Group([string]$title, [int]$x, [int]$y, [int]$w, [int]$h) {
 }
 function Open-Help([string]$topic) {
     $f = Join-Path $HelpDir "$topic.html"
+    if (-not (Test-Path $f)) {
+        # Help pages can be removed mid-session (e.g. by Uninstall / clean up,
+        # which deletes the whole AlchitryFlasher tree). Regenerate on demand.
+        if (-not (Test-Path $HelpDir)) { New-Item -ItemType Directory -Path $HelpDir -Force | Out-Null }
+        Write-HelpFiles
+    }
     if (Test-Path $f) { Start-Process $f } else { Write-Log "! help page '$topic' missing" }
 }
 
