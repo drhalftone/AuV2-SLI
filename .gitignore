@@ -17,3 +17,11 @@ build_au2/
 clockInfo.txt
 dfx_runtime.txt
 tight_setup_hold_pins.txt
+
+# KiCad caches / local / transient files
+fp-info-cache
+*.kicad_prl
+*-backups/
+*.lck
+~*.lck
+.history/

@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "AlchitryLibrary")(type "KiCad")(uri "${KIPRJMOD}/AlchitryLibrary.pretty")(options "")(descr ""))
+)

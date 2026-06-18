@@ -1,0 +1,5 @@
+"Comment","Designator","Footprint","Qty","MPN","Manufacturer"
+"CAM A,CAM B","J1,J2","Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical","2","",""
+"CAM MASTER,CAM SLV1,CAM SLV2","J3,J9,J10","Connector_JST:JST_SH_SM07B-SRSS-TB_1x07-1MP_P1.00mm_Horizontal","3","SM07B-SRSS-TB(LF)(SN)","JST"
+"CRTL","J4","Connector_PinHeader_2.54mm:PinHeader_2x03_P2.54mm_Vertical","1","",""
+"BLU,GRN,HvsV,RED","J5-J8","Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical","4","",""
