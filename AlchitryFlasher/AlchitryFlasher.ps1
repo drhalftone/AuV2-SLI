@@ -130,7 +130,7 @@ PowerShell cannot talk to the board&rsquo;s FTDI flash chip directly.</p>
         bitstream = @'
 <h1>Bitstream</h1>
 <p>The <code>.bin</code> file that gets written to the FPGA. These come straight from the
-<a href="https://github.com/qishi-hu/AuV2-SLI">qishi-hu/AuV2-SLI</a> GitHub repo.</p>
+<a href="https://github.com/drhalftone/AuV2-SLI">drhalftone/AuV2-SLI</a> GitHub repo.</p>
 <table><tr><th>File</th><th>Use</th></tr>
 <tr><td>Au2_SLI.bin</td><td>The full structured-light illumination design.</td></tr>
 <tr><td>optomaML1080.bin</td><td>Variant tuned for 720p@60Hz on the specific Optoma ML1080 projector.</td></tr></table>

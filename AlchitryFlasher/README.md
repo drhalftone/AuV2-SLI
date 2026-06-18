@@ -52,7 +52,7 @@ Every control has a **(?)** button that opens a detailed local help page.
 
 A **bitstream** is the compiled configuration for the FPGA — the binary that
 defines the actual digital circuit the chip becomes when powered. These come from
-the **[qishi-hu/AuV2-SLI](https://github.com/qishi-hu/AuV2-SLI)** repository.
+the **[drhalftone/AuV2-SLI](https://github.com/drhalftone/AuV2-SLI)** repository.
 
 ### What the design does
 
@@ -218,7 +218,7 @@ delete the folder by hand.
 
 ## Credits & links
 
-- **Bitstream / SLI design:** [qishi-hu/AuV2-SLI](https://github.com/qishi-hu/AuV2-SLI)
+- **Bitstream / SLI design:** [drhalftone/AuV2-SLI](https://github.com/drhalftone/AuV2-SLI)
   (the HDMI pass-through is adapted from
   [hamsternz/Artix-7-HDMI-processing](https://github.com/hamsternz/Artix-7-HDMI-processing), MIT).
 - **Loader / IDE:** [Alchitry Labs V2](https://alchitry.com/alchitry-labs/) ·
