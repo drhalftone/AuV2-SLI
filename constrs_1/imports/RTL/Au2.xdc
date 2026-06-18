@@ -72,11 +72,13 @@ set_property -dict { PACKAGE_PIN "M12"   IOSTANDARD LVCMOS33    SLEW FAST} [get_
 set_property -dict { PACKAGE_PIN "P14"   IOSTANDARD LVCMOS33    SLEW FAST} [get_ports { led[7] }];                      # IO_L24N_T3_RS0_15             Sch = led7
 
 ####################################################################################################################
-#                              USB serial (FT2232H channel B) - status telemetry, TX only                          #
+#                       USB serial (FT2232H channel B) - status telemetry TX + 0xA5 control RX                     #
 ####################################################################################################################
-# Stock Alchitry Au (V1) USB-UART pin: FPGA TX -> PC. usb_rx (P15) left unconnected (one-way telemetry).
+# Alchitry Au USB-UART pins: usb_tx = FPGA TX -> PC (P16); usb_rx = PC -> FPGA (P15).
 set_property -dict { PACKAGE_PIN "P16"   IOSTANDARD LVCMOS33    SLEW SLOW} [get_ports { usb_tx }];
-set_false_path -to [get_ports usb_tx]
+set_property -dict { PACKAGE_PIN "P15"   IOSTANDARD LVCMOS33    PULLUP TRUE} [get_ports { usb_rx }];
+set_false_path -to   [get_ports usb_tx]
+set_false_path -from [get_ports usb_rx]
 
 ####################################################################################################################
 #                       HDMI-OUT DDC/HPD (Hd V2 port 1, bank 35) - TX-side EDID reading                            #
