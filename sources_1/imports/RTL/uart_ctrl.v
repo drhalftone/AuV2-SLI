@@ -24,6 +24,7 @@
 // Registers (read any address -> data, undefined reads return 0x00):
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
 //   0x01 VERSION = 0x01          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
+//   0x10 PINS    = {eff_sw[3:0], phys_sw[3:0]}  (RO -- active vs physical R/G/B/orient)
 //   0x13 SLICTRL = {7:sw_en,3:R,2:G,1:B,0:orient}  (R/W -- the one writable register)
 //==============================================================================
 module uart_ctrl #(
@@ -43,8 +44,9 @@ module uart_ctrl #(
     input  wire        tx_busy,
     output wire        tx_active,        // high while we own/need the TX line
 
-    // ---- live status byte surfaced through register 0x02 ----
-    input  wire [7:0]  led,
+    // ---- live status surfaced through registers ----
+    input  wire [7:0]  led,    // reg 0x02 -- video/camera handshake byte
+    input  wire [7:0]  pins,   // reg 0x10 -- {eff_sw[3:0], phys_sw[3:0]} (active vs physical switches)
 
     // ---- quasi-static control outputs (Stage 2: drive pixel_pipe) ----
     output reg  [7:0]  sli_ctrl,         // register 0x13
@@ -89,6 +91,7 @@ module uart_ctrl #(
             8'h01:   regread = VERSION;
             8'h02:   regread = led;
             8'h06:   regread = {6'b0, sli_ctrl[7], (corr_ld | lut_ld | lutv_ld)};
+            8'h10:   regread = pins;
             8'h13:   regread = sli_ctrl;
             default: regread = 8'h00;
         endcase

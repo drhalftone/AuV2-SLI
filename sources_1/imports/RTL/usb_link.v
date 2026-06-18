@@ -29,6 +29,10 @@ module usb_link #(
     input  wire        usb_rx,
     output wire        usb_tx,
 
+    // ---- pin-state readback (reg 0x10): physical switches + post-override value ----
+    input  wire [3:0]  phys_sw,          // raw newSW pins {R,G,B,orient} (async)
+    input  wire [3:0]  eff_sw,           // effective_sw after the 0x13 override (pixel_clk)
+
     // ---- Stage-2 control / table taps (safe to leave open) ----
     output wire [7:0]  sli_ctrl,
     output wire        sli_ctrl_en,
@@ -55,6 +59,13 @@ module usb_link #(
         vs0<=led[7]; vs1<=vs0; vs2<=vs1;
     end
     wire vs_rise = vs1 & ~vs2;
+
+    // 2FF sync of the quasi-static switch/override bits into clk100 (reg 0x10).
+    reg [3:0] psw0=0, psw1=0, esw0=0, esw1=0;
+    always @(posedge clk100) begin
+        psw0 <= phys_sw; psw1 <= psw0;
+        esw0 <= eff_sw;  esw1 <= esw0;
+    end
 
     // ---- status window + per-window vsync (frame) counter ----
     reg [31:0] win = 0; reg [15:0] vs_run = 0, vs_lat = 0; reg stat_tick = 0;
@@ -97,7 +108,7 @@ module usb_link #(
         .clk(clk100), .rst(rst),
         .rx_data(rx_data), .rx_valid(rx_valid),
         .tx_data(c_data), .tx_send(c_send), .tx_busy(c_tx_busy), .tx_active(c_active),
-        .led(led_s),
+        .led(led_s), .pins({esw1, psw1}),
         .sli_ctrl(sli_ctrl), .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),

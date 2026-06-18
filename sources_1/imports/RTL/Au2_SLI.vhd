@@ -272,6 +272,8 @@ architecture Behavioral of Au2_SLI is
                olp    : in  STD_LOGIC_VECTOR(7 downto 0);
                usb_rx : in  STD_LOGIC;
                usb_tx : out STD_LOGIC;
+               phys_sw : in STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
+               eff_sw  : in STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
                sli_ctrl    : out STD_LOGIC_VECTOR(7 downto 0);
                sli_ctrl_en : out STD_LOGIC;
                lut_loaded  : out STD_LOGIC;
@@ -320,6 +322,14 @@ architecture Behavioral of Au2_SLI is
 
     signal merge_dbg2 : std_logic_vector(15 downto 0);
     signal merge_dbg  : std_logic_vector(7 downto 0);
+
+    -- USB SLI-control override (register 0x13) of the physical newSW switch pins.
+    -- 0x13 = {7:sw_en, 3:R_en, 2:G_en, 1:B_en, 0:orient}; bits [3:0] map 1:1 to
+    -- pixel_pipe's sw / newSW. When sw_en=1 the USB value drives the datapath.
+    signal sli_ctrl_bus  : std_logic_vector(7 downto 0);   -- reg 0x13 (clk100 domain)
+    signal sli_ctrl_en_w : std_logic;                      -- = sli_ctrl_bus(7)
+    signal sli_sw_p0, sli_sw_p1 : std_logic_vector(4 downto 0); -- 2FF sync -> pixel_clk {en,R,G,B,orient}
+    signal effective_sw  : std_logic_vector(3 downto 0);   -- USB override or physical newSW
     signal por        : std_logic := '1';
     signal por_cnt    : integer range 0 to 15 := 0;
 
@@ -401,7 +411,8 @@ begin
         clk100 => clk100, led => led_i, dbg => debug, mrg => merge_dbg,
         tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
         usb_rx => usb_rx, usb_tx => usb_tx,
-        sli_ctrl => open, sli_ctrl_en => open, lut_loaded => open,
+        phys_sw => newSW, eff_sw => effective_sw,
+        sli_ctrl => sli_ctrl_bus, sli_ctrl_en => sli_ctrl_en_w, lut_loaded => open,
         corr_addr => "00000000",    corr_dout => open,
         lut_addr  => "0000000000",  lut_dout  => open,
         lutv_addr => "00000000000", lutv_dout => open );
@@ -655,12 +666,19 @@ begin
         if (blank = '0') then        -- active video: capture vsync's inactive level
             VPolarity <= vsync;
         end if;
+        -- 2FF sync the quasi-static USB SLI-control bits clk100 -> pixel_clk.
+        -- (clk100<->pixel_clk are async per set_clock_groups, so no extra timing exception.)
+        sli_sw_p0 <= sli_ctrl_en_w & sli_ctrl_bus(3 downto 0);
+        sli_sw_p1 <= sli_sw_p0;
     end if;
 end process;
 
-i_processing: pixel_pipe Port map ( 
+-- USB override (reg 0x13 bit7) selects USB R/G/B/orient over the physical switches.
+effective_sw <= sli_sw_p1(3 downto 0) when sli_sw_p1(4) = '1' else newSW;
+
+i_processing: pixel_pipe Port map (
         clk => pixel_clk, clk10 => clk10,
-        sw =>newSW,
+        sw =>effective_sw,
         trig =>trig, f_frm=> f_frm, 
         mode=>mode_buf, rdy=> rdy_buf ,
         vid_valid => vid_valid,
