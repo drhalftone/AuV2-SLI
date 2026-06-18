@@ -64,6 +64,18 @@ def read_table(ser, target, window=1.5):
     return None
 
 
+def telem_field(ser, key, win=1.2):
+    ser.reset_input_buffer(); time.sleep(win)
+    raw = ser.read(ser.in_waiting or 1).decode("latin1", "replace")
+    lines = [l for l in raw.replace("\r", "").split("\n") if key + "=" in l]
+    if not lines:
+        return None
+    for f in lines[-1].split():
+        if f.startswith(key + "="):
+            return f[len(key) + 1:]
+    return None
+
+
 def main():
     print(f"opening {PORT} @115200 ...")
     ser = serial.Serial(PORT, 115200, timeout=0.05)
@@ -101,6 +113,33 @@ def main():
         # 5) loaded flag visible in FLAGS 0x06
         fl = read_register(ser, 0x06)
         check("FLAGS 0x06 lut_loaded bit set after upload", fl is not None and (fl & 0x01), f"0x{fl:02X}" if fl is not None else "none")
+
+        # 6) 0x13 override of the physical switch pins, observed via 0x10 PINS.
+        #    0x10 = {eff_sw[3:0], phys_sw[3:0]}; eff_sw is literally pixel_pipe's sw input.
+        p0 = read_register(ser, 0x10)
+        phys0, eff0 = (p0 & 0x0F, (p0 >> 4) & 0x0F) if p0 is not None else (None, None)
+        check("PINS 0x10 readable; override off -> eff==phys", p0 is not None and eff0 == phys0,
+              f"phys=0x{phys0:X} eff=0x{eff0:X}" if p0 is not None else "none")
+        ov = (phys0 ^ 0x0F) & 0x0F if p0 is not None else 0x5   # differ from the switches
+        write_register(ser, 0x13, 0x80 | ov)                    # sw_en=1 + override nibble
+        check("read 0x13 == 0x80|ov", read_register(ser, 0x13) == (0x80 | ov), f"ov=0x{ov:X}")
+        p1 = read_register(ser, 0x10)
+        phys1, eff1 = (p1 & 0x0F, (p1 >> 4) & 0x0F) if p1 is not None else (None, None)
+        check("override ON: eff_sw (pixel_pipe input) follows USB", eff1 == ov, f"eff=0x{eff1:X} want 0x{ov:X}")
+        check("override ON: physical switches unchanged", phys1 == phys0, f"phys=0x{phys1:X}")
+        write_register(ser, 0x13, 0x00)                         # restore: override off
+        p2 = read_register(ser, 0x10)
+        check("override OFF: eff_sw reverts to physical", p2 is not None and ((p2 >> 4) & 0xF) == (p2 & 0xF) == phys0,
+              f"0x{p2:02X}" if p2 is not None else "none")
+
+        # 7) (informational) offline output top-left red via O= telemetry, R-enable on vs off.
+        #    Only differs in offline mode with red content at top-left; visual effect needs a projector.
+        write_register(ser, 0x13, 0x80 | 0x0E)   # sw_en + R=1 G=1 B=1 orient=0
+        o_on = telem_field(ser, "O")
+        write_register(ser, 0x13, 0x80 | 0x06)   # sw_en + R=0 (R disabled)
+        o_off = telem_field(ser, "O")
+        write_register(ser, 0x13, 0x00)
+        print(f"  info O= top-left out red: R-on={o_on} R-off={o_off} (offline-mode only)")
 
         print(f"\n{PASS} passed, {FAIL} failed")
         return 1 if FAIL else 0
