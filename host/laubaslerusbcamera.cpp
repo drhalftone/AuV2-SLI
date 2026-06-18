@@ -1,5 +1,7 @@
 #include "laubaslerusbcamera.h"
 
+#include <QtMath>
+
 using namespace Pylon;
 using namespace Basler_UsbCameraParams;
 
@@ -359,6 +361,104 @@ void LAUBaslerUSBCamera::onUpdateExposure(int microseconds)
     // SET THE CAMERA'S EXPOSURE
     if (camera && camera->IsOpen()) {
         camera->ExposureTime.SetValue(microseconds);
+    }
+}
+
+/****************************************************************************/
+/****************************************************************************/
+/****************************************************************************/
+void LAUBaslerUSBCamera::setCenterROI(double areaFraction)
+{
+    if (!camera || !camera->IsOpen()) {
+        return;
+    }
+    if (areaFraction <= 0.0) {
+        areaFraction = 1.0;
+    } else if (areaFraction > 1.0) {
+        areaFraction = 1.0;
+    }
+    // PER-DIMENSION FRACTION = sqrt(AREA FRACTION). e.g. 1/16 area -> 1/4 width & height.
+    double linFrac = qSqrt(areaFraction);
+
+    try {
+        // PLACE THE WINDOW OURSELVES, NOT AUTO-CENTERED
+        if (IsWritable(camera->CenterX)) {
+            camera->CenterX.SetValue(false);
+        }
+        if (IsWritable(camera->CenterY)) {
+            camera->CenterY.SetValue(false);
+        }
+        // MOVE OFFSETS TO MIN SO WIDTH/HEIGHT CAN REACH THE FULL SENSOR
+        if (IsWritable(camera->OffsetX)) {
+            camera->OffsetX.SetValue(camera->OffsetX.GetMin());
+        }
+        if (IsWritable(camera->OffsetY)) {
+            camera->OffsetY.SetValue(camera->OffsetY.GetMin());
+        }
+
+        int64_t maxW = camera->Width.GetMax();
+        int64_t maxH = camera->Height.GetMax();
+        int64_t incW = qMax((int64_t)1, (int64_t)camera->Width.GetInc());
+        int64_t incH = qMax((int64_t)1, (int64_t)camera->Height.GetInc());
+
+        int64_t newW = (int64_t)(maxW * linFrac) / incW * incW;
+        int64_t newH = (int64_t)(maxH * linFrac) / incH * incH;
+        newW = qBound((int64_t)camera->Width.GetMin(),  newW, maxW);
+        newH = qBound((int64_t)camera->Height.GetMin(), newH, maxH);
+
+        if (IsWritable(camera->Width)) {
+            camera->Width.SetValue(newW);
+        }
+        if (IsWritable(camera->Height)) {
+            camera->Height.SetValue(newH);
+        }
+
+        // CENTRE THE WINDOW ON THE SENSOR
+        int64_t incOX = qMax((int64_t)1, (int64_t)camera->OffsetX.GetInc());
+        int64_t incOY = qMax((int64_t)1, (int64_t)camera->OffsetY.GetInc());
+        int64_t offX = ((maxW - newW) / 2) / incOX * incOX;
+        int64_t offY = ((maxH - newH) / 2) / incOY * incOY;
+        offX = qBound((int64_t)camera->OffsetX.GetMin(), offX, (int64_t)camera->OffsetX.GetMax());
+        offY = qBound((int64_t)camera->OffsetY.GetMin(), offY, (int64_t)camera->OffsetY.GetMax());
+        if (IsWritable(camera->OffsetX)) {
+            camera->OffsetX.SetValue(offX);
+        }
+        if (IsWritable(camera->OffsetY)) {
+            camera->OffsetY.SetValue(offY);
+        }
+
+        numCols = (unsigned int)camera->Width.GetValue();
+        numRows = (unsigned int)camera->Height.GetValue();
+        emit emitROIChanged(numCols, numRows);
+    } catch (const GenericException &e) {
+        errorString = QString("ROI set failed: ").append(QString(e.GetDescription()));
+        emit emitError(errorString);
+    }
+}
+
+/****************************************************************************/
+/****************************************************************************/
+/****************************************************************************/
+void LAUBaslerUSBCamera::setTriggerDelayMicroseconds(int microseconds)
+{
+    if (!camera || !camera->IsOpen()) {
+        return;
+    }
+    try {
+        if (IsWritable(camera->TriggerDelay)) {
+            double v  = (double)microseconds;
+            double lo = camera->TriggerDelay.GetMin();
+            double hi = camera->TriggerDelay.GetMax();
+            if (v < lo) {
+                v = lo;
+            } else if (v > hi) {
+                v = hi;
+            }
+            camera->TriggerDelay.SetValue(v);
+        }
+    } catch (const GenericException &e) {
+        errorString = QString("Trigger delay set failed: ").append(QString(e.GetDescription()));
+        emit emitError(errorString);
     }
 }
 

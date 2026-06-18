@@ -46,6 +46,7 @@
 #define LAUAU_REG_VERSION   0x01
 #define LAUAU_REG_STATUS    0x02
 #define LAUAU_REG_FLAGS     0x06   // {1:usb_sw_en, 0:lut_loaded}
+#define LAUAU_REG_PINS      0x10   // {eff_sw[3:0], phys_sw[3:0]} = active vs physical R/G/B/orient
 #define LAUAU_REG_SLICTRL   0x13   // {7:sw_en, 3:R_en, 2:G_en, 1:B_en, 0:orient}
 #define LAUAU_ID_MAGIC      0x48
 

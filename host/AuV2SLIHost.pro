@@ -4,7 +4,8 @@
 # Prerequisites (adjust the paths below to your install):
 #   - Qt 5.15+/6 with the `serialport` module
 #   - libtiff (used by laumemoryobject)
-#   - Basler pylon SDK (USEBASLERUSBCAMERA) -- build with `CONFIG-=basler` to omit
+#   - Basler pylon SDK (USEBASLERUSBCAMERA) -- AUTO-DETECTED below; the app builds
+#     without it (only the live camera sweep is disabled).
 
 QT       += core gui widgets serialport
 
@@ -13,18 +14,35 @@ TARGET   = AuV2SLIHost
 CONFIG  += c++17
 DEFINES  += QT_DEPRECATED_WARNINGS
 
-# camera support is on by default; disable with `qmake CONFIG+=nobasler`
-CONFIG  += basler
-nobasler: CONFIG -= basler
+# ---- Basler pylon camera support: auto-detected & optional ------------------
+# qmake probes the standard pylon install locations below. If a pylon Development
+# tree is found, camera support is compiled in; otherwise it is skipped cleanly
+# (the app still builds -- only the live calibration sweep is unavailable).
+#   Force OFF         : qmake CONFIG+=nobasler
+#   Non-standard path : qmake PYLON_ROOT="C:/path/to/pylon X/Development"
+win32 {
+    isEmpty(PYLON_ROOT):exists("C:/Program Files/Basler/pylon 8/Development/include/pylon/PylonIncludes.h"): PYLON_ROOT = "C:/Program Files/Basler/pylon 8/Development"
+    isEmpty(PYLON_ROOT):exists("C:/Program Files/Basler/pylon 7/Development/include/pylon/PylonIncludes.h"): PYLON_ROOT = "C:/Program Files/Basler/pylon 7/Development"
+}
+unix:!macx: isEmpty(PYLON_ROOT):exists(/opt/pylon/include/pylon/PylonIncludes.h): PYLON_ROOT = /opt/pylon
+unix:macx:  isEmpty(PYLON_ROOT):exists(/Library/Frameworks/pylon.framework): PYLON_ROOT = /Library/Frameworks/pylon.framework
+
+nobasler: PYLON_ROOT =                          # honour an explicit force-off
+!isEmpty(PYLON_ROOT): CONFIG += basler
+
+basler:  message("AuV2SLIHost: camera ENABLED  (pylon: $$PYLON_ROOT)")
+!basler: message("AuV2SLIHost: camera DISABLED (no pylon SDK found; set PYLON_ROOT to enable)")
 
 HEADERS += laumemoryobject.h \
            lautonecorrectionwidget.h \
            lauauboard.h \
+           lauxyplotwidget.h \
            lauslicalibrationdialog.h
 
 SOURCES += laumemoryobject.cpp \
            lautonecorrectionwidget.cpp \
            lauauboard.cpp \
+           lauxyplotwidget.cpp \
            lauslicalibrationdialog.cpp \
            main.cpp
 
@@ -42,10 +60,11 @@ win32 {
     LIBS        += -L$$quote(C:/usr/Tiff/lib) -ltiff
 
     basler {
-        # Basler pylon 8 (adjust to "pylon 7" / lib version as installed)
-        INCLUDEPATH += $$quote(C:/Program Files/Basler/pylon 8/Development/include)
-        DEPENDPATH  += $$quote(C:/Program Files/Basler/pylon 8/Development/include)
-        LIBS        += -L$$quote(C:/Program Files/Basler/pylon 8/Development/lib/x64) -lPylonBase_v8_0
+        # pylon root auto-detected above (PYLON_ROOT). -lPylonBase_v8_0 suits pylon 8;
+        # for pylon 7 adjust the lib name to your installed version.
+        INCLUDEPATH += $$quote($$PYLON_ROOT/include)
+        DEPENDPATH  += $$quote($$PYLON_ROOT/include)
+        LIBS        += -L$$quote($$PYLON_ROOT/lib/x64) -lPylonBase_v8_0
     }
 }
 
