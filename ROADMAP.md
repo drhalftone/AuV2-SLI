@@ -87,10 +87,20 @@ and MIPI go.
 
 ## 5. Future board: DF40 stacking camera/config daughter board
 
-### 5.1 Connectors it mates (bottom side, plugs, facing down)
-- **80-pin `DF40C-80DP` @ Site C (38.0, 4.0)** — Bank B signals (camera/config) + GND.
-- **50-pin `DF40C-50DP` @ Site A (16.5, 41.0)** — **+3V3** (e.g. pin 1) + mechanical anchor.
-- (Site B / Bank A 80-pin is **not** placed — it's HDMI + Ft+ territory.)
+### 5.1 Connectors it mates (bottom side, plugs, facing down) — ALL THREE for retention
+
+Populate **all three** Br-stack connectors so the board clicks in firmly (3-point mating;
+two at Y=41, one at Y=4). Both 80-pin sites use the same part, so it's 2× `DF40C-80DP` +
+1× `DF40C-50DP`.
+
+| Site | X, Y | Part | Electrical role |
+|---|---|---|---|
+| A | 16.5, 41.0 | `DF40C-50DP` (50-pin) | **+3V3** (pin 1) + GND; rest NC. Power + mechanical. |
+| B | 38.0, 41.0 | `DF40C-80DP` (80-pin, Bank A) | **Mechanical ONLY** — all Bank A *signal* pins **No-Connect** (HDMI + future Ft+ territory; must not route). GND pins may tie to the board ground plane. |
+| C | 38.0, 4.0  | `DF40C-80DP` (80-pin, Bank B) | The 8 signals (B27–B36) + GND; rest NC. Signals + mechanical. |
+
+> ⚠️ Site B is there purely so the board doesn't cantilever/rock loose. Routing any Bank A
+> signal there would collide with HDMI / a future Ft+. Keep all its I/O pins NC.
 
 ### 5.2 Signal remap — Bank A low → Bank B high
 
