@@ -31,6 +31,7 @@
 #define LAUAU_OP_WRITE  0x57   // 'W'
 #define LAUAU_OP_READ   0x52   // 'R'
 #define LAUAU_OP_LUT    0x5B   // table upload
+#define LAUAU_OP_LUT_RD 0x72   // table readback ('r')
 #define LAUAU_ACK_OK    0x4B   // 'K'
 #define LAUAU_ACK_ERR   0x45   // 'E'
 #define LAUAU_ACK_NAK   0x4E   // 'N' (read-only / undefined register)
@@ -94,6 +95,17 @@ public:
     // --- pattern-table upload (TARGET 0x00 / 0x01) -----------------------------
     // data must be exactly 720 (LUT) or 1280 (LUT_V) bytes.
     bool uploadPatternTable(const QByteArray &data, quint8 target);
+
+    // --- table readback (op 0x72) ----------------------------------------------
+    // Read a target table back from the FPGA (256/720/1280 bytes by target). Returns
+    // the bytes on success, or an empty QByteArray on timeout/checksum/target error
+    // (see error()). Lets you verify an upload landed byte-for-byte.
+    QByteArray readTable(quint8 target);
+    // Convenience: read the 256-byte correction table (TARGET 0x02).
+    QByteArray readCorrectionTable()
+    {
+        return (readTable(LAUAU_TARGET_CORR));
+    }
 
     // --- SLI control register 0x13 convenience ---------------------------------
     // usbEnable=true makes USB drive the SLI controls (overrides the physical

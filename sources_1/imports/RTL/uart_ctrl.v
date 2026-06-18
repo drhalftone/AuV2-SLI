@@ -17,6 +17,9 @@
 //   upload : A5 5B TGT D[0..N-1] CK     CK: (TGT+sum(D)+CK)          == 0 mod256
 //            N = 720 (TGT 0x00) / 1280 (TGT 0x01) / 256 (TGT 0x02)
 //            -> 'K' ok / 'E' bad checksum|unknown target  (table committed only on 'K')
+//   rdtbl  : A5 72 TGT CK               CK: (0x72+TGT+CK)            == 0 mod256
+//            -> TGT D[0..N-1] CK2  with (TGT+sum(D)+CK2)==0 ; or 'E' on bad CK|target
+//            (same N per TGT as upload; lets the host verify an uploaded table)
 //
 // Registers (read any address -> data, undefined reads return 0x00):
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
@@ -56,7 +59,7 @@ module uart_ctrl #(
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
-    localparam [7:0] OP_W = 8'h57, OP_R = 8'h52, OP_L = 8'h5B;   // 'W' 'R' table
+    localparam [7:0] OP_W = 8'h57, OP_R = 8'h52, OP_L = 8'h5B, OP_LR = 8'h72;  // W R upload read-table('r')
     localparam [7:0] ACK_K = 8'h4B, ACK_E = 8'h45, ACK_N = 8'h4E;
     localparam [7:0] TGT_LUT = 8'h00, TGT_LUTV = 8'h01, TGT_CORR = 8'h02;
 
@@ -69,6 +72,14 @@ module uart_ctrl #(
     reg corr_ld = 1'b0, lut_ld = 1'b0, lutv_ld = 1'b0;
     assign lut_loaded  = corr_ld | lut_ld | lutv_ld;
     assign sli_ctrl_en = sli_ctrl[7];
+
+    // ---- readback (read-table) addressing ----
+    // During a readback the table RAMs are addressed by rd_idx; otherwise by the
+    // external Stage-2 read ports. UART byte time (~8680 clk) dwarfs the 1-cycle
+    // BRAM read latency, so the byte is always settled before it is sent.
+    reg [11:0] rd_idx   = 12'd0;
+    reg        rb_active = 1'b0;
+    reg [1:0]  rb_ph    = 2'd0;   // 0=target prologue, 1=data, 2=checksum
 
     // ---- register read mux ----
     function [7:0] regread;
@@ -89,30 +100,39 @@ module uart_ctrl #(
         S_WADDR = 4'd2,  S_WDATA = 4'd3,  S_WCK = 4'd4,
         S_RADDR = 4'd5,  S_RCK   = 4'd6,
         S_UTGT  = 4'd7,  S_UDATA = 4'd8,  S_UCK = 4'd9,
-        S_RESP  = 4'd10;
+        S_RESP  = 4'd10,
+        S_RTGT  = 4'd11, S_RTCK  = 4'd12, S_RTAB = 4'd13;
 
     reg [3:0]  state = S_SYNC;
     reg [7:0]  addr, dbyte, sum8;
     reg [11:0] cnt, len;             // up to 1280
     reg [1:0]  tgt;                  // 0=lut 1=lutv 2=corr
 
+    // readback byte source (selected by target)
+    wire [7:0] rb_dout = (tgt == 2'd2) ? corr_dout : (tgt == 2'd1) ? lutv_dout : lut_dout;
+
     // response buffer (1 or 3 bytes)
     reg [7:0]  resp [0:2];
     reg [1:0]  resp_len, resp_idx;
 
-    assign tx_active = (state == S_RESP);
+    assign tx_active = (state == S_RESP) || (state == S_RTAB);
 
-    // synchronous table read ports (kept always -> RAMs are not optimised away)
+    // synchronous table read ports (kept always -> RAMs are not optimised away).
+    // Address from rd_idx during a readback stream, else from the Stage-2 ports.
+    wire [7:0]  corr_ra = rb_active ? rd_idx[7:0]  : corr_addr;
+    wire [9:0]  lut_ra  = rb_active ? rd_idx[9:0]  : lut_addr;
+    wire [10:0] lutv_ra = rb_active ? rd_idx[10:0] : lutv_addr;
     always @(posedge clk) begin
-        corr_dout <= corr[corr_addr];
-        lut_dout  <= lut[lut_addr];
-        lutv_dout <= lutv[lutv_addr];
+        corr_dout <= corr[corr_ra];
+        lut_dout  <= lut[lut_ra];
+        lutv_dout <= lutv[lutv_ra];
     end
 
     // checksum helpers (8-bit wraparound)
-    wire [7:0] w_sum = OP_W + addr + dbyte + rx_data;   // == 0 -> good write CK
-    wire [7:0] r_sum = OP_R + addr + rx_data;           // == 0 -> good read CK
-    wire [7:0] u_sum = sum8 + rx_data;                  // == 0 -> good upload CK
+    wire [7:0] w_sum  = OP_W  + addr + dbyte + rx_data; // == 0 -> good write CK
+    wire [7:0] r_sum  = OP_R  + addr + rx_data;         // == 0 -> good read CK
+    wire [7:0] u_sum  = sum8  + rx_data;                // == 0 -> good upload CK
+    wire [7:0] rt_sum = OP_LR + dbyte + rx_data;        // == 0 -> good read-table request CK
     wire [7:0] rd_data = regread(addr);
     wire [7:0] rd_ck   = (8'h00 - addr - rd_data);      // -(addr+data) mod 256
 
@@ -122,6 +142,7 @@ module uart_ctrl #(
             state <= S_SYNC; tx_send <= 1'b0; sli_ctrl <= 8'h00;
             corr_ld <= 1'b0; lut_ld <= 1'b0; lutv_ld <= 1'b0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
+            rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
         end else begin
             tx_send <= 1'b0;                            // default: no TX strobe
 
@@ -131,9 +152,10 @@ module uart_ctrl #(
 
                 S_OP: if (rx_valid) begin
                     case (rx_data)
-                        OP_W: state <= S_WADDR;
-                        OP_R: state <= S_RADDR;
-                        OP_L: state <= S_UTGT;
+                        OP_W:  state <= S_WADDR;
+                        OP_R:  state <= S_RADDR;
+                        OP_L:  state <= S_UTGT;
+                        OP_LR: state <= S_RTGT;
                         SYNC:    state <= S_OP;          // re-sync on a fresh A5
                         default: state <= S_SYNC;
                     endcase
@@ -201,6 +223,46 @@ module uart_ctrl #(
                         resp[0] <= ACK_E;                // bad checksum
                     end
                     resp_len <= 2'd1; resp_idx <= 2'd0; state <= S_RESP;
+                end
+
+                // ---- read-table: A5 72 TGT CK ; reply TGT D[0..N-1] CK2 ---
+                S_RTGT: if (rx_valid) begin
+                    dbyte <= rx_data;                    // raw target (checksum + prologue)
+                    case (rx_data)
+                        TGT_LUT:  begin tgt <= 2'd0; len <= 12'd720;  end
+                        TGT_LUTV: begin tgt <= 2'd1; len <= 12'd1280; end
+                        TGT_CORR: begin tgt <= 2'd2; len <= 12'd256;  end
+                        default:  begin tgt <= 2'd0; len <= 12'd0;    end  // unknown -> rejected
+                    endcase
+                    state <= S_RTCK;
+                end
+                S_RTCK: if (rx_valid) begin
+                    if ((rt_sum != 8'h00) || (len == 12'd0)) begin   // bad CK or unknown target
+                        resp[0] <= ACK_E; resp_len <= 2'd1; resp_idx <= 2'd0;
+                        state <= S_RESP;
+                    end else begin
+                        sum8 <= dbyte;                   // checksum base = target
+                        rd_idx <= 12'd0; rb_active <= 1'b1; rb_ph <= 2'd0;
+                        state <= S_RTAB;
+                    end
+                end
+                S_RTAB: if (!tx_busy && !tx_send) begin
+                    case (rb_ph)
+                        2'd0: begin                      // prologue: echo target
+                            tx_data <= dbyte; tx_send <= 1'b1;
+                            rd_idx <= 12'd0; rb_ph <= 2'd1;
+                        end
+                        2'd1: begin                      // stream data bytes from RAM
+                            tx_data <= rb_dout; tx_send <= 1'b1;
+                            sum8 <= sum8 + rb_dout;
+                            if (rd_idx == len - 12'd1) rb_ph <= 2'd2;
+                            else rd_idx <= rd_idx + 12'd1;
+                        end
+                        default: begin                   // epilogue: checksum byte, done
+                            tx_data <= (8'h00 - sum8); tx_send <= 1'b1;
+                            rb_active <= 1'b0; state <= S_SYNC;
+                        end
+                    endcase
                 end
 
                 // ---- response: push resp[0..len-1] to the shared uart_tx --
