@@ -402,7 +402,9 @@ begin
         tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
         usb_rx => usb_rx, usb_tx => usb_tx,
         sli_ctrl => open, sli_ctrl_en => open, lut_loaded => open,
-        corr_dout => open, lut_dout => open, lutv_dout => open );
+        corr_addr => "00000000",    corr_dout => open,
+        lut_addr  => "0000000000",  lut_dout  => open,
+        lutv_addr => "00000000000", lutv_dout => open );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
