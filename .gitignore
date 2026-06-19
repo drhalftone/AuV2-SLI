@@ -25,3 +25,8 @@ fp-info-cache
 *.lck
 ~*.lck
 .history/
+
+# 3D STEP exports for the stacking board (regenerable; the Br stack assembly is ~52 MB).
+# Source 3D models in 3dmodels/ are kept - they are needed to regenerate the export.
+/LauCameraTrigger_Alchitry_Stack/*.step
+/LauCameraTrigger_Alchitry_Stack/*.stp
