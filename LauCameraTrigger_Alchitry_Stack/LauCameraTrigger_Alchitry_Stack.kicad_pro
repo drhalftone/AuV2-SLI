@@ -503,15 +503,15 @@
         "tuning_profile": ""
       },
       {
-        "name": "CamSig",
         "clearance": 0.1,
-        "track_width": 0.2,
-        "via_diameter": 0.4,
-        "via_drill": 0.2,
+        "name": "CamSig",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
         "priority": 0,
-        "tuning_profile": ""
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.2,
+        "tuning_profile": "",
+        "via_diameter": 0.4,
+        "via_drill": 0.2
       }
     ],
     "meta": {
@@ -658,7 +658,7 @@
         "uuid": "11111111-2222-3333-4444-555555555555"
       }
     ],
-    "used_designators": "",
+    "used_designators": "MASTER1",
     "variants": []
   },
   "sheets": [
