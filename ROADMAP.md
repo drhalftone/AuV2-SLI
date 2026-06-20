@@ -1,6 +1,6 @@
 # AuV2-SLI Hardware Expansion Roadmap
 
-_Last updated: 2026-06-18_
+_Last updated: 2026-06-20_
 
 Forward-looking plan for stacking add-on boards on the Alchitry Au V2 SLI system,
 and the **FPGA bank/pin allocation** needed so the current SLI design, a future
@@ -18,14 +18,31 @@ Top → bottom:
 
 ```
   [ camera/config daughter board ]   ← future (this roadmap)
-  [ Alchitry Br V2 ]                 ← breakout (GPIO + DF40 pass-through)
+  [ Alchitry Br V2 ]                 ← breakout (GPIO + DF40 pass-through) — OPTIONAL, see below
   [ Alchitry Hd V2 ]                 ← HDMI
   [ Alchitry Au V2 ]                 ← Artix-7 FPGA (mainboard)
 ```
 
 The daughter board is the **top** layer, so it only needs the connectors it taps
-(no pass-through above it). It mates the **Br's top sockets**, so it carries DF40
-**plugs (…DP) on its bottom side, facing down**.
+(no pass-through above it). It mates the **top sockets of whatever board is below it**,
+so it carries DF40 **plugs (…DP) on its bottom side, facing down**.
+
+**The Br is optional.** Every Alchitry board in the stack carries the *same* DF40
+sites — a socket on top and a plug on the bottom at the identical Site A/B/C geometry,
+with **pin = signal number** — so each site passes straight through the stack and the
+boards can be ordered freely. Because the daughter board taps the DF40 sites directly
+**and** provides its own breakout (JST-7 camera connectors + the SPDT config switches),
+it duplicates the Br's only two jobs — GPIO breakout + DF40 pass-through. The Bank B
+signals it needs (B27–B36) pass through untouched, so it can mate **directly onto the
+Hd** and the **Br drops out of the stack entirely**. Keep the Br only if you still want
+its 0.1″ header breakout for something else.
+
+> **Caveat — as currently routed it is a *terminal* (top-only) board.** J1–J3 are all
+> `…DP` plugs on the bottom (B.Cu); there are **no top-side `…DS` sockets**. So it can
+> sit on top of anything (in place of the Br, or above the Br), but **nothing can stack
+> above it**. To make it truly stack-order-independent (usable mid-stack with a board
+> above it), add the matching top-side `DF40C-50DS` / `DF40C-80DS` sockets so the signals
+> pass through it as well. See §5.4.
 
 ---
 
@@ -89,9 +106,10 @@ and MIPI go.
 
 ### 5.1 Connectors it mates (bottom side, plugs, facing down) — ALL THREE for retention
 
-Populate **all three** Br-stack connectors so the board clicks in firmly (3-point mating;
-two at Y=41, one at Y=4). Both 80-pin sites use the same part, so it's 2× `DF40C-80DP` +
-1× `DF40C-50DP`.
+Populate **all three** stack connectors so the board clicks in firmly (3-point mating;
+two at Y=41, one at Y=4) onto the board below it — the **Br or, if the Br is omitted, the
+Hd** (the sites are identical on both). Both 80-pin sites use the same part, so it's
+2× `DF40C-80DP` + 1× `DF40C-50DP`.
 
 | Site | X, Y | Part | Electrical role |
 |---|---|---|---|
@@ -101,6 +119,19 @@ two at Y=41, one at Y=4). Both 80-pin sites use the same part, so it's 2× `DF40
 
 > ⚠️ Site B is there purely so the board doesn't cantilever/rock loose. Routing any Bank A
 > signal there would collide with HDMI / a future Ft+. Keep all its I/O pins NC.
+
+### 5.4 Optional: make it fully stack-order-independent
+
+As routed today the board is **terminal** — bottom-side `…DP` plugs only, so it must be the
+topmost board. The whole Alchitry stack works because every board carries the same DF40 sites
+**through** (socket on top + plug on bottom, pin = signal number); this board breaks that chain
+because it has no top sockets.
+
+To let it live anywhere in the stack (e.g. with an Ft+ or another add-on above it), add the
+mating **top-side sockets** at the same Site A/B/C geometry — `DF40C-50DS` at A and `DF40C-80DS`
+at B and C — and pass each pin straight through (top socket pin _n_ ↔ bottom plug pin _n_,
+respecting the pin-1 mirror). That turns it into a true pass-through board at the cost of the
+extra sockets and the through-routing. If it will only ever be on top, leave it terminal.
 
 ### 5.2 Signal remap — Bank A low → Bank B high
 
@@ -149,11 +180,21 @@ GND available at B31/B32 (and every ≡1,2 mod 6 pin). +3V3 from the 50-pin (Sit
 
 ## 7. Future board: MIPI CSI-2 camera
 
+> **Now has its own design roadmap → [`MIPI_CSI2_ROADMAP.md`](MIPI_CSI2_ROADMAP.md).**
+> That document targets the **Alchitry Pt V2** (`XC7A100T-2FGG484I`) and carries the
+> **package-verified** pin map, the bank-13 / 1.8 V VCCO plan, the soft-D-PHY + CSI-2 gateway
+> design, and the XAPP894 front-end gate. The notes below are the original Au-centric reservation,
+> kept for context — see the dedicated roadmap for the current plan.
+
 - D-PHY receiver needs **differential pairs** on LVDS-capable pins (1 clock + 2–4 data lanes →
   ~6–10 pins).
 - **Reserve Bank B high, B39–B54**, and especially the **clock-capable pins
   A41/A42/A47/A48 and B41/B42/B47/B48** — keep these free for the CSI-2 clock/lanes.
 - The camera/config block sits at B27–B36, leaving B39+ clean for MIPI.
+
+> **Pt V2 update:** on the Pt V2 these signals land in **bank 13** (the only stack bank that
+> supports 1.8 V VCCO), with the clock lane on a verified **MRCC** pair. See
+> [`MIPI_CSI2_ROADMAP.md`](MIPI_CSI2_ROADMAP.md) §3 for the confirmed ball map.
 
 ---
 

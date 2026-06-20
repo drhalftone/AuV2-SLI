@@ -1,8 +1,16 @@
 # LauCameraTrigger_Alchitry_Stack — Schematic Build Spec
 
-_Daughter board that **stacks on the Alchitry Br V2 via the DF40 connectors** (top of stack:
+_Daughter board that **stacks onto the Alchitry DF40 connectors** (top of stack:
 this board → Br → Hd → Au) and routes camera/config signals on **Bank B**, instead of plugging
 into the Br's 0.1″ headers._
+
+> **The Br is optional.** Every Alchitry board carries the same DF40 sites with pin = signal
+> number, passing through the stack, so this board can mate the **Hd directly and the Br drops
+> out** — it taps the DF40 itself and provides its own breakout (the JST-7s + DIP switches), so
+> the Br's GPIO-breakout/pass-through role is redundant. **Caveat:** as routed it is a *terminal*
+> (top-only) board — J1–J3 are bottom-side `…DP` plugs with **no top-side `…DS` sockets**, so
+> nothing can stack above it. Adding the matching top sockets (see ROADMAP §5.4) would make it
+> fully stack-order-independent.
 
 See [`../ROADMAP.md`](../ROADMAP.md) for the bank-allocation rationale and Ft+/MIPI coexistence.
 
