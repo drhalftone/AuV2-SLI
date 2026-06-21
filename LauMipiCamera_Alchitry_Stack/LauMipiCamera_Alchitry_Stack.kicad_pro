@@ -503,12 +503,15 @@
         "tuning_profile": ""
       },
       {
-        "clearance": 0.1,
-        "name": "CamSig",
+        "clearance": 0.2,
+        "diff_pair_gap": 0.13,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.13,
+        "name": "MipiHS",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
+        "track_width": 0.13,
         "tuning_profile": "",
         "via_diameter": 0.4,
         "via_drill": 0.2
@@ -521,12 +524,16 @@
     "netclass_assignments": null,
     "netclass_patterns": [
       {
-        "netclass": "CamSig",
-        "pattern": "CAM_*"
+        "netclass": "MipiHS",
+        "pattern": "CAM_CK*"
       },
       {
-        "netclass": "CamSig",
-        "pattern": "SW_*"
+        "netclass": "MipiHS",
+        "pattern": "CAM_D0*"
+      },
+      {
+        "netclass": "MipiHS",
+        "pattern": "CAM_D1*"
       }
     ]
   },
