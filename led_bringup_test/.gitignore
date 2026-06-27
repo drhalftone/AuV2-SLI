@@ -1,0 +1,10 @@
+# Vivado build artifacts (regenerate with: vivado -mode batch -source build.tcl)
+.Xil/
+*.bit
+*.log
+*.jou
+*.rpt
+*.prm
+dfx_runtime.txt
+
+# Keep: sources (.v/.xdc/.tcl), docs (.md), and the flashable led_test.bin
