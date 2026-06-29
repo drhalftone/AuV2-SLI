@@ -139,7 +139,9 @@ to all three; mode/ready on the **master only** (slaves' pins 3 & 5 N/C to avoid
   J1 @ **(16.5, 41.0)**, J2 @ **(38.0, 41.0)**, J3 @ **(38.0, 4.0)**. Pin-1 mirrored.
 - DIP switches, resistors, JSTs on **top (F.Cu)** for access.
 - Board outline ≈ Br footprint (~61 × 52 mm; confirm vs `Br.step` / Alchitry mechanical dwg).
-- Ground pour both layers; GND stitching vias.
+- Ground pour both layers; GND stitching vias. **⚠️ rev 1 shipped with a fragmented GND
+  island here — see §10.1. The stitching must actually bond the switch / cap / tie-resistor
+  GND region to the DF40 connector grounds; a pad being on the `GND` net is NOT enough.**
 
 ---
 
@@ -149,3 +151,45 @@ to all three; mode/ready on the **master only** (slaves' pins 3 & 5 N/C to avoid
 - Tie-resistor value (10 kΩ suggested).
 - 1 vs 3 cameras (3 carried over from the 3xJST design).
 - **`Au2.xdc` Bank-B remap** (R11/R16/R10/R15/K5/N16/E6/M16) must land before fab.
+- ✅ **GND island fix (§10.1)** — done in layout (B.Cu GND traces to J3 + stitching via);
+  refill-zones / island review + fab bench-test still pending.
+
+---
+
+## 10. Errata — rev 1 (fabricated 2026) defects & fixes
+
+### 10.1 Floating GND island at the DIP-switch / cap region — FIXED in layout (pending fab verify)
+
+**Defect.** The front-copper (F.Cu) ground pour around the DIP switch is a **fragmented
+island** that never bonds to the DF40 connector grounds. Confirmed-floating copper:
+**SW1 GND pads 5/6/7**, the **tie-low resistor GND pads (R2/R4/R6/R8)**, and **both
+decoupling caps C1/C2**. Net-level DRC passes because every pad is logically on `GND` —
+it is a *fill-island*, not a netlist break, so the connectivity checker never flags it.
+
+**Why.** The local pour is pinched off by the switch keepout + SW1's `+3V3` pad + the
+signal traces, and no stitching via in that region bonds it to the B.Cu ground pour
+(where the DF40 grounds terminate). The `+3V3` rail is unaffected.
+
+**Symptoms (rev 1 board).**
+- RGB switches (`SW_BLUE/GREEN/RED` → GND) cannot pull their nets low → config select dead.
+- No 3.3 V across C1/C2 (caps ungrounded — not decoupling).
+- A DMM reads the floating "GND" as ~0 V vs `+3V3` (a high-Z meter follows the live probe);
+  `+3V3` measured against *true* ground is a correct 3.3 V.
+- HvsV is unaffected — SW1 ties `SW_HVSV` to `+3V3`, not the broken GND.
+
+**Bodge (rev 1 — CONFIRMED WORKING 2026-06-29).** Tie the island together (switch GND
+pads + R2/R4 tie-low GND pads) and jumper it to **true ground via a GND through-hole on the
+host Alchitry Pt V2** (system ground; the DF40 pins are too fine-pitch to hand-solder).
+Equivalent target if reachable: any **J3 GND pin**. ⚠️ Confirm the host hole is GND, not the
+power rail, before bonding. Verify island → true GND ≈ 0 Ω and 3.3 V across C1/C2 after.
+
+**Fix — applied in this PCB (2026-06-29).** Bonded the island to the DF40 ground with explicit
+copper rather than trusting pour fill:
+- Added **B.Cu GND traces** from the **SW1 GND pad (≈140.8, 99.8)** across to the **J3 / DF40
+  ground region (≈156.5, 102.8)**, tying the switch / cap / tie-low GND to true ground.
+- Added a **GND stitching via at (162, 97.5)** (F.Cu↔B.Cu) by the C1/C2 region.
+- Silk-labeled the switch positions (HvsV / Blue / Green / Red).
+
+**Still to verify (before/at next fab):** refill zones + manual filled-zone / island review
+(net-level DRC will NOT catch a fill-island), then bench-test `switch-GND → DF40 GND ≈ 0 Ω` and
+3.3 V across C1/C2 on the fabricated board. Rev 1 boards in hand still need the bodge above.
