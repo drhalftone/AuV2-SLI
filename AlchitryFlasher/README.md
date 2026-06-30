@@ -72,12 +72,11 @@ reconstruction. The system scans **1280×720 at 120 FPS**. In brief, the FPGA ca
 - Talk to the cameras over GPIO using the Vimba trigger/ready protocol (trigger out,
   start/stop in, FrameTriggerWait in; + a debug first-frame marker).
 
-### The two bitstream choices
+### The bitstream
 
 | File | Use it when |
 |------|-------------|
-| **`Au2_SLI.bin`** | The full SLI design — the default. |
-| **`optomaML1080.bin`** | A variant tuned for **720p @ 60 Hz** on the specific Optoma ML1080 projector. |
+| **`Au2_SLI_stackB.bin`** | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; runs an idle LED slider when nothing is connected). |
 
 ### Integrity
 
@@ -85,8 +84,7 @@ Each `.bin` is checked against a known **SHA-256** hash after download. A mismat
 **aborts the flash**, so a corrupted or tampered file never reaches the board:
 
 ```
-Au2_SLI.bin       E35AAEDDB0C43463B5638DE78E7B2818059AF74223B43C62AC0F6DCC49FF50A5
-optomaML1080.bin  87BD50378A2D8B0E8CB3F12614F384F79E82BE5EBA6E69FF42095A21020345E9
+Au2_SLI_stackB.bin  F252E70BF46E7AA508507A4C79C1101B408F6EAB25B5A95E6A3B67AD3915FFB5
 ```
 
 ---

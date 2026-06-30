@@ -39,15 +39,10 @@ $BitstreamDir = Join-Path $PSScriptRoot '..\Bitstream'
 
 # label -> @{ Path (local, preferred) ; Url (fallback) ; Sha256 (verified before flash) }
 $BinChoices = [ordered]@{
-    'Au2_SLI.bin (SLI system)' = @{
-        Path   = (Join-Path $BitstreamDir 'Au2_SLI.bin')
-        Url    = "$RepoRaw/Au2_SLI.bin"
-        Sha256 = 'E35AAEDDB0C43463B5638DE78E7B2818059AF74223B43C62AC0F6DCC49FF50A5'
-    }
-    'optomaML1080.bin (720p@60 Optoma)' = @{
-        Path   = (Join-Path $BitstreamDir 'optomaML1080.bin')
-        Url    = "$RepoRaw/optomaML1080.bin"
-        Sha256 = '87BD50378A2D8B0E8CB3F12614F384F79E82BE5EBA6E69FF42095A21020345E9'
+    'Au2_SLI_stackB.bin (SLI system, Bank-B stack board)' = @{
+        Path   = (Join-Path $BitstreamDir 'Au2_SLI_stackB.bin')
+        Url    = "$RepoRaw/Au2_SLI_stackB.bin"
+        Sha256 = 'F252E70BF46E7AA508507A4C79C1101B408F6EAB25B5A95E6A3B67AD3915FFB5'
     }
 }
 
@@ -132,8 +127,7 @@ PowerShell cannot talk to the board&rsquo;s FTDI flash chip directly.</p>
 <p>The <code>.bin</code> file that gets written to the FPGA. These come straight from the
 <a href="https://github.com/drhalftone/AuV2-SLI">drhalftone/AuV2-SLI</a> GitHub repo.</p>
 <table><tr><th>File</th><th>Use</th></tr>
-<tr><td>Au2_SLI.bin</td><td>The full structured-light illumination design.</td></tr>
-<tr><td>optomaML1080.bin</td><td>Variant tuned for 720p@60Hz on the specific Optoma ML1080 projector.</td></tr></table>
+<tr><td>Au2_SLI_stackB.bin</td><td>The full structured-light illumination design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected).</td></tr></table>
 <p>Each download is checked against a known <b>SHA-256</b> hash; a mismatch aborts the flash so a
 corrupted file never reaches the board. Verified files are cached and reused.</p>
 '@

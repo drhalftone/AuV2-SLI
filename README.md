@@ -91,20 +91,19 @@ OSERDES/BUFG ceiling, and the HDMI I/O is on 3.3 V TMDS HR banks (~1.2 Gb/s/ch).
 ## Flashing the board
 
 **Easiest — the included one-click flasher:** run `AlchitryFlasher/AlchitryFlasher.cmd`. It installs
-the Alchitry loader if needed, downloads/verifies `Bitstream/Au2_SLI.bin` (SHA-256 checked), and
+the Alchitry loader if needed, downloads/verifies `Bitstream/Au2_SLI_stackB.bin` (SHA-256 checked), and
 programs the board. See [`AlchitryFlasher/README.md`](AlchitryFlasher/README.md).
 
 **Manual:** with Alchitry Labs V2 (loader **2.0.52+**, required for the Au V2):
 
 ```
-alchitry.exe load --bin Bitstream/Au2_SLI.bin --board AuV2 --flash   # persistent
-alchitry.exe load --bin Bitstream/Au2_SLI.bin --board AuV2 --ram     # temporary (testing)
+alchitry.exe load --bin Bitstream/Au2_SLI_stackB.bin --board AuV2 --flash   # persistent
+alchitry.exe load --bin Bitstream/Au2_SLI_stackB.bin --board AuV2 --ram     # temporary (testing)
 ```
 
 | Bitstream | Use |
 |---|---|
-| `Bitstream/Au2_SLI.bin` | The full SLI design (default). |
-| `Bitstream/optomaML1080.bin` | Variant tuned for 720p@60 on the Optoma ML1080 projector. |
+| `Bitstream/Au2_SLI_stackB.bin` | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected). |
 
 ## Telemetry
 
@@ -190,7 +189,7 @@ Br V2, the `A28/29/31/32`-vs-`Au2.xdc` pin-label check, and the Camera-2 outputs
 ## Repository layout
 ```
 ├── README.md                  # this file
-├── Bitstream/                 # prebuilt bitstreams (Au2_SLI.bin is the default)
+├── Bitstream/                 # prebuilt bitstream (Au2_SLI_stackB.bin)
 ├── sources_1/                 # HDL sources (sources_1/imports/RTL)
 ├── constrs_1/                 # Xilinx design constraints (XDC)
 ├── Matlab/                    # .m scripts + LUT outputs (legacy pattern generation)
