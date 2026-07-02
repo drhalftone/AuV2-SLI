@@ -7,6 +7,12 @@
 		(legacy_teardrops no)
 	)
 	(paper "A4")
+	(title_block
+		(title "LauCameraTrigger_Alchitry_Stack")
+		(date "2026-07-02")
+		(company "Daniel L. Lau")
+		(comment 1 "https://drhalftone.com")
+	)
 	(layers
 		(0 "F.Cu" signal)
 		(2 "B.Cu" signal)
@@ -96,7 +102,19 @@
 		(property "Reference" "SLAVE1"
 			(at 0 -3.98 90)
 			(layer "F.SilkS")
+			(hide yes)
 			(uuid "eb60ba44-c7b4-448b-a141-e85b826f1944")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(fp_text user "SLAVE"
+			(at 0 -3.98 90)
+			(layer "F.SilkS")
+			(uuid "a1111111-0000-4000-8000-000000000002")
 			(effects
 				(font
 					(size 1 1)
@@ -1000,7 +1018,7 @@
 				)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "1k"
 			(at 0 1.83 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -1044,7 +1062,7 @@
 				(pins "1" "2")
 			)
 		)
-		(attr smd dnp)
+		(attr smd)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
 			(start -0.727064 0.91)
@@ -1296,7 +1314,7 @@
 				)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "1k"
 			(at 0 1.83 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -1340,7 +1358,7 @@
 				(pins "1" "2")
 			)
 		)
-		(attr smd dnp)
+		(attr smd)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
 			(start -0.727064 0.91)
@@ -1435,7 +1453,19 @@
 		(property "Reference" "MASTER1"
 			(at 0 -3.98 90)
 			(layer "F.SilkS")
+			(hide yes)
 			(uuid "52e3c182-e238-408d-bb9d-f6fba8d9d672")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(fp_text user "MASTER"
+			(at 0 -3.98 90)
+			(layer "F.SilkS")
+			(uuid "a1111111-0000-4000-8000-000000000001")
 			(effects
 				(font
 					(size 1 1)
@@ -2669,7 +2699,19 @@
 		(property "Reference" "SLAVE2"
 			(at 0 -3.98 90)
 			(layer "F.SilkS")
+			(hide yes)
 			(uuid "bd9eb0d5-9ee7-40c9-95ec-7c256088cb1e")
+			(effects
+				(font
+					(size 1 1)
+					(thickness 0.15)
+				)
+			)
+		)
+		(fp_text user "SLAVE"
+			(at 0 -3.98 90)
+			(layer "F.SilkS")
+			(uuid "a1111111-0000-4000-8000-000000000003")
 			(effects
 				(font
 					(size 1 1)
@@ -6708,6 +6750,30 @@
 		)
 		(layer "Edge.Cuts")
 		(uuid "ec2ad02a-07ce-4d24-8f17-e82d76fedf62")
+	)
+	(gr_text "https://drhalftone.com"
+		(at 133 63.5 0)
+		(layer "F.SilkS")
+		(uuid "b2222222-0000-4000-8000-000000000001")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+			(justify left bottom)
+		)
+	)
+	(gr_text "Daniel L. Lau"
+		(at 133 66 0)
+		(layer "F.SilkS")
+		(uuid "b2222222-0000-4000-8000-000000000002")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+			(justify left bottom)
+		)
 	)
 	(gr_text "HvsV"
 		(at 143 92.5 0)
