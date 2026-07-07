@@ -605,11 +605,133 @@ can be held in reset. `pixel_pipe`/`mode_select`/`cam_pace`, the UART register-c
   on-the-fly patterns, no DDR, host PC does reconstruction — the MSS is **entirely unused** on
   either board.
 
+### SLI capture recipe — camera → CPU → host PC
+Because the SoC kit exposes the camera as a **standard Linux V4L2 device**, "grab a frame and get
+it to the host" is mostly a *software* job on the RISC-V — no custom driver, no host-link gateware.
+The vendor reference design already builds the raw-Bayer capture pipeline; you reuse it and swap the
+transport from H.264 to raw/phase.
+
+**The pipeline the reference design gives you** (verified — mpfs video-kit reference design):
+```
+IMX334 sensor  → /dev/v4l-subdev0   (SRGGB10 raw Bayer; also the test-pattern generator)
+MIPI CSI-2 IP  → /dev/v4l-subdev1   (serial → parallel)
+Video DMA IP   → /dev/video0        (fabric writes frames into DDR; CPU reads them here)
+```
+
+**Step 1 — sanity check without a lens (verified Microchip controls).** The sensor subdev has a
+built-in test-pattern generator, so you can prove the whole camera→CPU→host path before optics:
+```bash
+v4l2-ctl -d /dev/v4l-subdev0 --set-ctrl=test_pattern=1   # 1=vertical bars, 2=horizontal, 0=off
+v4l2-ctl -d /dev/video0 --list-formats-ext               # confirm SRGGB10 + resolutions
+```
+
+**Step 2 — grab a frame to the CPU (standard V4L2 — adapt to your app).** `/dev/video0` is an
+ordinary capture node, so any V4L2 client works; this is where the SLI reconstruction code hooks in:
+```bash
+# one raw frame to a file
+v4l2-ctl -d /dev/video0 --set-fmt-video=width=1920,height=1080,pixelformat=RG10 \
+         --stream-mmap --stream-count=1 --stream-to=frame0.raw
+```
+For programmatic access, the kernel's canonical `VIDIOC_QBUF` / `VIDIOC_DQBUF` mmap loop
+(`capture.c`) runs unmodified — dequeue a buffer, that pointer is the frame in DDR, feed it to your
+demosaic / phase math on the CPU (or hand its physical address back to a fabric block).
+
+**Step 3 — transfer to the host PC over GbE (adapt from AN4529).** AN4529 streams H.264 over
+Ethernet with GStreamer + an SDP/RTP receiver (VLC on the PC). For SLI, drop the lossy encoder and
+send **raw** (fringe phase must not be compressed):
+```bash
+# board (sender) — raw frames over RTP/UDP to the host at 192.168.1.100
+gst-launch-1.0 v4l2src device=/dev/video0 ! video/x-bayer,format=rggb,width=1920,height=1080 \
+  ! rtpvrawpay ! udpsink host=192.168.1.100 port=5000
+```
+```bash
+# host PC (receiver)
+gst-launch-1.0 udpsrc port=5000 caps="application/x-rtp,media=video,encoding-name=RAW,..." \
+  ! rtpvrawdepay ! queue ! filesink location=capture.raw
+```
+For a lossless-but-smaller link use TCP (`tcpserversink` / `tcpclientsrc`) or a plain socket from
+your own C capture program; for bulk raw at 240 fps confirm the GbE 1.25 Gbps ceiling isn't
+exceeded (1920×1080×10-bit×240 ≈ 5 Gbps — ROI/bin down, or send **phase maps only**, which is the
+whole point of §4).
+
+> **What's verified vs. what you adapt:** the device nodes and the `v4l2-ctl` test-pattern/OSD
+> controls are straight from Microchip's demo. The `--stream-to` capture and the GStreamer raw-RTP
+> transport are standard Linux V4L2/GStreamer you retarget from AN4529's H.264 flow — a transport
+> swap, not new IP. Confirm the exact `media-ctl` link/format setup for your resolution against the
+> running board's `media-ctl -p` topology.
+
+**SLI-specific note:** capture must be **synchronized to the projected pattern** (§7). Keep VSYNC
+ownership and the trigger FSM in **fabric**; the V4L2 path above is for moving the *already-captured*
+frame off-chip. The RISC-V reads `/dev/video0`, runs unwrap/calibration/triangulation (your `host/`
+Qt code ported per §12), and ships **phase maps** — not raw frames — over GbE, collapsing the
+bandwidth problem.
+
 ### Strategic call
 The SoC kit's value *is* the RISC-V host + GbE + mikroBUS. If the intent is **"fabric owns the FSM
 + host commands, like the Au,"** the **plain MPF300 kit is the cleaner match** (fabric DDR, no MSS
 at all). Choose the SoC kit only if you want its **peripherals** (mikroBUS GPIO, native GbE) and/or
 the **on-board reconstruction host** — even if the control plane stays in fabric.
+
+---
+
+## 13. Bring-up test ladder (small standalone builds + prior art)
+
+A de-risking sequence where **each rung is the smallest build that proves exactly one thing**, so a
+failure localizes to one layer. The three targets we care about most — **4K passthrough with SLI
+pixel replacement**, **4K60 SLI generation with no source**, and **camera raw → host over
+Ethernet** — sit at the top of three independent columns (marked ⭐). Everything below a ⭐ is the
+de-risking step that makes it debuggable.
+
+The **"Proven by"** column is the key result of the online survey: *almost every rung already exists
+as a shipped Microchip reference design or IP.* Only the SLI-specific sync rungs (E1/E2) are
+genuinely new — and even those have close structural prior art (DG0849's frame-sync + the Au's own
+`cam_pace`).
+
+Legend: **GW** = FPGA bitstream (`.job`/`.bin`); **SW** = host/Linux program on a stable bitstream.
+Prior-art confidence: ✅ direct reference design exists · 🟡 assemble from documented IP · 🔶 novel
+(nearest analog cited).
+
+### A. Board & toolchain smoke tests
+| ID | Type | Test / proves | Reuse | Pass criterion | Proven by |
+|---|---|---|---|---|---|
+| **A0** | GW | Blinky / LED walk — toolchain + fabric clock | — | LEDs count | ✅ `mss-gpio` example + Icicle minimal bring-up |
+| **A1** | GW | UART hello + echo — telemetry channel | `uart_tx.v`, `status_line.v` | string on console, echo round-trips | ✅ `mss-mmuart-interrupt` example |
+| **A2** | GW | DDR4 memory BIST — §4 frame buffer substrate | — | 0 errors, full-address sweep | ✅ DG0808 (PCIe+DDR4), Memory Controller UG + Memory Log Analyzer |
+| **A3** | SW | (SoC) Linux boot + `ping`/`iperf3` — MSS + hardened GEM + GbE | — | ~900 Mbps to host | ✅ Yocto BSP + mainline `macb` driver |
+
+### B. HDMI I/O ladder
+| ID | Type | Test / proves | Reuse | Pass criterion | Proven by |
+|---|---|---|---|---|---|
+| **B1** | GW | HDMI TX color bars @4K60, no source — TX PHY + timing + sink EDID read | `video_timing_gen_rt.v` | clean 4K60 bars on projector | ✅ HDMI TX IP UG + UG0682 Pattern Generator IP |
+| **B2** | GW | HDMI RX lock & report — RX PHY + EDID serve | `edid_*`, `usb_status.v` | UART reports incoming 4K timing | ✅ HDMI RX IP UG (UG0863) |
+| **B3** | GW | 4K60 raw passthrough (loopback), no processing | — | PC desktop on projector, transparent | ✅ **AN4768** (HDMI loopback) |
+| **B4 ⭐** | GW | **Passthrough + SLI pixel replacement** + TLP detect + UART | `pixel_pipe.v` (widen to 4 ppc) | SLI pixels in stream @4K60; TLP events over UART | ✅ **DG0849** (edge-detect = read→modify→emit) + AN4768 insertion point |
+
+### C. SLI generation ladder
+| ID | Type | Test / proves | Reuse | Pass criterion | Proven by |
+|---|---|---|---|---|---|
+| **C1 ⭐** | GW | **On-chip SLI pattern gen → HDMI TX @4K60, no source** | `pixel_pipe` pattern path, index/LUT ROMs, `video_timing_gen_rt.v` | fringe patterns cycling on projector @4K60 | ✅ Video Kit demo ships an on-chip TPG that **streams video out the HDMI 2.0 TX with no HDMI input** (UG0850 + HDMI 2.0 Solution page: *"once the device is programmed, the test pattern generator will start streaming the video data"*); HDMI TX IP + path spec'd and demonstrated to **4K60** (4-ppc, 18 Gbps — UG0862), the top of the demo's 720p30→4K60 range. **One hardware-config check:** confirm the standalone TPG's power-up/DIP-selected mode is 4K60 (TPGs sometimes default to 1080p even when the datapath supports 4K60) — a resolution-select setting in UG0850's mode table, not a capability gap. |
+| **C2** | GW | Mode select passthrough ↔ generated (internal, not GPIO) | `mode_select`, `mode_table.vh` | glitch-free toggle | 🟡 B4+C1 composition (no single ref, both halves proven) |
+
+### D. Camera ingest ladder
+| ID | Type | Test / proves | Reuse | Pass criterion | Proven by |
+|---|---|---|---|---|---|
+| **D1** | GW | MIPI CSI-2 RX lock + frame counter — D-PHY + decoder + sensor I²C init | — | steady frame count at sensor fps | ✅ DG0849 + MIPI CSI-2 Rx Decoder IP UG |
+| **D2** | GW | Camera → DDR4 → HDMI TX (see camera on projector) | — | live image displayed | ✅ **DG0849** (exactly this pipeline) |
+| **D3** | SW | (SoC) Camera → `/dev/video0` → one raw frame to file | §12 recipe | valid SRGGB10 frame opens on host | ✅ video-kit reference design (V4L2 `/dev/video0`) |
+| **D4 ⭐** | SW | **Camera → raw pixels → host PC over Ethernet** | §12 recipe (raw, not H.264) | host reconstructs frames; meets GbE budget | ✅ **AN4529** (video-over-Ethernet; swap encoder→raw) |
+
+### E. Integration & sync (the genuinely new work)
+| ID | Type | Test / proves | Reuse | Pass criterion | Proven by |
+|---|---|---|---|---|---|
+| **E1** | GW | VSYNC → camera-trigger sync, timing over UART — fabric owns timebase (§7) | Au `cam_pace` handshake logic | trigger-to-VSYNC jitter ≈ 1 pixel clock | 🔶 novel; nearest: DG0849 display-sync + Au `cam_pace` |
+| **E2** | GW/SW | Closed loop: advance pattern → fire capture → N phase frames in DDR4 | E1 + C1 + D2 | N synchronized captures/pattern set, dumpable to host | 🔶 novel (the SLI acquisition core); validate vs. golden Qt pipeline |
+
+**How to read the survey result:** rows A0–D4 are all ✅ or 🟡 — meaning the entire I/O and data-path
+half of this project is *reassembly of shipped Microchip designs*, not research. The **only 🔶 rows
+are E1/E2**, which is precisely the SLI value (§4) — so the risk is correctly concentrated in the one
+place that's actually novel, and everything feeding it is de-risked prior art. Build the ladder
+bottom-up per column; the first time you hit real unknowns is E1.
 
 ---
 
@@ -647,3 +769,15 @@ the **on-board reconstruction host** — even if the control plane stays in fabr
 - [PolarFire SoC Video Kit (MPFS250-VIDEO-KIT)](https://www.microchip.com/en-us/development-tool/mpfs250-video-kit)
 - [PolarFire SoC FPGA Video Kit User Guide (mikroBUS J49/J50, HDMI 2.0 SerDes2, GbE/USB/PCIe)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/PolarFire_SoC_FPGA_Video_Kit_User_Guide.pdf)
 - [polarfire-soc-video-kit-reference-design (Libero + Linux reference designs)](https://github.com/polarfire-soc/polarfire-soc-video-kit-reference-design)
+- [MPFS Video Kit embedded software user guide (V4L2 pipeline: /dev/v4l-subdev0/1, /dev/video0, SRGGB10)](https://github.com/polarfire-soc/polarfire-soc-documentation/blob/master/reference-designs-fpga-and-development-kits/mpfs-video-kit-embedded-software-user-guide.md)
+- [MPFS Video Kit H.264 demo (v4l2-ctl test-pattern / OSD controls)](https://github.com/polarfire-soc/polarfire-soc-documentation/blob/master/applications-and-demos/mpfs-video-kit-h264-demo.md)
+- [AN4529 — PolarFire SoC FPGA H.264 Video Streaming Over Ethernet (capture → CPU → host over GbE)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ApplicationNotes/ApplicationNotes/PolarFire_SoC_FPGA_H264_Video_Streaming_Over_Ethernet_Application_Note_AN4529.pdf)
+- [Linux macb (Cadence GEM) driver — PolarFire SoC GbE](https://cateee.net/lkddb/web-lkddb/MACB.html)
+- [polarfire-soc-bare-metal-examples (mss-gpio blinky, mss-mmuart — rungs A0/A1)](https://github.com/polarfire-soc/polarfire-soc-bare-metal-examples)
+- [icicle-kit-minimal-bring-up-design-bitstream-builder (minimal bring-up — A0)](https://github.com/polarfire-soc/icicle-kit-minimal-bring-up-design-bitstream-builder)
+- [DG0808 — PolarFire PCIe EndPoint + DDR4 Memory Controller demo (DDR4 test — A2)](https://ww1.microchip.com/downloads/aemdocuments/documents/fpga/ProductDocuments/UserGuides/microsemi_polarfire_fpga_pcie_endpoint_and_ddr4_memory_controller_data_plane_using_splash_kit_demo_guide_dg0808_v2.pdf)
+- [PolarFire / PolarFire SoC Memory Controller User Guide (DDR4 init/training, Memory Log Analyzer — A2)](https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/ProductDocuments/UserGuides/PolarFire_FPGA_PolarFire_SoC_FPGA_Memory_Controller_User_Guide_VB.pdf)
+- [UG0682 — SmartFusion2/PolarFire Pattern Generator IP User Guide (test-pattern/color-bar source — B1/C1)](https://ww1.microchip.com/downloads/aemdocuments/documents/fpga/ProductDocuments/UserGuides/microsemi_smartfusion2_polarfire_pattern_generator_user_guide_ug0682_v2.pdf)
+- [UG0850 — PolarFire FPGA Video Solution / Video Kit User Guide (on-chip TPG streams out HDMI TX, no source — C1)](https://www.mouser.com/pdfDocs/Microsemi_MPF300-VIDEO-KIT_UG.pdf)
+- [UG0862 — PolarFire HDMI TX IP User Guide (HDMI 2.0, 4K60, 1/2/4 pixels-per-clock, 18 Gbps — B1/C1)](https://ww1.microchip.com/downloads/aemdocuments/documents/fpga/ProductDocuments/UserGuides/microsemi_hdmi_tx_ip_user_guide_ug0862_v1.pdf)
+- [HDMI 2.0 Solution for PolarFire FPGAs (TPG "starts streaming video data" once programmed; 720p30→4K60)](https://www.microchip.com/en-us/solutions/industrial/smart-embedded-vision/hdmi)
