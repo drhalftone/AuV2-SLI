@@ -6,8 +6,10 @@
 //   * Filters it to {display modes} INTERSECT {FPGA pass-through window} and
 //     serves the merged block to the host on the INPUT DDC (edid_serve slave).
 //   * Drives the host hot-plug (hdmi_rx_hpa): waits for the first build before
-//     asserting; pulses ~300 ms on an output-display plug/unplug so the host
-//     re-reads the freshly merged EDID.
+//     asserting; pulses the HPD low-window on an output-display plug/unplug AND
+//     on any change in merged EDID content (e.g. a projector that swaps its
+//     warm-up placeholder EDID for its real one) so the host re-reads the freshly
+//     merged EDID without needing a manual replug.
 //
 //  Encapsulates i2c_master_edid + edid_builder + edid_serve + the controller so
 //  the (VHDL) pass-through top only needs to drop in one instance and wire the
@@ -154,13 +156,57 @@ module edid_merge (
     end
 
     //--------------------------------------------------------------------------
-    // Host hot-plug (HPD to the source). Two rules:
+    // Detect a CHANGE in the merged EDID *content* (not just monitor presence).
+    // A projector powered up alongside this board (e.g. off the projector's own
+    // USB) commonly serves a placeholder / safe-mode EDID during warm-up and only
+    // switches to its real EDID a few seconds later. The 0.5 s probe rebuilds and
+    // re-commits with the corrected modes, but monitor_present never toggles, so
+    // the presence-only HPD rule below never re-pulses HPD -- the host keeps the
+    // stale (wrong) merged block until the user physically replugs. Here we hash
+    // the bytes the builder writes into the served bank and, when a rebuild yields
+    // a different block, pulse edid_changed to force the HPD low-window (host
+    // re-reads the corrected EDID automatically).
+    //
+    // The builder stamps an incrementing per-build serial into bytes 12..15 and a
+    // fresh checksum into byte 127 on EVERY build (edid_builder.v cache-defeat), so
+    // those bytes always differ build-to-build -- exclude them or the signature
+    // would change every 0.5 s and drop HPD continuously.
+    //--------------------------------------------------------------------------
+    wire wr_volatile = (bld_wr_addr >= 8'd12 && bld_wr_addr <= 8'd15) ||
+                       (bld_wr_addr == 8'd127);
+    reg [15:0] edid_sig;        // rolling signature of the build in progress
+    reg [15:0] edid_sig_prev;   // signature of the last committed build
+    reg        edid_sig_valid;  // a prior signature exists to compare against
+    reg        edid_changed;    // 1-cycle: served EDID content differs from last
+    always @(posedge clk100) begin
+        edid_changed <= 1'b0;
+        if (rst) begin
+            edid_sig <= 16'h0; edid_sig_prev <= 16'h0; edid_sig_valid <= 1'b0;
+        end else begin
+            if (build_go)                        // new build -> clear accumulator
+                edid_sig <= 16'h0;
+            else if (bld_wr_en && !wr_volatile)  // order-sensitive rotate-xor of content bytes
+                edid_sig <= {edid_sig[14:0], edid_sig[15]} ^ {8'h00, bld_wr_data};
+            if (bld_done) begin                  // build finished -> compare vs previous
+                if (edid_sig_valid && (edid_sig != edid_sig_prev))
+                    edid_changed <= 1'b1;
+                edid_sig_prev  <= edid_sig;
+                edid_sig_valid <= 1'b1;
+            end
+        end
+    end
+
+    //--------------------------------------------------------------------------
+    // Host hot-plug (HPD to the source). Three rules:
     //   1. Only assert HPD high when there is actually an OUTPUT monitor to send
     //      video to (tx_hpd_db) AND a merged EDID has been built (built_valid).
     //      No monitor -> hold HPD low so the host never thinks a sink exists.
     //   2. On any change of that "sink present" condition (including first boot),
     //      hold HPD low for ~500 ms before re-asserting, so the source's >100 ms
     //      unplug-debounce trips and it fully re-reads EDID / re-negotiates.
+    //   3. On a change in merged EDID *content* while a sink is present (edid_changed,
+    //      e.g. projector finished warming up), do the same low-window pulse so the
+    //      host re-reads the corrected block without a manual replug.
     //--------------------------------------------------------------------------
     localparam [25:0] HPD_LOW = 26'd50_000_000;       // ~500 ms guaranteed low window
     reg  [25:0] hpd_cnt = HPD_LOW;
@@ -172,7 +218,7 @@ module edid_merge (
             hdmi_rx_hpa <= 1'b0; hpd_cnt <= HPD_LOW; present_q <= 1'b0;
         end else begin
             present_q <= sink_present;
-            if (sink_present != present_q) begin   // presence changed -> restart low window
+            if ((sink_present != present_q) || edid_changed) begin // presence OR content changed -> restart low window
                 hdmi_rx_hpa <= 1'b0; hpd_cnt <= HPD_LOW;
             end else if (!sink_present) begin       // no monitor -> stay disconnected
                 hdmi_rx_hpa <= 1'b0; hpd_cnt <= HPD_LOW;
