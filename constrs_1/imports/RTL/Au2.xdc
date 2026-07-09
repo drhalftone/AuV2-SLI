@@ -125,14 +125,14 @@ set_property -dict { PACKAGE_PIN "E2"    IOSTANDARD TMDS_33  }  [get_ports { hdm
 #####################################################################################################################
 ##                                          Bank A for Camera 1                                                  #
 #####################################################################################################################
-## A17    trigger ready 
-set_property -dict  { PACKAGE_PIN "H2"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_in[0]}];                   # IO_L1P_T0_AD0P_15             Sch = GPIO_20_P
-## A23  trigger
-set_property -dict  { PACKAGE_PIN "F2"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[0]}];                     # IO_L3P_T0_DQS_AD1P_15         Sch = GPIO_19_P
-## A29  first frame
-set_property -dict  { PACKAGE_PIN "G5"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[1]}];                      # IO_L20P_T3_A20_15             Sch = GPIO_18_P
-## A35 hdmi switch
-set_property -dict  { PACKAGE_PIN "G2"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {C1_in[1]}];        # IO_L19P_T3_A22_15  Sch = GPIO_17_P  (pulled low: default passthrough for color-bar test)
+## A17    trigger ready  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "H2"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_in[0]}];                   # IO_L1P_T0_AD0P_15             Sch = GPIO_20_P
+## A23  trigger  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "F2"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[0]}];                     # IO_L3P_T0_DQS_AD1P_15         Sch = GPIO_19_P
+## A29  first frame  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "G5"   IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[1]}];                      # IO_L20P_T3_A20_15             Sch = GPIO_18_P
+## A35 hdmi switch  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "G2"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {C1_in[1]}];        # IO_L19P_T3_A22_15  Sch = GPIO_17_P  (pulled low: default passthrough for color-bar test)
 #####################################################################################################################
 ##                                          Bank A for    Camera 2                                                  #
 #####################################################################################################################
@@ -148,14 +148,37 @@ set_property -dict  { PACKAGE_PIN "H5"   IOSTANDARD LVCMOS33   SLEW FAST } [get_
 #####################################################################################################################
 ##                                          Bank A for    newSW                                                #
 #####################################################################################################################
-## A5   Scan Orientation 
-set_property -dict  { PACKAGE_PIN "M6"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {newSW[0]}];        # A5 orientation: default 0 = vertical stripes
-## A6    Blue Enable
-set_property -dict  { PACKAGE_PIN "N9"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[1]}];          # A6 Blue enable: default ON
-## A11    Green Enable
-set_property -dict  { PACKAGE_PIN "K1"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[2]}];          # A11 Green enable: default ON
-## A12   Red Enable
-set_property -dict  { PACKAGE_PIN "L3"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[3]}];          # A12 Red enable: default ON
+## A5   Scan Orientation  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "M6"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {newSW[0]}];        # A5 orientation: default 0 = vertical stripes
+## A6    Blue Enable  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "N9"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[1]}];          # A6 Blue enable: default ON
+## A11    Green Enable  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "K1"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[2]}];          # A11 Green enable: default ON
+## A12   Red Enable  -- [BANK-B REMAP active: Bank-A line disabled]
+#set_property -dict  { PACKAGE_PIN "L3"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[3]}];          # A12 Red enable: default ON
+
+#####################################################################################################################
+##           STACKING-BOARD (DF40 daughter board) BANK-B REMAP  --  ACTIVE
+##  For the LauCameraTrigger_Alchitry_Stack board (taps Bank B / Site C, DF40C-80DP).
+##  Camera 1 + the 4 config switches now live on Bank B; the 8 Bank-A lines above are disabled.
+##  Balls verified vs Alchitry AuV2Pin.kt (V2). Pulls per ROADMAP.md 5.2. (Camera 2 J3/H5 stays Bank A.)
+#####################################################################################################################
+## B27  trigger ready (cam in)
+set_property -dict  { PACKAGE_PIN "R11"  IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_in[0]}];                       # B27
+## B28  trigger (cam out)
+set_property -dict  { PACKAGE_PIN "R16"  IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[0]}];                      # B28
+## B29  first frame (cam out)
+set_property -dict  { PACKAGE_PIN "R10"  IOSTANDARD LVCMOS33   SLEW FAST } [get_ports {C1_out[1]}];                      # B29
+## B30  mode / hdmi switch (cam in)  -- default low
+set_property -dict  { PACKAGE_PIN "R15"  IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {C1_in[1]}];        # B30
+## B33  scan orientation (HvsV)      -- default 0 = vertical
+set_property -dict  { PACKAGE_PIN "K5"   IOSTANDARD LVCMOS33   SLEW FAST  PULLDOWN TRUE } [get_ports {newSW[0]}];        # B33
+## B34  blue enable                  -- default ON
+set_property -dict  { PACKAGE_PIN "N16"  IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[1]}];          # B34
+## B35  green enable                 -- default ON
+set_property -dict  { PACKAGE_PIN "E6"   IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[2]}];          # B35
+## B36  red enable                   -- default ON
+set_property -dict  { PACKAGE_PIN "M16"  IOSTANDARD LVCMOS33   SLEW FAST  PULLUP TRUE } [get_ports {newSW[3]}];          # B36
 
 #####inter-clock false path######
 #set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT1]] -to [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]]

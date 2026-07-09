@@ -42,7 +42,7 @@ $BinChoices = [ordered]@{
     'Au2_SLI_stackB.bin (SLI system, Bank-B stack board)' = @{
         Path   = (Join-Path $BitstreamDir 'Au2_SLI_stackB.bin')
         Url    = "$RepoRaw/Au2_SLI_stackB.bin"
-        Sha256 = 'F252E70BF46E7AA508507A4C79C1101B408F6EAB25B5A95E6A3B67AD3915FFB5'
+        Sha256 = 'F42D6A612C20F048AF4FED9DC465D40A9556B6DFF2A4E6FF2AC5856F6E977627'
     }
 }
 

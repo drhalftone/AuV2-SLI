@@ -258,6 +258,16 @@ architecture Behavioral of Au2_SLI is
                usb_tx : out STD_LOGIC );
     end component;
 
+    -- "Sign of life" idle animation: slides one LED when no frames are running.
+    signal led_out   : std_logic_vector(7 downto 0);  -- final LED bus (status or idle slider)
+    signal connected : std_logic;  -- 1 = real HDMI input decoding OR output monitor present
+    component led_idle_anim is
+        Port ( clk100     : in  STD_LOGIC;
+               connected  : in  STD_LOGIC;
+               status_led : in  STD_LOGIC_VECTOR(7 downto 0);
+               led_out    : out STD_LOGIC_VECTOR(7 downto 0) );
+    end component;
+
     component edid_merge is
         Port ( clk100       : in    STD_LOGIC;
                rst          : in    STD_LOGIC;
@@ -392,24 +402,19 @@ begin
         mode_rd_data => mode_rd_data,
         edid_ok      => edid_ok );
     merge_dbg <= merge_dbg2(7 downto 0);
-    led (7) <= vsync;
-    led (6) <= hsync;
-    -- for test GPIO input pins
-    --led (5)   <= C1_in(1);    led (4)   <= C1_in(0);     led (3)   <= C2_in(1);    led (2)   <= C2_in(0);
-    
-    
-    led (5) <= VPolarity;
-    -- for SD debugging
-    -- verify clock selector
-    --led (4)   <= sel;    
-    led(4) <= sel; --selector
-    
-        
-    -- 4-line protocl pins
-    led(3) <= C1_in(1); --mode;
-    led(2) <= C1_in(0); --rdy;    
-    led (1)   <= f_frm;
-    led (0)   <= trig;
+    -- LED bus: normal status byte (led_i) when video is live, else the idle
+    -- "sign of life" slider. led_i bit layout matches the old per-bit mapping:
+    --   7=vsync 6=hsync 5=VPolarity 4=sel 3=mode(C1_in1) 2=rdy(C1_in0) 1=f_frm 0=trig
+    -- "Connected" = a real HDMI input is decoding OR a display is present on the
+    -- HDMI-OUT (its EDID/HPD). Both are 0 with nothing attached, even while the
+    -- offline pattern generator free-runs -- so the idle slider stays steady.
+    connected <= vid_valid or merge_dbg2(2);   -- dbg2(2) = edid_merge monitor_present
+    i_led_idle: led_idle_anim port map (
+        clk100     => clk100,
+        connected  => connected,
+        status_led => led_i,
+        led_out    => led_out );
+    led <= led_out;
 
     C1_out(0)  <= trig; 
     C1_out(1)  <= f_frm;
