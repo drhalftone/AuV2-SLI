@@ -4,6 +4,12 @@
 	(generator_version "10.0")
 	(uuid "11111111-2222-3333-4444-555555555555")
 	(paper "A3")
+	(title_block
+		(title "LauCameraTrigger_Alchitry_Stack")
+		(date "2026-07-02")
+		(company "Daniel L. Lau")
+		(comment 1 "https://drhalftone.com")
+	)
 	(lib_symbols
 		(symbol "Connector_Generic:Conn_01x07"
 			(pin_names
@@ -8671,7 +8677,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp yes)
+		(dnp no)
 		(uuid "9cf4737b-aa2d-461e-b206-3955f95f2679")
 		(property "Reference" "R1"
 			(at 350.52 65.8 0)
@@ -8684,7 +8690,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "1k"
 			(at 350.52 70.88 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -8845,7 +8851,7 @@
 		(in_bom yes)
 		(on_board yes)
 		(in_pos_files yes)
-		(dnp yes)
+		(dnp no)
 		(uuid "bce2e00a-83a5-46cb-84c7-661b91526358")
 		(property "Reference" "R7"
 			(at 350.52 161.8 0)
@@ -8858,7 +8864,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10k"
+		(property "Value" "1k"
 			(at 350.52 166.88 0)
 			(show_name no)
 			(do_not_autoplace no)

@@ -30,3 +30,12 @@ fp-info-cache
 # Source 3D models in 3dmodels/ are kept - they are needed to regenerate the export.
 /LauCameraTrigger_Alchitry_Stack/*.step
 /LauCameraTrigger_Alchitry_Stack/*.stp
+
+# Editor / IDE local files - keep only FPGA + PCB source in the repo
+.qtcreator/
+*.user
+*.user.*
+CMakeLists.txt.user*
+.vscode/
+.idea/
+*.autosave

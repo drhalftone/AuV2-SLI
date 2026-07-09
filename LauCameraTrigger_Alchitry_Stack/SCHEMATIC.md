@@ -48,7 +48,8 @@ See [`../ROADMAP.md`](../ROADMAP.md) for the bank-allocation rationale and Ft+/M
 | **J5** | JST SM07B-SRSS-TB | `Connector:Conn_01x07_Pin` | same | F.Cu | Camera SLV1 |
 | **J6** | JST SM07B-SRSS-TB | `Connector:Conn_01x07_Pin` | same | F.Cu | Camera SLV2 |
 | **SW1–SW4** | SPDT switch (or 4-pos SPDT DIP) | `Switch:SW_SPDT` ×4 | DIP/SMD SPDT (pick part) | F.Cu | HvsV / Blue / Green / Red |
-| **R1–R8** | resistor (10 kΩ typ) | `Device:R` | `Resistor_SMD:R_1206_3216Metric` | F.Cu | tie hi/lo, **DNP — populate ≤1 per line** |
+| **R1, R7** | **1 kΩ** (JLCPCB `C4410`, UNI-ROYAL `1206W4F1001T5E`) | `Device:R` | `Resistor_SMD:R_1206_3216Metric` | F.Cu | **populated** — pull-ups on the Basler ace open-collector cam outputs (CAM_READY, CAM_MODE) |
+| **R2–R6, R8** | resistor (10 kΩ typ) | `Device:R` | `Resistor_SMD:R_1206_3216Metric` | F.Cu | tie hi/lo spares, **DNP — populate ≤1 per line** |
 | **C1, C2** | 0.1 µF | `Device:C` | `Capacitor_SMD:C_0805_2012Metric` | F.Cu | +3V3 decoupling (optional) |
 
 > Verify the DF40 footprints are the **plug (DP)** gender with correct pad geometry and place them
@@ -109,6 +110,31 @@ Two 1206 positions per camera line — one to `+3V3`, one to `GND`. **Populate a
 > driver. Mark these "bench test only" on the silkscreen; the useful ones are the inputs
 > `CAM_READY` and `CAM_MODE`.
 
+### 5.1 Basler ace GPIO — populated pull-ups (R1, R7 = 1 kΩ)
+
+The Basler ace / ace 2 signal **outputs** (both the opto-isolated output Line 2 and the
+direct-coupled GPIO outputs, Line 3/4) are **open-collector** — internally a transistor pulls
+low, with only a weak (~2 kΩ, ace 2 R ~650 Ω) internal pull-up. To read a valid logic **high**
+on the FPGA side you must add an **external pull-up to +3V3**. That is exactly what "tie the pins
+high for a Basler camera" means here.
+
+The two camera lines that are **camera outputs → FPGA inputs** are `CAM_READY` (JST pin 5) and
+`CAM_MODE` (JST pin 3). So we populate their +3V3 tie-high positions:
+
+| Populated | Line | net | camera dir | why |
+|---|---|---|---|---|
+| **R1** | ready | `CAM_READY` | cam **out** (open-collector) | pull to +3V3 so idle/deasserted reads high |
+| **R7** | mode  | `CAM_MODE`  | cam **out** (open-collector) | pull to +3V3 so idle/deasserted reads high |
+
+`CAM_TRIG` (R3) and `CAM_PATTERN` (R5) are **camera inputs** driven by the FPGA — they do **not**
+need a pull-up, and tying the FPGA output high would fight its driver. Leave R3/R5 (and all
+tie-low R2/R4/R6/R8) **DNP**.
+
+**Value = 1 kΩ (`C4410`).** Basler's guidance: for logic-level use ~2 kΩ is sufficient; the
+minimum for external I/O < 30 VDC is ~600 Ω (the 50 mA load limit). At 3.3 V a 1 kΩ pull sinks
+only ~3.3 mA when the camera drives low — well within spec — and its lower value gives faster
+edges and better noise immunity on the EMI-susceptible direct-coupled lines than 10 kΩ.
+
 ---
 
 ## 6. Camera JST-7 wiring (Alvium 1800, master + 2 slaves)
@@ -148,7 +174,8 @@ to all three; mode/ready on the **master only** (slaves' pins 3 & 5 N/C to avoid
 ## 9. Open items
 - Confirm DF40 plug **footprints** (exact KiCad lib part + bottom-side mirror) against `Br.step`.
 - Pick the SPDT DIP switch part (4-position SPDT, or 4× discrete SPDT).
-- Tie-resistor value (10 kΩ suggested).
+- ✅ Tie-resistor value — **resolved: 1 kΩ (`C4410`) on R1/R7** for the Basler ace open-collector
+  outputs (see §5.1); remaining positions stay 10 kΩ DNP.
 - 1 vs 3 cameras (3 carried over from the 3xJST design).
 - **`Au2.xdc` Bank-B remap** (R11/R16/R10/R15/K5/N16/E6/M16) must land before fab.
 - ✅ **GND island fix (§10.1)** — done in layout (B.Cu GND traces to J3 + stitching via);

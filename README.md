@@ -72,6 +72,18 @@ stripped so the PC is only ever offered resolutions the board can actually pass.
 the block-0 timings **and the CEA-861 extension's Video Data Block**, so a mode a TV-style sink
 advertises only as a CEA VIC (e.g. **720p60 via VIC 4**) is still picked up and offered.
 
+### Hot-plug / EDID re-read
+The board owns the host-side hot-plug line: it holds HPD **low** until a projector is detected and a
+merged EDID has been built, then asserts it so the PC reads a valid block on first negotiation. It
+also **re-pulses HPD (a ~500 ms low window) whenever the merged EDID content changes**, not just on a
+projector plug/unplug. This matters when the board is powered *together with* the projector (e.g. off
+the projector's USB): many projectors serve a placeholder/safe-mode EDID during warm-up and switch to
+their real EDID a few seconds later. The periodic DDC probe rebuilds the merged block, and the
+content-change detector then forces the PC to re-read it — so the projector's real modes appear
+automatically, **without unplugging and replugging the PC's HDMI cable**. (The per-build serial and
+checksum bytes are excluded from the change detector so it fires only on real mode changes, not on
+every rebuild.)
+
 ### Offline output ceiling
 The offline (FPGA-generated) path is limited to a curated table (`mode_table.vh`) at or below an
 **~85 MHz pixel-clock ceiling** (set by what the output TMDS serializer can drive, 5× ≈ 425 MHz).
@@ -186,16 +198,48 @@ See the [folder README](LauCameraTrigger_Alchitry/README.md) for ordering/assemb
 build notes — DB-9 vs. JST connector choice, the Basler open-collector pull-up requirement on the
 Br V2, the `A28/29/31/32`-vs-`Au2.xdc` pin-label check, and the Camera-2 outputs-only caveat.
 
+## Hardware roadmap & other boards
+
+Beyond the original DB-9 breakout above, the repo carries the board family's evolution toward a
+direct-stacking, MIPI-camera future. Two roadmaps capture the plan:
+
+- [`ROADMAP.md`](ROADMAP.md) — hardware expansion: how add-on boards stack on the Alchitry
+  **DF40** connectors (the Br is *optional* — every board shares the same pass-through sites), plus
+  the FPGA bank/pin allocation needed for the current SLI design, a future **Ft+** (USB 3.0), and a
+  **MIPI CSI-2** camera to coexist.
+- [`MIPI_CSI2_ROADMAP.md`](MIPI_CSI2_ROADMAP.md) — design plan for a **custom MIPI CSI-2 receiver**:
+  a daughter board for a 22-pin camera plugging into the stack, with a hand-written soft D-PHY +
+  CSI-2 RX in the FPGA. Targets the **Alchitry Pt V2** (`XC7A100T-2`), with a package-verified
+  bank-13 pin map and an XAPP894 front end as the open gate.
+
+The newer board folders:
+
+| Board | What it is |
+|---|---|
+| [`LauCameraTrigger_Alchitry_3xJST/`](LauCameraTrigger_Alchitry_3xJST/) | The trigger breakout with the DB-9 replaced by 3× on-board JST-7 connectors (routed, fab outputs included). |
+| [`LauCameraTrigger_Alchitry_Stack/`](LauCameraTrigger_Alchitry_Stack/) | DF40 **stacking daughter board** — plugs into the Br/Hd stack instead of the 0.1″ headers; relocates the config switches to SPDT and broadcasts trigger to 3 cameras. See its [`SCHEMATIC.md`](LauCameraTrigger_Alchitry_Stack/SCHEMATIC.md). |
+| [`LauMipiCamera_Alchitry_Stack/`](LauMipiCamera_Alchitry_Stack/) | **MIPI CSI-2 camera board** (WIP) for a The Imaging Source 36S-series 22-pin sensor on the Pt V2: FFC on top, DF40 plugs on the bottom, soft D-PHY front end on bank 13, with HS-routing DRC rules. See its [`SCHEMATIC.md`](LauMipiCamera_Alchitry_Stack/SCHEMATIC.md). |
+
+> The MIPI board is an early scaffold (schematic + PCB generated off-GUI); open it in KiCad and run
+> ERC/DRC before relying on it. The current shipped bitstream still uses the GPIO-triggered cameras
+> described above.
+
 ## Repository layout
 ```
-├── README.md                  # this file
-├── Bitstream/                 # prebuilt bitstream (Au2_SLI_stackB.bin)
-├── sources_1/                 # HDL sources (sources_1/imports/RTL)
-├── constrs_1/                 # Xilinx design constraints (XDC)
-├── Matlab/                    # .m scripts + LUT outputs (legacy pattern generation)
-├── AlchitryFlasher/           # one-click Windows flasher (GUI + docs)
-├── LauCameraTrigger_Alchitry/ # camera-trigger breakout PCB (KiCad) + camera-wiring docs
-├── Au2_SLI.zip                # archived Vivado project
+├── README.md                        # this file
+├── ROADMAP.md                       # hardware expansion roadmap (DF40 stacking, Ft+, MIPI)
+├── MIPI_CSI2_ROADMAP.md             # custom MIPI CSI-2 receiver design plan (Pt V2)
+├── Bitstream/                       # prebuilt bitstream (Au2_SLI_stackB.bin)
+├── sources_1/                       # HDL sources (sources_1/imports/RTL)
+├── constrs_1/                       # Xilinx design constraints (XDC)
+├── Matlab/                          # .m scripts + LUT outputs (legacy pattern generation)
+├── AlchitryFlasher/                 # one-click Windows flasher (GUI + docs)
+├── host/                            # Qt host application (3-D reconstruction + USB control)
+├── LauCameraTrigger_Alchitry/       # camera-trigger breakout PCB (KiCad) + camera-wiring docs
+├── LauCameraTrigger_Alchitry_3xJST/ # breakout variant: 3× on-board JST-7 (ordered)
+├── LauCameraTrigger_Alchitry_Stack/ # DF40 stacking daughter board (mates the Br/Hd stack)
+├── LauMipiCamera_Alchitry_Stack/    # MIPI CSI-2 camera daughter board (Pt V2, WIP scaffold)
+├── Au2_SLI.zip                      # archived Vivado project
 └── LICENSE
 ```
 
