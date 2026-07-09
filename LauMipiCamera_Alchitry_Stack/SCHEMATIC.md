@@ -11,8 +11,9 @@ follows the stacking pattern of
 [`../LauCameraTrigger_Alchitry_Stack/SCHEMATIC.md`](../LauCameraTrigger_Alchitry_Stack/SCHEMATIC.md).
 
 > **Pre-fab gates — resolve before layout:**
-> 1. **D-PHY front-end network** (resistor values, terminations, exact LP input count) finalized
->    against **Xilinx XAPP894 / PG202**. _This is the critical gate._
+> 1. ~~**D-PHY front-end network**~~ — **RESOLVED**, see §3. Values taken from XAPP894 v1.0.1
+>    Figure 11. Two decisions remain open (§3.3): the 150 Ω vs 100 Ω termination question and the
+>    800 Mb/s line-rate ceiling.
 > 2. **VCCO13 = 1.8 V** — confirm *how* it is set on the Pt V2 (on-board option vs. supplied over
 >    the DF40). If the daughter board must source it, add a +1.8 V feed to the VCCO13 DF40 pin.
 > 3. **36S TRM confirmation** — the 22-pin pin assignment, I²C logic level (1.8 vs 3.3 V), I²C
@@ -30,9 +31,9 @@ follows the stacking pattern of
 | `CAM_CK_P` / `CAM_CK_N`  | clock | HS diff → CLK pair |
 | `CAM_D0_P` / `CAM_D0_N`  | data 0 | HS diff |
 | `CAM_D1_P` / `CAM_D1_N`  | data 1 | HS diff |
-| `LP_CK_P` / `LP_CK_N`    | clock LP | single-ended LVCMOS18 |
-| `LP_D0_P` / `LP_D0_N`    | data 0 LP | single-ended LVCMOS18 |
-| `LP_D1_P` / `LP_D1_N`    | data 1 LP | single-ended LVCMOS18 |
+| `LP_CK_P` / `LP_CK_N`    | clock LP | single-ended `HSUL_12` (§3.2) |
+| `LP_D0_P` / `LP_D0_N`    | data 0 LP | single-ended `HSUL_12` (§3.2) |
+| `LP_D1_P` / `LP_D1_N`    | data 1 LP | single-ended `HSUL_12` (§3.2) |
 
 > HS and LP are derived from the **same** physical camera pair through the XAPP894 network
 > (§3). "HS diff" goes to the FPGA differential input; "LP" taps go to single-ended inputs.
@@ -62,8 +63,8 @@ follows the stacking pattern of
 | **J1** | DF40C-50DP-0.4V (Hirose) | DF40C-50DP | B.Cu | Site A — +3V3 + GND |
 | **J2** | DF40C-80DP-0.4V | DF40C-80DP | B.Cu | Site B (Bank A) — mechanical only, all I/O NC |
 | **J3** | DF40C-80DP-0.4V | DF40C-80DP | B.Cu | Site C (Bank B) — signals + GND |
-| **Rn…** | D-PHY resistor network | 0402 (per XAPP894) | F.Cu | **values TBD from XAPP894** (§3) |
-| **R_T0–2** | 100 Ω diff termination ×3 (or FPGA `DIFF_TERM`) | 0402 | F.Cu | one per HS pair; prefer internal DIFF_TERM |
+| **R_T0–2** | **150 Ω** diff termination ×3 | 0402 | F.Cu | one across each HS pair, **near J3** (§3.1). XAPP894 `R9`. See §3.3 — out of `ZID` spec by design. |
+| **R_LP0P/0N…2P/2N** | **100 Ω** series ×6 | 0402 | F.Cu | LP tap isolation, 2 per lane (§3.1). XAPP894 `R6`/`R7`. |
 | **SW1–SW4** | SPDT (4-pos DIP or 4× discrete) | DIP/SMD | F.Cu | HvsV / Blue / Green / Red |
 | **R_SDA, R_SCL** | I²C pull-ups (2.2–4.7 kΩ) | 0402 | F.Cu | pull to camera I²C rail (1.8 **or** 3.3 — gate 3) |
 | **R_TRIG** | series ~33 Ω (or level pad) | 0402 | F.Cu | trigger to camera; level per gate 3 |
@@ -80,24 +81,73 @@ MIPI runs two modes on each pair:
 - **HS:** ~200 mV differential (sub-LVDS) — the image data.
 - **LP:** 1.2 V single-ended on each wire — the control/handshake.
 
-Per the XAPP894 network, each camera pair `(P, N)` fans out to:
-1. **HS path:** `P`/`N` → FPGA **differential input** (LVDS-class) with 100 Ω termination
-   (internal `DIFF_TERM` preferred) → ISERDES.
-2. **LP path:** `P` and `N` each → series/divider resistors → FPGA **single-ended LVCMOS18**
-   inputs (`LP_*_P`, `LP_*_N`) so logic can read LP-11 / LP-01 / LP-00.
+### 3.1 The circuit (XAPP894 v1.0.1, Figure 11 "FPGA Compatible D-PHY Receiver")
+
+Three resistors per lane. No divider, no comparator, no AC coupling. Both FPGA inputs sit
+directly on the camera pair; the LP taps are **series isolation only**, feeding high-impedance
+single-ended inputs.
 
 ```
- camera P ─┬──────────────► FPGA  *_P  (HS+, also part of LVDS pair)
-           └─[Rlp]─────────► FPGA LP_*_P (single-ended)
- camera N ─┬──────────────► FPGA  *_N  (HS−)
-           └─[Rlp]─────────► FPGA LP_*_N
-           (100Ω across P/N near FPGA, or internal DIFF_TERM)
+ camera P ──┬──────────────────────────────► FPGA *_P ─┐
+            │                                          │ LVDS differential input (HS)
+            │        ┌─[ R_LP_P  100Ω ]──► FPGA LP_*_P │   → IBUFDS → ISERDES
+            ├────────┘                                 │
+         [ R_T 150Ω ]  (differential, across P/N)      │
+            ├────────┐                                 │
+            │        └─[ R_LP_N  100Ω ]──► FPGA LP_*_N │
+            │                                          │
+ camera N ──┴──────────────────────────────► FPGA *_N ─┘
 ```
 
-> ⚠️ **Resistor values, the exact termination topology, and whether LP needs a divider or a
-> comparator are NOT yet pinned** — take them verbatim from **XAPP894 / PG202** before layout.
-> Budget **6 single-ended LP inputs** (2 per lane × 3 lanes). Keep all HS pairs short and
-> length-matched; route as 100 Ω differential.
+| Ref (per lane) | Value | Placement | Purpose |
+|---|---|---|---|
+| `R_T` | **150 Ω** | across `P`/`N`, close to the FPGA | HS differential termination (XAPP894 `R9`) |
+| `R_LP_P` | **100 Ω** | series, `P` → LP input | LP tap isolation (XAPP894 `R6`) |
+| `R_LP_N` | **100 Ω** | series, `N` → LP input | LP tap isolation (XAPP894 `R7`) |
+
+**×3 lanes (CK, D0, D1) ⇒ 3× 150 Ω + 6× 100 Ω = 9 resistors, 0402.**
+
+### 3.2 I/O standards — LP is `HSUL_12`, *not* `LVCMOS18`
+
+XAPP894 is explicit that receiving 1.2 V LP levels on an `LVCMOS18` input is marginal: *"the swing
+of the 1.2V low-power D-PHY transmitter is not much more than the minimum requirement to let the
+FPGA LVCMOS input trip accordingly. This issue is eliminated when the receiver uses the HSUL_12
+I/O-standard."* Figure 11 uses `HSUL_12` on both LP inputs.
+
+| Path | IOSTANDARD | Notes |
+|---|---|---|
+| HS `*_P` / `*_N` | `LVDS` (differential input) | external `R_T`; **no internal `DIFF_TERM`** in Fig. 11 |
+| LP `LP_*_P` / `LP_*_N` | `HSUL_12` | 1.2 V input levels regardless of bank VCCO |
+
+XAPP894: *"For 7 series FPGAs, LVDS, HSTL, LVCMOS_18, and HSUL_12 inputs can be joined in a 1.8V
+powered I/O bank."* This is what lets the whole front end live in bank 13 @ 1.8 V. **6 LP inputs
+confirmed** (2 per lane × 3).
+
+### 3.3 Two open decisions
+
+1. **150 Ω is deliberately out of MIPI spec.** XAPP894's own Table 2 gives `ZID` (differential
+   input impedance) as **80 / 100 / 125 Ω** (min/nom/max) — the Figure 11 value of 150 Ω exceeds
+   the 125 Ω maximum. This is one reason AMD labels the resistor network *"for proprietary use
+   only"* and *"not a compliant solution."* Options: ship 150 Ω verbatim (as simulated in
+   Hyperlynx/SPICE and hardware-tested on the D-PHY FMC board), or use 100 Ω for spec compliance
+   at the cost of leaving the validated circuit. **Recommend a footprint that accepts either and
+   fitting 150 Ω first**, since that is the only value AMD actually characterized.
+2. **Line rate.** XAPP894 characterizes this circuit *"up to 800 Mb/s between an FPGA and a MIPI
+   device"* over 300 mm. `MIPI_CSI2_ROADMAP.md` budgets **1.0–1.25 Gb/s per lane**. The compatible
+   network is **not** shown to reach that rate. Either re-budget to ≤800 Mb/s (fewer lanes ⇒ lower
+   resolution/frame rate, or 4-lane at reduced per-lane rate), or move to the compliant solution
+   (an external Meticom `MC20901`-class PHY), which changes this board substantially.
+
+### 3.4 Layout consequence — resistors belong near the FPGA, not the camera
+
+XAPP894's PCB guideline is *"Place the necessary resistors and capacitors as close as possible to
+the FPGA."* On this daughter board the FPGA is **on the Pt V2, across the DF40 stack** — so "close
+to the FPGA" means **clustered at J3 (Site C)**, not at the FFC. The HS pairs therefore run the
+full length of the board *unterminated*, then terminate just before dropping through J3.
+
+Route all three HS pairs as 100 Ω differential, length-matched, on an outer layer over solid
+ground (per the `MipiHS` netclass rules in `.kicad_dru`). Keep left/right turns balanced and use
+45° or arced corners — never 90°.
 
 ---
 
@@ -116,11 +166,17 @@ switches/I²C/trigger in **bank 14 (3.3 V)**.
 (Higher B-number = FPGA **P**. Spare MRCC `L12` = W11/W12 = B41/B39 left free.)
 
 ### 4.2 MIPI LP single-ended — bank 13 (freed switch/GPIO pairs)
+
+All six are `HSUL_12` inputs (§3.2), each fed through its 100 Ω series resistor.
+
 | Net | Alchitry sig | FPGA ball |
 |---|---|---|
 | `LP_CK_P` / `LP_CK_N` | B33 / B35 | AB10 / AA9  (`L8`) |
 | `LP_D0_P` / `LP_D0_N` | B34 / B36 | AB15 / AA15 (`L4`) |
 | `LP_D1_P` / `LP_D1_N` | B51 / B53 | W10 / V10   (`L10`) |
+
+> These are LP taps off the *same* camera pair as the HS inputs in §4.1 — they are **not** a
+> separate set of camera wires. Each LP net shares a copper node with its HS counterpart.
 
 ### 4.3 Control / config — bank 14 (3.3 V)
 | Net | Alchitry sig | FPGA ball |
@@ -211,7 +267,10 @@ Same three-site mating as the trigger stack board (ROADMAP §3, §5):
 
 ## 9. Open items
 
-- **XAPP894 front-end** values + LP detection scheme (gate 1).
+- ~~XAPP894 front-end values + LP detection scheme~~ — **done** (§3): 150 Ω diff term + 2× 100 Ω
+  LP series per lane, LP on `HSUL_12`. Remaining: pick 150 Ω vs 100 Ω (§3.3 #1), and resolve the
+  **800 Mb/s ceiling vs the roadmap's 1.0–1.25 Gb/s budget** (§3.3 #2) — this one may change the
+  whole approach.
 - **VCCO13 source** on the Pt V2 (gate 2).
 - **36S TRM**: 22-pin map, I²C level + address, trigger electrical level (gate 3).
 - Pt V2 ↔ Br/Hd stack mate confirmed against mechanical drawing (gate 4).
