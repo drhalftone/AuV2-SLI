@@ -287,28 +287,42 @@ So the resistor front end **can** run this camera — but only at 60 fps on 2 la
 
 ## 6. Config switches (relocated here)
 
-Each SPDT: common pole → the config net (bank 14); throws → `+3V3` / `GND`
-(break-before-make ⇒ can't short the rails). Identical to the old jumper behaviour.
+**As wired: one 4-way SPST slide DIP (`SW1`), every switch to `GND`, FPGA-internal pull-ups hold
+the nets high.** Closed = 0, open = 1 — uniform across all four.
 
-| Switch | Net | Throw 1 | Throw 2 |
-|---|---|---|---|
-| SW1 | `SW_HVSV`  | `+3V3` | `GND` |
-| SW2 | `SW_BLUE`  | `+3V3` | `GND` |
-| SW3 | `SW_GREEN` | `+3V3` | `GND` |
-| SW4 | `SW_RED`   | `+3V3` | `GND` |
+| Switch | Net (pole) | Other side |
+|---|---|---|
+| 1 | `SW_HVSV`  (SW1.1) | `GND` (SW1.8) |
+| 2 | `SW_BLUE`  (SW1.2) | `GND` (SW1.7) |
+| 3 | `SW_GREEN` (SW1.3) | `GND` (SW1.6) |
+| 4 | `SW_RED`   (SW1.4) | `GND` (SW1.5) |
+
+> **Deliberate deviation from the original SPDT plan.** The earlier text called for SPDT poles
+> throwing between `+3V3` and `GND`, but the footprint actually placed is an **SPST slide DIP**
+> (`SW_DIP_SPSTx04_Slide_…`) — there is no second throw. Uniform switch-to-`GND` with internal
+> `PULLUP` also removes the rev-1 trigger board's asymmetry (where `HvsV` went to `+3V3` while the
+> colour switches went to `GND`, forcing inverted logic on that one bit). Set `PULLUP TRUE` on all
+> four ports in `Pt2.xdc`.
 
 ---
 
 ## 7. DF40 stack wiring
 
-Same three-site mating as the trigger stack board (ROADMAP §3, §5):
+Same three-site mating as the trigger stack board (ROADMAP §3, §5). **As wired:**
 
-- **J1 (Site A, 50-pin):** `+3V3` from pin 1 (odd 1–13); GND on ≡1,2 mod 6; **VCC even pins
-  2–16 = NC** (separate higher rail). If gate 2 requires it, route `+1V8` to the VCCO13 pin here.
+- **J1 (Site A, 50-pin):** `+3V3` on pins **1, 3, 5, 9, 11** — five contacts for the camera's
+  ~260 mA. Pins 7 and 13 are *also* odd-1–13 but are ≡1 mod 6, where the 80-pin GND rule would
+  put ground; they are left **NC** rather than guess. **VCC even pins 2–16 = NC** (separate,
+  higher rail). If gate 2 requires it, route `+1V8` to the VCCO13 pin here.
 - **J2 (Site B, 80-pin, Bank A):** **mechanical only** — every Bank-A I/O pin **NC** (HDMI /
-  future Ft+); GND pins may bond to the plane.
-- **J3 (Site C, 80-pin, Bank B):** the MIPI HS/LP + switch/I²C/trigger signals above; GND on
-  ≡1,2 mod 6; all other pins NC.
+  future Ft+). Its 28 GND pins (≡1,2 mod 6) **are** bonded to the pour, to give the HS pairs a
+  continuous return path under the stack.
+- **J3 (Site C, 80-pin, Bank B):** the MIPI HS/LP + switch/I²C/trigger/strobe signals above; GND
+  on all 28 ≡1,2 mod 6 pins; all other pins NC.
+
+> The fabricated trigger board ties **only J1 pin 1** to `+3V3` and takes all GND from J3 — so
+> pins 7/13 of Site A are unproven either way. Verify against `Br.step` / the Br schematic before
+> fab.
 
 > **Br is optional** — board can mate the Hd directly (ROADMAP §1). For best HS signal integrity
 > at 200 mV, prefer the shortest stack path and keep the 3 HS pairs length-matched.
@@ -326,6 +340,39 @@ Same three-site mating as the trigger stack board (ROADMAP §3, §5):
   why the switches moved to bank 14.
 - Decouple +3V3 at J_CAM (camera draw) and +1V8 at the front-end / FPGA bank.
 - Ground pour both layers; stitch with vias, especially under the HS pairs.
+
+---
+
+## 8b. Schematic status — **wired**
+
+The `.kicad_sch` is now fully netted (19 symbols, 23 nets, 133 explicit `no_connect` flags).
+Connectivity is expressed with global labels anchored on pin endpoints; all endpoints are on the
+1.27 mm grid. Verified with `kicad-cli 10.0.3`:
+
+- `sch export netlist` → **23 nets, 0 single-node nets**, all 22 signal nets match §1/§4/§5.
+- `sch erc` → **1 warning** (`lib_symbol_mismatch` on the cached `Conn_01x22`; refresh symbols
+  from library in the GUI). The 133 `pin_not_connected` errors and 19 off-grid endpoints present
+  in the scaffold are gone.
+
+| Net | Nodes |
+|---|---|
+| `CAM_CK_P` / `CAM_CK_N` | `J_CAM.9/.8` · `J3.47/.45` · `R_T0` · `R_LP0P/N` |
+| `CAM_D0_P` / `CAM_D0_N` | `J_CAM.3/.2` · `J3.42/.40` · `R_T1` · `R_LP1P/N` |
+| `CAM_D1_P` / `CAM_D1_N` | `J_CAM.6/.5` · `J3.48/.46` · `R_T2` · `R_LP2P/N` |
+| `LP_*` ×6 | `J3.33/.35/.34/.36/.51/.53` · `R_LP*.2` |
+| `CAM_TRIG` → `CAM_TRIG_R` | `J3.17` → `R_TRIG` → `J_CAM.17` (series 33 Ω) |
+| `CAM_STROBE` | `J3.18` ↔ `J_CAM.18` (direct) |
+| `CAM_SCL` / `CAM_SDA` | `J3.21/.23` · `J_CAM.20/.21` · `R_SCL/R_SDA` → `+3V3` |
+| `+3V3` | `J1.1/3/5/9/11` · `J_CAM.22` · `C1` · `C2` · I²C pull-ups |
+| `GND` | 69 nodes (J2 ×28, J3 ×28, `J_CAM` ×7, `SW1` ×4, `C1`, `C2`) |
+
+**Still to do on the PCB:** the scaffold placed `R_1206` footprints for `R_SCL/R_SDA/R_TRIG`; the
+schematic specifies `R_0402` per §2. Updating the PCB from the schematic will re-assign them, and
+will add the 9 new front-end resistors, which then need placing at **J3** per §3.4.
+
+> ⚠️ `CAM_STROBE` is assigned to **B18** on a "next free non-GND pin" basis. Unlike the other
+> control pins its Pt V2 ball has **not** been verified against the package file — do that before
+> fab (gate 4 territory).
 
 ---
 
