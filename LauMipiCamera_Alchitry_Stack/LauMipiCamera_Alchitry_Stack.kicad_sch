@@ -7442,28 +7442,7 @@
 			)
 		)
 	)
-	(global_label "+3V3"
-		(shape input)
-		(at 90.17 181.61 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "53adb74c-850d-512e-a57b-4fce17021379")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 90.17 181.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-	)
+	
 	(global_label "GND"
 		(shape input)
 		(at 146.05 181.61 180)
@@ -9026,28 +9005,7 @@
 			)
 		)
 	)
-	(global_label "+3V3"
-		(shape input)
-		(at 90.17 179.07 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "db9602e2-17b6-5513-98d0-c27dc75c6a92")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 90.17 179.07 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-	)
+	
 	(global_label "CAM_TRIG_R"
 		(shape input)
 		(at 355.6 107.95 270)
@@ -11650,4 +11608,12 @@
 		)
 	)
 	(embedded_fonts no)
+	(no_connect
+		(at 90.17 181.61)
+		(uuid "228d8ca2-2ed7-545d-b6c7-6a5ccd74bfc5")
+	)
+	(no_connect
+		(at 90.17 179.07)
+		(uuid "ef22818a-1422-5b03-a3a8-9ba3f2a477eb")
+	)
 )
