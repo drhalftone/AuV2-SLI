@@ -391,9 +391,32 @@ The 3 scaffold `R_1206` footprints became `R_0402`, and the 9 front-end resistor
    - the `MipiHS` **netclass** clearance was 0.2 mm, but the DF40's pad-to-pad gap is 0.17 mm.
      Lowered to 0.15 mm. The 3W routing separation still comes from the custom rule.
 
+### Board outline — copied from the fabricated trigger board
+
+The scaffold's outline was a placeholder 72 × 61 mm rectangle. It is now the **same physical board
+as `LauCameraTrigger_Alchitry_Stack`** — which has been fabricated and mates the stack, so it is
+the authority:
+
+| | Value |
+|---|---|
+| Size | **55 × 45 mm**, 1.5 mm chamfered corners |
+| Right-edge notch | x 169.045…174.545, y 68.412…97.412 (relief cut) |
+| Mounting holes | 4 × Ø2.2 mm, 2.5 mm in from each corner (50 × 40 mm centres) |
+
+Copied **verbatim, zero translation** — both boards already carry the DF40 sites at identical
+coordinates. That is self-consistent with ROADMAP §3: relative to J3 (Site C) the outline sits at
+−38.0 mm in x and +4.0 mm in y, exactly the Site C offset from `Br.step`.
+
+> The right-edge notch is inherited from the trigger board. Confirm it is a *stack* clearance
+> (for the mainboard's connectors) rather than something specific to that board's JSTs.
+
 **Remaining DRC: 47 violations, all silkscreen** (25 `silk_overlap`, 22 `silk_over_copper`) —
-artefacts of F8's clustered auto-placement. 0 copper errors. 112 unconnected ratsnest items,
-i.e. nothing is routed yet.
+artefacts of F8's clustered auto-placement. **0 copper errors**, `schematic_parity: 0`. 112
+unconnected ratsnest items, i.e. nothing is routed yet.
+
+> Shrinking the outline pushed `SW1` over the notch (4 `copper_edge_clearance` errors). It was
+> moved to the clear lower-left area at (132, 93). This is a holding position, not a considered
+> placement.
 
 **Next on the PCB:** place the parts. The 9 front-end resistors must sit **at J3**, not at the
 camera FFC (§3.4). Then route the 3 HS pairs as 100 Ω differential, length-matched, over solid

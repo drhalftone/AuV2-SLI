@@ -5341,7 +5341,7 @@
 	(footprint "Button_Switch_SMD:SW_DIP_SPSTx04_Slide_6.7x11.72mm_W8.61mm_P2.54mm_LowProfile"
 		(layer "F.Cu")
 		(uuid "f8c6771d-7741-44e8-8da9-6301575cf00a")
-		(at 163.455 88.07)
+		(at 132.00 93.00)
 		(descr "SMD 4x-dip-switch SPST , Slide, row spacing 8.61 mm (338 mils), body size 6.7x11.72mm (see e.g. https://www.ctscorp.com/wp-content/uploads/219.pdf), SMD, LowProfile")
 		(tags "SMD DIP Switch SPST Slide 8.61mm 338mil SMD LowProfile")
 		(property "Reference" "SW1"
@@ -6262,45 +6262,213 @@
 			)
 		)
 	)
+	
 	(gr_line
-		(start 124 55)
-		(end 196 55)
+		(start 119.545 61.912)
+		(end 119.545 103.912)
 		(stroke
 			(width 0.1)
-			(type solid)
+			(type default)
 		)
 		(layer "Edge.Cuts")
-		(uuid "2bd45b93-4974-408f-9359-7dca66d53118")
+		(uuid "547967d5-0219-5df0-8c29-1800bc61e519")
 	)
 	(gr_line
-		(start 124 116)
-		(end 124 55)
+		(start 119.545 103.912)
+		(end 121.045 105.412)
 		(stroke
 			(width 0.1)
-			(type solid)
+			(type default)
 		)
 		(layer "Edge.Cuts")
-		(uuid "3e44bd71-23c1-4353-8d2e-0d64982239d6")
+		(uuid "8a5bd84a-c0fc-5ec3-98e0-d1dc589a2dad")
 	)
 	(gr_line
-		(start 196 55)
-		(end 196 116)
+		(start 121.045 60.412)
+		(end 119.545 61.912)
 		(stroke
 			(width 0.1)
-			(type solid)
+			(type default)
 		)
 		(layer "Edge.Cuts")
-		(uuid "bc1ce49b-d3dd-4b96-9ab8-f284f1f20c23")
+		(uuid "7a4e5913-bffe-58dc-bf21-0171e8fb128a")
 	)
 	(gr_line
-		(start 196 116)
-		(end 124 116)
+		(start 121.045 105.412)
+		(end 173.045 105.412)
 		(stroke
 			(width 0.1)
-			(type solid)
+			(type default)
 		)
 		(layer "Edge.Cuts")
-		(uuid "d265ec8e-7d4d-4460-bd20-3da8429e3e26")
+		(uuid "c304a10f-6a59-5882-ae46-19e95ae1d059")
 	)
+	(gr_circle
+		(center 122.045 62.912)
+		(end 123.145 62.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "10931ed4-928d-5dff-af64-3f30a011b2a8")
+	)
+	(gr_circle
+		(center 122.045 102.912)
+		(end 123.145 102.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "b832680e-405d-5a32-a746-0e1eaa2f7a28")
+	)
+	(gr_line
+		(start 169.045 69.912)
+		(end 170.545 68.412)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "549dcecb-5eb7-56c4-be95-471c4b6ecdd3")
+	)
+	(gr_line
+		(start 169.045 95.912)
+		(end 169.045 69.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "a9ee909e-1dab-5eeb-a779-d35b1e84f1b1")
+	)
+	(gr_line
+		(start 170.545 68.412)
+		(end 173.045 68.412)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "ddc29d5d-a1d4-52d2-aec3-ddd0024e8cec")
+	)
+	(gr_line
+		(start 170.545 97.412)
+		(end 169.045 95.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "9e92678a-5a0f-5071-b9d9-3318016a0f1f")
+	)
+	(gr_circle
+		(center 172.045 62.912)
+		(end 173.145 62.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "8aa0e3fa-f389-5bdd-871e-b8e85b347963")
+	)
+	(gr_circle
+		(center 172.045 102.912)
+		(end 173.145 102.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(fill no)
+		(layer "Edge.Cuts")
+		(uuid "44514d60-aa10-57ff-ad23-3dde59c37584")
+	)
+	(gr_line
+		(start 173.045 60.412)
+		(end 121.045 60.412)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "609699a1-6a36-5ac0-a935-b16a47135420")
+	)
+	(gr_line
+		(start 173.045 68.412)
+		(end 174.545 66.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "91652f25-577a-5e88-963a-7003332f130b")
+	)
+	(gr_line
+		(start 173.045 97.412)
+		(end 170.545 97.412)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "28ca6bce-33b3-5952-b2d6-120c3918ec3a")
+	)
+	(gr_line
+		(start 173.045 105.412)
+		(end 174.545 103.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "cacedc58-2545-5086-898a-59d312f20d34")
+	)
+	(gr_line
+		(start 174.545 61.912)
+		(end 173.045 60.412)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "c12483ae-724a-5238-8676-5658d7662460")
+	)
+	(gr_line
+		(start 174.545 66.912)
+		(end 174.545 61.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "da6f5e21-9e48-5b0b-86cc-e2936f1e0d95")
+	)
+	(gr_line
+		(start 174.545 98.912)
+		(end 173.045 97.412)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "1706f62c-07e8-52da-bf1c-a891f2bf10b9")
+	)
+	(gr_line
+		(start 174.545 103.912)
+		(end 174.545 98.912)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "Edge.Cuts")
+		(uuid "b3e96f46-8693-531f-8bbb-41316fb2ab0b")
+	)
+	
+	
+	
 	(embedded_fonts no)
 )
