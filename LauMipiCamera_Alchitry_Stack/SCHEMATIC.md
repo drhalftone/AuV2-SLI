@@ -366,9 +366,39 @@ Connectivity is expressed with global labels anchored on pin endpoints; all endp
 | `+3V3` | `J1.1/3/5/9/11` · `J_CAM.22` · `C1` · `C2` · I²C pull-ups |
 | `GND` | 69 nodes (J2 ×28, J3 ×28, `J_CAM` ×7, `SW1` ×4, `C1`, `C2`) |
 
-**Still to do on the PCB:** the scaffold placed `R_1206` footprints for `R_SCL/R_SDA/R_TRIG`; the
-schematic specifies `R_0402` per §2. Updating the PCB from the schematic will re-assign them, and
-will add the 9 new front-end resistors, which then need placing at **J3** per §3.4.
+## 8c. PCB status — **netlist imported, placement pending**
+
+`Update PCB from Schematic` (F8) has been run. `kicad-cli pcb drc` reports **`schematic_parity: 0`**
+and all 23 nets are on the board (268 pads netted, 0 node mismatches vs the schematic netlist).
+The 3 scaffold `R_1206` footprints became `R_0402`, and the 9 front-end resistors were added.
+
+> **Reference designators changed.** KiCad annotated the non-numeric refs, so `R_SCL`→`R_SCL1`,
+> `R_SDA`→`R_SDA1`, `R_TRIG`→`R_TRIG1`, `J_CAM`→`J_CAM1`, and `R_LP*`→`R_LP*1`. `R_T0..2`, `J1-J3`,
+> `C1/C2`, `SW1` were already numeric and are unchanged. Schematic and PCB agree.
+
+**Two things F8 broke, both repaired:**
+
+1. It re-created every footprint (new UUIDs, default placement), which flipped **J1/J2/J3 onto
+   `F.Cu`** — they are bottom-side plugs — and discarded their positions. Those positions encoded
+   the **DF40 stack geometry** (Site B−A = 21.5 mm in x, Site B−C = 37.0 mm in y, per ROADMAP §3
+   from `Br.step`). The three connectors were restored to `B.Cu` at their original coordinates with
+   the new pad nets injected. Geometry re-verified: 21.50 mm / 37.00 mm.
+2. Two DRC settings were impossible for the connectors' fixed pad pitch, and only started firing
+   once nets existed:
+   - the `MipiHS clearance to other nets` rule (0.25 mm, ~3W) applied to **pads**, not just tracks.
+     Now scoped with `A.Type == 'Track'` — pad-to-pad inside J3 (0.4 mm pitch) and J_CAM (0.5 mm)
+     can never meet it. Track-vs-pad is still enforced.
+   - the `MipiHS` **netclass** clearance was 0.2 mm, but the DF40's pad-to-pad gap is 0.17 mm.
+     Lowered to 0.15 mm. The 3W routing separation still comes from the custom rule.
+
+**Remaining DRC: 47 violations, all silkscreen** (25 `silk_overlap`, 22 `silk_over_copper`) —
+artefacts of F8's clustered auto-placement. 0 copper errors. 112 unconnected ratsnest items,
+i.e. nothing is routed yet.
+
+**Next on the PCB:** place the parts. The 9 front-end resistors must sit **at J3**, not at the
+camera FFC (§3.4). Then route the 3 HS pairs as 100 Ω differential, length-matched, over solid
+ground. `R_1206`→`R_0402` is done; the placeholder track width/gap in `.kicad_dru` still need
+recomputing from the real stackup before routing.
 
 > ⚠️ `CAM_STROBE` is assigned to **B18** on a "next free non-GND pin" basis. Unlike the other
 > control pins its Pt V2 ball has **not** been verified against the package file — do that before

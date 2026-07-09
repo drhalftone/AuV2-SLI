@@ -44,8 +44,12 @@
 	(constraint skew (max 0.08mm)))
 
 # --- Extra clearance from the HS pairs to all other nets (~3W) ---
+#     Scoped to TRACKS. Without `A.Type == 'Track'` this also fires between
+#     adjacent pads inside J3 (DF40, 0.4 mm pitch) and J_CAM (FFC, 0.5 mm),
+#     where the pad-to-pad gap is fixed by the connector and can never reach
+#     0.25 mm. Track-vs-pad is still checked, because B is unconstrained.
 (rule "MipiHS clearance to other nets"
-	(condition "A.NetClass == 'MipiHS' && B.NetClass != 'MipiHS'")
+	(condition "A.NetClass == 'MipiHS' && B.NetClass != 'MipiHS' && A.Type == 'Track'")
 	(constraint clearance (min 0.25mm)))
 
 # --- Keep HS pairs away from the board edge ---

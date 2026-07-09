@@ -10148,7 +10148,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "43be54aa-9d6a-40ca-8460-7d26d8ac2043")
-		(property "Reference" "J_CAM"
+		(property "Reference" "J_CAM1"
 			(at 282.57 96.52 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10268,7 +10268,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "J_CAM")
+					(reference "J_CAM1")
 					(unit 1)
 				)
 			)
@@ -10285,7 +10285,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "4705380b-c8c8-58ca-a87a-bc317548d571")
-		(property "Reference" "R_LP0P"
+		(property "Reference" "R_LP0P1"
 			(at 213.11 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10349,7 +10349,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_LP0P")
+					(reference "R_LP0P1")
 					(unit 1)
 				)
 			)
@@ -10447,7 +10447,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "6d97c3de-fcfc-54d2-b086-a07d297a07ec")
-		(property "Reference" "R_LP1P"
+		(property "Reference" "R_LP1P1"
 			(at 248.67 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10511,7 +10511,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_LP1P")
+					(reference "R_LP1P1")
 					(unit 1)
 				)
 			)
@@ -10528,7 +10528,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "7223f9c1-2297-50e3-847d-f5adfa740eb7")
-		(property "Reference" "R_LP2P"
+		(property "Reference" "R_LP2P1"
 			(at 284.23 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10592,7 +10592,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_LP2P")
+					(reference "R_LP2P1")
 					(unit 1)
 				)
 			)
@@ -10609,7 +10609,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "755e3538-e9f4-442f-8e26-b27dd32e2bf0")
-		(property "Reference" "R_SDA"
+		(property "Reference" "R_SDA1"
 			(at 342.65 97.79 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10671,7 +10671,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_SDA")
+					(reference "R_SDA1")
 					(unit 1)
 				)
 			)
@@ -10688,7 +10688,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "7675e133-0ba1-5938-8f50-03c53e5cfd0a")
-		(property "Reference" "R_LP0N"
+		(property "Reference" "R_LP0N1"
 			(at 230.89 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10752,7 +10752,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_LP0N")
+					(reference "R_LP0N1")
 					(unit 1)
 				)
 			)
@@ -10769,7 +10769,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "7cd3cc26-d73e-45cc-a77d-0f47747881fe")
-		(property "Reference" "R_TRIG"
+		(property "Reference" "R_TRIG1"
 			(at 357.89 97.79 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10831,7 +10831,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_TRIG")
+					(reference "R_TRIG1")
 					(unit 1)
 				)
 			)
@@ -10848,7 +10848,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "a1b5e4ca-d5ed-54c6-b6f9-9e65f3ae0b6d")
-		(property "Reference" "R_LP1N"
+		(property "Reference" "R_LP1N1"
 			(at 266.45 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -10912,7 +10912,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_LP1N")
+					(reference "R_LP1N1")
 					(unit 1)
 				)
 			)
@@ -11321,7 +11321,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "aa08bdae-7859-48bb-847f-38a68d59b0a7")
-		(property "Reference" "R_SCL"
+		(property "Reference" "R_SCL1"
 			(at 328.68 97.79 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11383,7 +11383,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_SCL")
+					(reference "R_SCL1")
 					(unit 1)
 				)
 			)
@@ -11574,7 +11574,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "f4c547c9-4b2f-5e3e-b613-656759434162")
-		(property "Reference" "R_LP2N"
+		(property "Reference" "R_LP2N1"
 			(at 302.01 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -11638,7 +11638,7 @@
 		(instances
 			(project "LauMipiCamera_Alchitry_Stack"
 				(path "/fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
-					(reference "R_LP2N")
+					(reference "R_LP2N1")
 					(unit 1)
 				)
 			)

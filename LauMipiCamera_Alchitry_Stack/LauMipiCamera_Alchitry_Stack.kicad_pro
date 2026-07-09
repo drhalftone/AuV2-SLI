@@ -503,7 +503,7 @@
         "tuning_profile": ""
       },
       {
-        "clearance": 0.2,
+        "clearance": 0.15,
         "diff_pair_gap": 0.13,
         "diff_pair_via_gap": 0.25,
         "diff_pair_width": 0.13,
@@ -665,7 +665,7 @@
         "uuid": "fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
       }
     ],
-    "used_designators": "MASTER1",
+    "used_designators": "R_LP1P1,MASTER1,R_LP1N1,J_CAM1,R_TRIG1,R_LP2P1,R_LP0N1,R_LP2N1,R_LP0P1,R_SCL1,R_SDA1",
     "variants": []
   },
   "sheets": [
