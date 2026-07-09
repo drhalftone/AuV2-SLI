@@ -1,7 +1,8 @@
 # LauMipiCamera_Alchitry_Stack — Schematic Build Spec
 
 _DF40 stacking daughter board that mates the **Alchitry Pt V2** stack and brings a
-**The Imaging Source 36S-series 22-pin MIPI CSI-2 camera** into the FPGA through a **soft D-PHY
+**The Imaging Source DMM 36SR0234-ML** 22-pin MIPI CSI-2 camera (onsemi AR0234CS, global shutter,
+1920×1200) into the FPGA through a **soft D-PHY
 (XAPP894 resistor network)** on **bank 13 @ 1.8 V**. Also carries the 4 relocated config switches
 on **bank 14 @ 3.3 V** (their move off bank 13 is what lets bank 13 run at 1.8 V)._
 
@@ -16,10 +17,16 @@ follows the stacking pattern of
 >    800 Mb/s line-rate ceiling.
 > 2. **VCCO13 = 1.8 V** — confirm *how* it is set on the Pt V2 (on-board option vs. supplied over
 >    the DF40). If the daughter board must source it, add a +1.8 V feed to the VCCO13 DF40 pin.
-> 3. **36S TRM confirmation** — the 22-pin pin assignment, I²C logic level (1.8 vs 3.3 V), I²C
->    address, and trigger-input electrical level. Pinout below is the **Raspberry Pi 22-pin
->    standard**; verify against The Imaging Source's reference manual.
+> 3. ~~**36S TRM confirmation**~~ — **RESOLVED** against the *DMM 36SR0234-ML Technical Reference
+>    Manual* (The Imaging Source, last update Dec 2025). Pinout, I²C levels/addresses, and trigger
+>    level are now confirmed (§5). **All camera I/O is 3.3 V** — no level translation needed.
 > 4. **Pt V2 stack compatibility** + DF40 pin-1 mirroring (face-down plugs), per ROADMAP §8.
+> 5. **NEW — lane count.** The camera exposes **4 data lanes**; this board wires **2**. At full
+>    resolution/frame rate 2 lanes is not enough (§5.3). Decide 2-lane@60fps vs 4-lane@120fps
+>    **before layout** — it changes the pair count, the resistor count, and the bank-13 pinout.
+> 6. **NEW — register documentation.** *"The data sheet for the AR0234CS image sensor is not
+>    publicly available."* (TRM §7.) Register settings must come from The Imaging Source support.
+>    This is a **gateware** risk, not a PCB risk, but it is on the critical path for bring-up.
 
 ---
 
@@ -42,7 +49,8 @@ follows the stacking pattern of
 | Net | Meaning | Dir (FPGA) |
 |---|---|---|
 | `CAM_SCL` / `CAM_SDA` | I²C / CCI camera control | bidir |
-| `CAM_TRIG` | trigger input to camera | output |
+| `CAM_TRIG` | trigger input to camera (pin 17) | output |
+| `CAM_STROBE` | strobe / exposure-active from camera (pin 18) | input |
 | `SW_HVSV` | scan orientation (H vs V) | input |
 | `SW_BLUE` / `SW_GREEN` / `SW_RED` | colour enables | input |
 
@@ -50,7 +58,7 @@ follows the stacking pattern of
 | Net | Source | Use |
 |---|---|---|
 | `+3V3` | DF40 Site A, 50-pin pin 1 | camera supply + bank-14 logic |
-| `+1V8` | see gate 2 | VCCO13 / LP & HS reference / I²C if 1.8 V |
+| `+1V8` | see gate 2 | VCCO13 only (HS + LP bank supply). **Not** I²C — camera I/O is 3.3 V (§5.2). |
 | `GND` | any GND pin (≡1,2 mod 6) | ground |
 
 ---
@@ -66,8 +74,8 @@ follows the stacking pattern of
 | **R_T0–2** | **150 Ω** diff termination ×3 | 0402 | F.Cu | one across each HS pair, **near J3** (§3.1). XAPP894 `R9`. See §3.3 — out of `ZID` spec by design. |
 | **R_LP0P/0N…2P/2N** | **100 Ω** series ×6 | 0402 | F.Cu | LP tap isolation, 2 per lane (§3.1). XAPP894 `R6`/`R7`. |
 | **SW1–SW4** | SPDT (4-pos DIP or 4× discrete) | DIP/SMD | F.Cu | HvsV / Blue / Green / Red |
-| **R_SDA, R_SCL** | I²C pull-ups (2.2–4.7 kΩ) | 0402 | F.Cu | pull to camera I²C rail (1.8 **or** 3.3 — gate 3) |
-| **R_TRIG** | series ~33 Ω (or level pad) | 0402 | F.Cu | trigger to camera; level per gate 3 |
+| **R_SDA, R_SCL** | I²C pull-ups (2.2–4.7 kΩ) | 0402 | F.Cu | pull to **`+3V3`** (confirmed §5.2; abs max 3.8 V) |
+| **R_TRIG** | series ~33 Ω | 0402 | F.Cu | trigger to camera, 3.3 V (§5.2) |
 | **C…** | 0.1 µF decoupling + bulk (4.7–10 µF) | 0402/0805 | F.Cu | on +3V3 and +1V8 near loads |
 
 > No oscillator / no sensor power tree: the 36S is a **complete module** (single 3.15–3.45 V
@@ -189,35 +197,91 @@ All six are `HSUL_12` inputs (§3.2), each fed through its 100 Ω series resisto
 | `CAM_SDA` | B23 | AA19 |
 | `CAM_TRIG` | B17 | V17 |
 
-> If gate 3 finds the camera I²C / trigger are **1.8 V**, move `CAM_SCL/SDA/TRIG` onto spare
-> bank-13 pins (e.g. `L2` AB16/AB17 = B54/B52, `L7` AB11/AB12 = B57/B59) so levels match without
-> a translator.
+> Gate 3 is closed: camera I/O is **3.3 V** (§5.2), so these stay in bank 14 and no translator is
+> needed. `CAM_STROBE` (pin 18) still needs a bank-14 ball assigned — spare Bank-B signals remain.
 
 ---
 
-## 5. Camera connector (22-pin) — working pinout
+## 5. Camera: The Imaging Source **DMM 36SR0234-ML**
 
-**Raspberry Pi 22-pin 0.5 mm standard** (36S is Pi-5/Orin compatible). **Confirm against the
-36S TRM** — especially the power, trigger, and any GPIO pins.
+Monochrome 36S-series module, **onsemi AR0234CS**, 1920×1200 (2.3 MP), **global shutter**,
+**120 fps** at full resolution, **10-bit mono** output. 3.3 V (±5 %) single supply, ≈260 mA.
+30×30×6 mm. Complete module — on-board 25 MHz `INCK` and regulators, so this board supplies no
+sensor clock and no sensor rails.
 
-| Pin | Signal | → net |
-|---|---|---|
-| 1 | GND | `GND` |
-| 2 / 3 | CAM_D0_N / CAM_D0_P | `CAM_D0_N` / `CAM_D0_P` |
-| 4 | GND | `GND` |
-| 5 / 6 | CAM_D1_N / CAM_D1_P | `CAM_D1_N` / `CAM_D1_P` |
-| 7 | GND | `GND` |
-| 8 / 9 | CAM_CK_N / CAM_CK_P | `CAM_CK_N` / `CAM_CK_P` |
-| 10 | GND | `GND` |
-| 11–16 | D2/D3 lanes (4-lane) + GND | **NC** (2-lane design) |
-| 17 | CAM_GPIO / trigger | `CAM_TRIG` (verify) |
-| 18 | reserved / GPIO | NC (verify) |
-| 19 | GND | `GND` |
-| 20 / 21 | SCL0 / SDA0 | `CAM_SCL` / `CAM_SDA` |
-| 22 | +3V3 | `+3V3` |
+> Global shutter + a hardware trigger input is exactly the combination structured-light needs;
+> the sensor's own **strobe output** (pin 18) gives us exposure feedback for free.
 
-> The 22-pin connector is **4-lane capable**; we wire only lanes 0–1. Leaving D2/D3 as NC keeps a
-> future 4-lane upgrade open (bank 13 has the spare pairs — MIPI_CSI2_ROADMAP §2).
+### 5.1 22-pin connector — **confirmed** against the TRM
+
+*"compatible to the 22-pin Raspberry Pi MIPI Interface."* Mating FPC part on the camera:
+**Würth 687122149022**, 22-pin, 0.5 mm pitch.
+
+| Pin | TRM name | Type | → net |
+|---|---|---|---|
+| 1 | GND (**capacitively coupled**) | GND | `GND` — see note |
+| 2 / 3 | CH1 N / CH1 P | O | `CAM_D0_N` / `CAM_D0_P` |
+| 4 | GND | GND | `GND` |
+| 5 / 6 | CH2 N / CH2 P | O | `CAM_D1_N` / `CAM_D1_P` |
+| 7 | GND | GND | `GND` |
+| 8 / 9 | DCK N / DCK P | O | `CAM_CK_N` / `CAM_CK_P` |
+| 10 | GND | GND | `GND` |
+| 11 / 12 | CH3 N / CH3 P | O | `CAM_D2_*` — **NC in 2-lane**, wired in 4-lane (§5.3) |
+| 13 | GND | GND | `GND` |
+| 14 / 15 | CH4 N / CH4 P | O | `CAM_D3_*` — **NC in 2-lane**, wired in 4-lane (§5.3) |
+| 16 | GND | GND | `GND` |
+| 17 | `GPIO1_3V3` | I/O | `CAM_TRIG` — **trigger input** |
+| 18 | `GPIO2_3V3` | I/O | `CAM_STROBE` — **strobe output** (was assumed NC — **wire it**) |
+| 19 | GND | GND | `GND` |
+| 20 | `I2C_SCL_3V3` | I/O | `CAM_SCL` |
+| 21 | `I2C_SDA_3V3` | I/O | `CAM_SDA` |
+| 22 | `+3V3` | PWR | `+3V3` |
+
+> **Pin 1 is not a plain ground.** The TRM marks it *"(GND) capacitive coupled."* Treat it as a
+> shield/return through the camera's own capacitor — bond to the ground pour, but do not rely on
+> it as the module's DC return (pins 4/7/10/13/16/19 are the real grounds).
+
+### 5.2 Electrical — all camera I/O is **3.3 V**
+
+*"All I/Os have the same I/O voltage of 3.3 V."* This **resolves gate 3** and kills the old
+contingency about moving I²C/trigger onto bank-13 balls: `CAM_SCL`, `CAM_SDA`, `CAM_TRIG`, and
+`CAM_STROBE` all stay in **bank 14 @ 3.3 V**.
+
+| Item | Symbol | Pins | Abs max | Recommended |
+|---|---|---|---|---|
+| Supply | `+3V3_D` (VCC) | 22 | −0.3 … **+5.5 V** | +3.1 / **+3.3** / +3.5 V |
+| GPIO | `GPIO1`, `GPIO2` | 17, 18 | −0.3 … **VCC** | +2.9 / 3.3 / VCC |
+| I²C | `I2C_SCL`, `I2C_SDA` | 20, 21 | −0.5 … **+3.8 V** | +2.9 / 3.3 / VCC |
+
+> I²C pull-ups go to **+3V3**, never to a higher rail — abs max on those pins is 3.8 V.
+> `R_SDA` / `R_SCL` therefore pull to `+3V3`; the `+1V8` option in §1.3 is dead.
+
+**I²C devices (7-bit):** `0x10` = AR0234CS image sensor · `0x50` = AT24C256C EEPROM.
+
+**Power-up sequence (TRM §7.2):** supply 3.3 V, then **wait 350 ms** before writing sensor
+registers. The CCI master must hold off that long after `+3V3` is good.
+
+### 5.3 Lane count — 2 lanes cannot carry full resolution
+
+The module outputs **4 data lanes** (CH1…CH4) plus the clock. Payload at full res:
+
+```
+1920 × 1200 × 120 fps × 10 bit = 2.7648 Gb/s   (before blanking overhead)
+```
+
+| Wiring | Per-lane rate | vs XAPP894 800 Mb/s | vs HR `-2` ISERDES ~1.0–1.25 Gb/s |
+|---|---|---|---|
+| **2 lanes @ 120 fps** | 1382 Mb/s | ✗ 1.7× over | ✗ over |
+| **2 lanes @ 60 fps** | 691 Mb/s | ✓ (tight once blanking is added) | ✓ |
+| **4 lanes @ 120 fps** | 691 Mb/s | ✓ (tight once blanking is added) | ✓ |
+
+So the resistor front end **can** run this camera — but only at 60 fps on 2 lanes, or at the full
+120 fps if all 4 lanes are wired (5 pairs: 15 resistors, 10 LP inputs). Both land at the same
+691 Mb/s/lane; 4-lane buys frame rate, not margin.
+
+> ⚠️ Whether the module can be *configured* for 2-lane output is **unknown** — the AR0234CS
+> register map is not public (gate 6). If it only ever emits 4 lanes, the 2-lane option does not
+> exist and this board must wire 5 pairs. **Confirm with The Imaging Source before layout.**
 
 ---
 
@@ -272,8 +336,8 @@ Same three-site mating as the trigger stack board (ROADMAP §3, §5):
   **800 Mb/s ceiling vs the roadmap's 1.0–1.25 Gb/s budget** (§3.3 #2) — this one may change the
   whole approach.
 - **VCCO13 source** on the Pt V2 (gate 2).
-- **36S TRM**: 22-pin map, I²C level + address, trigger electrical level (gate 3).
+- ~~36S TRM: 22-pin map, I²C level + address, trigger electrical level~~ — **done** (§5).
 - Pt V2 ↔ Br/Hd stack mate confirmed against mechanical drawing (gate 4).
-- Sensor **2-lane mode** selection (AR0521 supports 2- and 4-lane) to live under the ~1080p line-
-  rate budget (MIPI_CSI2_ROADMAP §7).
+- **2-lane vs 4-lane** (gate 5, §5.3). The sensor is an **AR0234CS**, not an AR0521. Whether a
+  2-lane output mode exists is unconfirmed — its register map is not public (gate 6).
 - `Pt2.xdc` port→ball mapping for the pins in §4 (bank 13 @ 1.8 V, bank 14 @ 3.3 V).

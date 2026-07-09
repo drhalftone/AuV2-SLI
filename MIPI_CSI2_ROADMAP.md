@@ -48,13 +48,20 @@ they are reserved for a future SerDes/SLVS-EC/PCIe camera or high-speed frame eg
 
 ## 2. Connector & lane scope
 
-- **22-pin 0.5 mm FFC** (Raspberry Pi CM/Pi-5 family) = **2 data lanes + 1 clock lane** CSI-2.
-- 3 differential pairs total (CLK, D0, D1) on the D-PHY; plus I²C (CCI), sensor reference clock,
-  and power rails.
-- **Reference sensor: Sony IMX219** (Raspberry Pi Camera v2) — 2-lane, abundant open register
-  sets, lots of prior FPGA bring-up to crib from. De-risks I²C config more than anything else.
-- **4-lane headroom:** bank 13 has ~11 usable pairs, so a future 4-lane (5-pair) sensor fits
-  without touching another bank (would need a larger FFC, e.g. the CM4/CM5 connector).
+- **22-pin 0.5 mm FFC** (Raspberry Pi CM/Pi-5 family) carries **4 data lanes + 1 clock lane**.
+  Wiring only D0/D1 (3 pairs: CLK, D0, D1) is a *choice*, not a connector limit — see below.
+- **Target camera: The Imaging Source `DMM 36SR0234-ML`** (settled). onsemi **AR0234CS**,
+  1920×1200 mono, **global shutter**, 120 fps, 10-bit, 22-pin FFC. Complete module: single 3.3 V
+  supply (~260 mA), on-board 25 MHz `INCK` and regulators, hardware trigger in + strobe out.
+  See [`LauMipiCamera_Alchitry_Stack/SCHEMATIC.md`](LauMipiCamera_Alchitry_Stack/SCHEMATIC.md) §5.
+- ⚠️ **Register map is not public.** The TRM states the AR0234CS data sheet is not publicly
+  available; settings must come from The Imaging Source support. This removes the "abundant open
+  register sets" advantage that originally motivated an IMX219 reference and puts CCI config on
+  the critical path for bring-up.
+- **Lane budget:** full res × 120 fps × 10 bit = **2.76 Gb/s**. On 2 lanes that is 1.38 Gb/s/lane
+  (over both the XAPP894 800 Mb/s ceiling *and* the HR `-2` ISERDES limit); on 4 lanes, or on
+  2 lanes at 60 fps, it is 691 Mb/s/lane. **4-lane needs 5 pairs** — bank 13 has ~11 usable pairs,
+  so it fits without touching another bank.
 
 ---
 
@@ -70,9 +77,15 @@ I/O in **bank 13**, one clock region → a single bank-13 BUFIO reaches every da
 | **CLK**   | V13 / V14 | B47 / B45 | `IO_L13_T2` **MRCC** → BUFIO/BUFR/MMCM |
 | **DATA0** | Y11 / Y12 | B42 / B40 | `IO_L11_T1` SRCC |
 | **DATA1** | U15 / V15 | B48 / B46 | `IO_L14_T2` SRCC |
-| **I²C SCL** | W10 | B51 | `IO_L10_T1` (single-ended, 1.8 V CCI) |
-| **I²C SDA** | V10 | B53 | `IO_L10_T1` (single-ended, 1.8 V CCI) |
-| **sensor refclk** | AB16 | B54 | or on-board 24 MHz oscillator (preferred) |
+
+> ⚠️ **Corrected.** Earlier revisions of this table put **I²C SCL/SDA on W10 / V10 (B51 / B53)**
+> in bank 13 as "1.8 V CCI", and reserved **AB16 (B54)** for a sensor refclk. Both are wrong for
+> the `DMM 36SR0234-ML`:
+> - The camera's I²C is **3.3 V**, so it cannot live in a 1.8 V bank. `CAM_SCL` / `CAM_SDA` move
+>   to **bank 14** (see `LauMipiCamera_Alchitry_Stack/SCHEMATIC.md` §4.3).
+> - **W10 / V10 are already used** as the `LP_D1_P/N` low-power taps (SCHEMATIC §4.2). Leaving
+>   I²C there double-books the balls.
+> - No refclk pin is needed — the module has an on-board 25 MHz `INCK`.
 
 - **Spare clock-capable pair:** `IO_L12_T1` **MRCC** = W11 / W12 = B41 / B39 — left free.
 - **Polarity:** in every bank-13 pair the **higher B-number is the FPGA P** ball. Route CLK+/D+ →
@@ -112,11 +125,12 @@ A DF40 stacking daughter board, same pattern as `LauCameraTrigger_Alchitry_Stack
 - **Config switching relocated here.** The 4× SPDT scan/colour switches (HvsV/Blue/Green/Red)
   move onto this board, off bank 13, onto **bank-14 3.3 V** B-pins (B27–B32 region). This is what
   frees bank 13 to run at **1.8 V** for MIPI. (Decision: switching lives with the camera board.)
-- **Power rails:** +3V3 from the stack; on-board LDO(s) for **1.8 V** (CCI + VCCO13 reference for
-  the front end) and any sensor rails (IMX219 needs 1.8 V + 2.8 V analog + 1.2 V — provide per the
-  sensor module, or use a pre-regulated camera module).
-- **Sensor reference clock:** on-board 24 MHz oscillator preferred (offloads the FPGA and keeps
-  jitter low); FPGA-driven refclk on B54 is the fallback.
+- **Power rails:** +3V3 from the stack feeds the camera directly (3.15–3.45 V, ~260 mA). **No
+  sensor power tree** — the 36SR0234-ML regulates internally. The only extra rail is **1.8 V** for
+  VCCO13 (HS + LP bank supply); note the camera's I²C/trigger/strobe are **3.3 V**, not 1.8 V.
+- **Sensor reference clock:** none needed. The module has an on-board **25 MHz** `INCK`; the B54
+  FPGA-refclk pin and the on-board-oscillator plan are both dropped.
+- **Power-up:** hold off CCI writes **350 ms** after +3V3 is good (TRM §7.2).
 - **Br is optional** (per `ROADMAP.md` §1): board can mate the Hd directly. Keep MIPI pairs short
   and length-matched through the stack — sub-LVDS 200 mV HS is unforgiving.
 
@@ -171,14 +185,20 @@ the front end handles LP regardless of VCCO.
 
 | Item | Value |
 |---|---|
-| HR-bank ISERDES ceiling (`-2`) | ~1.0–1.25 Gbps/lane |
-| Lanes (22-pin) | 2 |
-| Aggregate | ~2.0–2.5 Gbps |
-| Realistic target | **1080p30 RAW10** (≈ 1.5 Gbps incl. overhead) |
-| Out of reach on this front end | 4K, high-FPS — would need 4-lane + HP banks/SerDes |
+| HR-bank ISERDES ceiling (`-2`) | ~1.0–1.25 Gb/s/lane |
+| **XAPP894 resistor front end** | **~800 Mb/s/lane** ← *the real ceiling, lower than the ISERDES* |
+| Data lanes available (22-pin) | 4 (this board wires 2 — see §2) |
+| `DMM 36SR0234-ML` full res | 1920×1200 × 120 fps × 10 bit = **2.76 Gb/s** |
 
-Pick the sensor mode (resolution / framerate / bit depth) to live under the aggregate. IMX219
-1080p30 2-lane is a safe first target.
+| Wiring | Per-lane | Fits 800 Mb/s? |
+|---|---|---|
+| 2 lanes @ 120 fps | 1382 Mb/s | ✗ |
+| **2 lanes @ 60 fps** | 691 Mb/s | ✓ (tight with blanking) |
+| **4 lanes @ 120 fps** | 691 Mb/s | ✓ (tight with blanking) |
+
+The binding constraint is the **XAPP894 front end (800 Mb/s)**, not the ISERDES. Both viable
+options land at the same per-lane rate; 4-lane buys frame rate, not margin. Whether the module
+supports a 2-lane output mode is unconfirmed (register map not public).
 
 ---
 
@@ -208,8 +228,8 @@ Pick the sensor mode (resolution / framerate / bit depth) to live under the aggr
 4. **VCCO13 = 1.8 V** confirmed safe (no 3.3 V loads left in bank 13).
 5. **SI through the DF40 stack** — length-match the 3 pairs; prefer mating the Hd directly
    (Br optional) to minimize discontinuities at 200 mV HS.
-6. **Sensor power** rails (1.8 / 2.8 / 1.2 V for IMX219) provided on-board or via a pre-regulated
-   module.
+6. ~~Sensor power rails~~ — **resolved**: the `DMM 36SR0234-ML` is a pre-regulated module needing
+   only +3.3 V. No sensor power tree, no oscillator.
 
 **Confirmed / de-risked:**
 - Pt V2 top DF40 is Au-compatible (same A/B signal namespace) → Br/Hd/daughter boards fit.
@@ -234,5 +254,6 @@ Pick the sensor mode (resolution / framerate / bit depth) to live under the aggr
   (Artix-7 package pinout files).
 - **D-PHY front end + CSI-2 RX on 7-series:** Xilinx **XAPP894**, **PG202** (MIPI CSI-2 RX
   Subsystem + MIPI D-PHY).
-- **Reference sensor:** Sony IMX219 datasheet + Raspberry Pi Camera v2 register sets.
+- **Camera:** `DMM 36SR0234-ML` Technical Reference Manual (The Imaging Source). The AR0234CS
+  sensor datasheet is **not public** — register settings via TIS support.
 - **Stack/bank context:** [`ROADMAP.md`](ROADMAP.md) §3, §7.
