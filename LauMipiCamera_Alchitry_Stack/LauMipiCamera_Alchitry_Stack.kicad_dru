@@ -5,24 +5,40 @@
 # Applies to the "MipiHS" netclass: CAM_CK_P/N, CAM_D0_P/N, CAM_D1_P/N
 # (set up in the project's net classes; patterns CAM_CK*/CAM_D0*/CAM_D1*).
 #
-# !! WIDTH AND GAP ARE PLACEHOLDERS for 100 ohm differential. Recompute them
-#    from your 4-layer stackup with KiCad's impedance calculator
-#    (Board Setup -> Board Stackup / Constraints) and update BOTH this file
-#    and the MipiHS netclass before routing. The numbers below are typical
-#    for ~0.10-0.13 mm trace on a thin (~0.1 mm) prepreg to the GND plane.
+# GEOMETRY IS NOW TIED TO THE 4-LAYER STACKUP (Board Setup -> Board Stackup):
+#
+#   F.Cu    35 um   signal   <- HS pairs live here (microstrip)
+#     prepreg 0.0994 mm, er 4.45
+#   In1.Cu  15.2 um GND      <- reference plane
+#     core 1.3008 mm, er 4.6
+#   In2.Cu  15.2 um GND
+#     prepreg 0.0994 mm, er 4.45
+#   B.Cu    35 um   signal   <- DF40 plugs J1/J2/J3
+#
+#   100 ohm differential => trace 0.10 mm, gap 0.13 mm
+#   (Hammerstad microstrip + Wadell coupling: Zdiff = 101.9 ohm bare copper;
+#    solder mask pulls it down ~2 ohm, so ~100 ohm as built.)
+#
+# !! CONFIRM against your fab's own impedance calculator / stackup before
+#    ordering. The dielectric heights above are a generic 1.6 mm 4-layer
+#    build; a different prepreg changes the trace width.
+#
+# The HS pairs MUST stay on F.Cu to keep In1.Cu as their reference. A pair
+# routed on B.Cu references In2.Cu instead -- same geometry, but do not mix
+# layers within one pair.
 # =====================================================================
 
 (version 1)
 
-# --- 100 ohm differential pair gap (placeholder geometry) ---
+# --- 100 ohm differential pair gap ---
 (rule "MipiHS diff-pair gap"
 	(condition "A.NetClass == 'MipiHS'")
-	(constraint diff_pair_gap (min 0.10mm) (opt 0.13mm) (max 0.18mm)))
+	(constraint diff_pair_gap (min 0.11mm) (opt 0.13mm) (max 0.16mm)))
 
-# --- Diff-pair trace width (placeholder for 100R) ---
+# --- Diff-pair trace width for 100R over 0.0994 mm prepreg ---
 (rule "MipiHS track width"
 	(condition "A.NetClass == 'MipiHS'")
-	(constraint track_width (min 0.10mm) (opt 0.13mm) (max 0.20mm)))
+	(constraint track_width (min 0.09mm) (opt 0.10mm) (max 0.13mm)))
 
 # --- Keep P and N tightly coupled: limit uncoupled run length ---
 (rule "MipiHS max uncoupled length"
@@ -58,8 +74,14 @@
 	(constraint edge_clearance (min 0.30mm)))
 
 # --- Discourage layer changes on HS pairs (each via = stub/discontinuity).
-#     Severity warning, not error - relax per route if one transition is
-#     truly unavoidable, and add GND return vias beside it. ---
+#     Severity warning, not error.
+#
+#     EXPECTED: exactly ONE transition per HS net. The camera FFC (J_CAM1) is on
+#     F.Cu and the DF40 plug (J3) is on B.Cu, so each pair must drop through the
+#     board once, near J3. That also swaps its reference plane from In1.Cu to
+#     In2.Cu, so place a GND stitching via beside each pair's transition to give
+#     the return current a path between the two planes. Six warnings here are
+#     correct; more than six means a pair changed layer somewhere it shouldn't.
 (rule "MipiHS avoid vias"
 	(severity warning)
 	(condition "A.NetClass == 'MipiHS'")

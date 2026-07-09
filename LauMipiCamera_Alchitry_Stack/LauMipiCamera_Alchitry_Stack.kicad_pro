@@ -506,12 +506,12 @@
         "clearance": 0.15,
         "diff_pair_gap": 0.13,
         "diff_pair_via_gap": 0.25,
-        "diff_pair_width": 0.13,
+        "diff_pair_width": 0.1,
         "name": "MipiHS",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.13,
+        "track_width": 0.1,
         "tuning_profile": "",
         "via_diameter": 0.4,
         "via_drill": 0.2
@@ -665,7 +665,7 @@
         "uuid": "fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
       }
     ],
-    "used_designators": "R_LP1P1,MASTER1,R_LP1N1,J_CAM1,R_TRIG1,R_LP2P1,R_LP0N1,R_LP2N1,R_LP0P1,R_SCL1,R_SDA1",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [
