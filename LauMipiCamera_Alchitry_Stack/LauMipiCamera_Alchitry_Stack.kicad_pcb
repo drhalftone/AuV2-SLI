@@ -156,7 +156,7 @@
 	(footprint "Connector_FFC-FPC:Hirose_FH12-22S-0.5SH_1x22-1MP_P0.50mm_Horizontal"
 		(layer "F.Cu")
 		(uuid "02cfbbb3-7c1f-435b-9092-646e2d6130b4")
-		(at 158 81.95 180)
+		(at 158 81.95)
 		(descr "Hirose FH12, FFC/FPC connector, FH12-22S-0.5SH, 22 Pins per row (https://www.hirose.com/product/en/products/FH12/FH12-24S-0.5SH(55)/)")
 		(tags "connector Hirose FH12 horizontal")
 		(property "Reference" "J_CAM1"
@@ -480,7 +480,7 @@
 			)
 		)
 		(pad "1" smd rect
-			(at -5.25 -1.85 180)
+			(at -5.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -489,7 +489,7 @@
 			(uuid "d65189dd-3b77-4826-81c8-d83632d0454e")
 		)
 		(pad "2" smd rect
-			(at -4.75 -1.85 180)
+			(at -4.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_D0_N")
@@ -498,7 +498,7 @@
 			(uuid "247a29f5-b053-47ef-a047-618e84db72bf")
 		)
 		(pad "3" smd rect
-			(at -4.25 -1.85 180)
+			(at -4.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_D0_P")
@@ -507,7 +507,7 @@
 			(uuid "0497a284-e97d-4d9e-82d6-b73d37d02c48")
 		)
 		(pad "4" smd rect
-			(at -3.75 -1.85 180)
+			(at -3.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -516,7 +516,7 @@
 			(uuid "4a3af85a-db8b-4360-968e-170f4954ee88")
 		)
 		(pad "5" smd rect
-			(at -3.25 -1.85 180)
+			(at -3.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_D1_N")
@@ -525,7 +525,7 @@
 			(uuid "be822384-c8cc-420d-aa95-0ebcb0422ffc")
 		)
 		(pad "6" smd rect
-			(at -2.75 -1.85 180)
+			(at -2.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_D1_P")
@@ -534,7 +534,7 @@
 			(uuid "f10554d6-0b9d-40c4-9385-f71a5e3cd7d8")
 		)
 		(pad "7" smd rect
-			(at -2.25 -1.85 180)
+			(at -2.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -543,7 +543,7 @@
 			(uuid "078bfcd5-f63d-4002-b3ab-1f2da0008c17")
 		)
 		(pad "8" smd rect
-			(at -1.75 -1.85 180)
+			(at -1.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_CK_N")
@@ -552,7 +552,7 @@
 			(uuid "b92c69bc-e49e-41b1-aef1-4522c0504d1b")
 		)
 		(pad "9" smd rect
-			(at -1.25 -1.85 180)
+			(at -1.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_CK_P")
@@ -561,7 +561,7 @@
 			(uuid "2d22ce50-92e8-4ecf-b497-c02009fdfb8f")
 		)
 		(pad "10" smd rect
-			(at -0.75 -1.85 180)
+			(at -0.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -570,7 +570,7 @@
 			(uuid "23a72132-2895-46ec-bb20-d9beccf2d15d")
 		)
 		(pad "11" smd rect
-			(at -0.25 -1.85 180)
+			(at -0.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "unconnected-(J_CAM1-Pin_11-Pad11)")
@@ -579,7 +579,7 @@
 			(uuid "74c088ef-a8f8-4026-98da-3c46cf330dd1")
 		)
 		(pad "12" smd rect
-			(at 0.25 -1.85 180)
+			(at 0.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "unconnected-(J_CAM1-Pin_12-Pad12)")
@@ -588,7 +588,7 @@
 			(uuid "bf61bbe5-a211-4ef7-afa1-2693e438e047")
 		)
 		(pad "13" smd rect
-			(at 0.75 -1.85 180)
+			(at 0.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -597,7 +597,7 @@
 			(uuid "603faac2-a65d-4c53-9a0a-bdf0fd1fa6bc")
 		)
 		(pad "14" smd rect
-			(at 1.25 -1.85 180)
+			(at 1.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "unconnected-(J_CAM1-Pin_14-Pad14)")
@@ -606,7 +606,7 @@
 			(uuid "299e8694-bdf0-4d35-867e-c19720f1a592")
 		)
 		(pad "15" smd rect
-			(at 1.75 -1.85 180)
+			(at 1.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "unconnected-(J_CAM1-Pin_15-Pad15)")
@@ -615,7 +615,7 @@
 			(uuid "de9e618a-1624-4a19-b212-38a8a9d159d0")
 		)
 		(pad "16" smd rect
-			(at 2.25 -1.85 180)
+			(at 2.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -624,7 +624,7 @@
 			(uuid "5163158e-117d-4eb5-a43e-d28ab82f90ef")
 		)
 		(pad "17" smd rect
-			(at 2.75 -1.85 180)
+			(at 2.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_TRIG_R")
@@ -633,7 +633,7 @@
 			(uuid "a570c86f-e709-46af-9d0f-1ca87aeb8239")
 		)
 		(pad "18" smd rect
-			(at 3.25 -1.85 180)
+			(at 3.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_STROBE")
@@ -642,7 +642,7 @@
 			(uuid "c5ef50a5-3b56-41e0-9816-ed2bfea5a320")
 		)
 		(pad "19" smd rect
-			(at 3.75 -1.85 180)
+			(at 3.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "GND")
@@ -651,7 +651,7 @@
 			(uuid "6225af17-67e8-47ad-8356-b24e62f16a9f")
 		)
 		(pad "20" smd rect
-			(at 4.25 -1.85 180)
+			(at 4.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_SCL")
@@ -660,7 +660,7 @@
 			(uuid "3c0f1e5e-7a89-485b-895d-a466e57b8e38")
 		)
 		(pad "21" smd rect
-			(at 4.75 -1.85 180)
+			(at 4.75 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "CAM_SDA")
@@ -669,7 +669,7 @@
 			(uuid "d6a7cfb9-fdd3-4aee-8364-250229887986")
 		)
 		(pad "22" smd rect
-			(at 5.25 -1.85 180)
+			(at 5.25 -1.85)
 			(size 0.3 1.3)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(net "+3V3")
@@ -678,13 +678,13 @@
 			(uuid "4a5a9669-d1ea-4c06-84ed-82fe8c5d014c")
 		)
 		(pad "MP" smd rect
-			(at -7.15 1.4 180)
+			(at -7.15 1.4)
 			(size 1.8 2.2)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(uuid "6c450876-2302-433a-85c5-84259cc9b14f")
 		)
 		(pad "MP" smd rect
-			(at 7.15 1.4 180)
+			(at 7.15 1.4)
 			(size 1.8 2.2)
 			(layers "F.Cu" "F.Mask" "F.Paste")
 			(uuid "c80de150-92a7-45b7-a836-3d4283deddbf")
