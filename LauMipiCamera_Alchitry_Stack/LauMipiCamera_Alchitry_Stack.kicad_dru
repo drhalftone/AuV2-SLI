@@ -59,13 +59,16 @@
 	(condition "A.NetName == 'CAM_D1_P' || A.NetName == 'CAM_D1_N'")
 	(constraint skew (max 0.08mm)))
 
-# --- Extra clearance from the HS pairs to all other nets (~3W) ---
+# --- Extra clearance from the HS pairs to all other SIGNAL nets (~3W) ---
 #     Scoped to TRACKS. Without `A.Type == 'Track'` this also fires between
 #     adjacent pads inside J3 (DF40, 0.4 mm pitch) and J_CAM (FFC, 0.5 mm),
 #     where the pad-to-pad gap is fixed by the connector and can never reach
 #     0.25 mm. Track-vs-pad is still checked, because B is unconstrained.
+#     GND is EXCLUDED: it is the reference plane, so the HS pair *wants* to run
+#     close to it -- and at the J3 fanout the pair unavoidably passes GND pads
+#     0.17 mm away. 3W separation is only meaningful against other signals.
 (rule "MipiHS clearance to other nets"
-	(condition "A.NetClass == 'MipiHS' && B.NetClass != 'MipiHS' && A.Type == 'Track'")
+	(condition "A.NetClass == 'MipiHS' && B.NetClass != 'MipiHS' && B.NetName != 'GND' && A.Type == 'Track'")
 	(constraint clearance (min 0.25mm)))
 
 # --- Keep HS pairs away from the board edge ---
