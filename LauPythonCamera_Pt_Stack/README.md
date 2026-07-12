@@ -360,13 +360,58 @@ and Bank B 80-pin connectors carry **IO + GND exclusively — no power pins.** R
 
 ---
 
+### 6.4.1 Pull resistors — every sensor CMOS INPUT gets one
+
+FPGA user I/O are **Hi-Z until `DONE` goes high**. During the whole configuration window,
+`vdd_33` is already up and every control line into the sensor floats. A floating CMOS input
+sits at an indeterminate level and burns **crowbar current** in the sensor's input buffer.
+
+**Every sensor CMOS input on this board has a pull. All eight of them.**
+
+| Net | Sensor pin | Dir | Pull | Why |
+|---|---|---|---|---|
+| `ss_n` | 47 | IN | **R3, 10k UP** → `+3V3_CAM` | a floating select could read as ASSERTED |
+| `reset_n` | 46 | IN | **R4, 10k DOWN** | active-low → holds the sensor in reset. Fail-safe. |
+| `trigger0-2` | 41-43 | IN | **R5/R6/R7, 10k DOWN** | rising edge starts integration; low = no spurious exposure |
+| `mosi` | 2 | IN | **R13, 10k DOWN** | |
+| `sck` | 4 | IN | **R14, 10k DOWN** | |
+| `clk_pll` | 25 | IN | **R15, 10k DOWN** | unused in this clocking scheme, but still a CMOS input |
+
+> **`R13`/`R14`/`R15` were missing.** They were originally exempted because `mosi` and `sck`
+> are "inert while `ss_n` is deasserted". **That is a logic argument, not an electrical one.**
+> The pins are CMOS input buffers regardless of what the protocol is doing, and they float for
+> tens to hundreds of milliseconds at every power-up.
+
+> **`R3` pulls up to `+3V3_CAM`, not `+3V3_SYS`.** This looks like an inconsistency and is
+> deliberate: pulling to the *sensor's own* rail avoids driving a pin high through the sensor's
+> ESD structure while `vdd_33` is still off. Do not "tidy" it to `+3V3_SYS`.
+
+`BITSTREAM.CONFIG.UNUSEDPIN PULLDOWN` in the XDC does **not** cover these — they are *used*
+pins, and the setting does nothing before the bitstream loads, which is exactly the window
+that matters. **The external resistors are the only guarantee.**
+
 ### 6.5 The regulator chain, as implemented
 
 ```
-  C header  +3.3V ──┬──> U2  AP2112K-1.8  LDO   ──> +1V8_CAM   (vdd_18,  ~80 mA)
-                    └──> U3  load switch  3V3   ──> +3V3_CAM   (vdd_33, ~140 mA)
-  C header  VDD ───────> U4  LDO 3V3 ±1%        ──> +3V3_PIX   (vdd_pix,  ~5 mA)
+  C header  +3.3V ──┬──> U2  AP2112K-1.8 LDO ──────────────────> +1V8_CAM  (vdd_18,  ~80 mA)
+                    └──> U3  load switch     ──────────────────> +3V3_CAM  (vdd_33, ~140 mA)
+                             Rds(on) <= 100 mOhm
+  C header  VDD ───────> U4  ADP7158-3.3 ──┬── C23 (2u2) ── FB1 ──> +3V3_PIX (vdd_pix, ~5 mA)
+                                           |               BLM18
+                                        +3V3_PIX_RAW
 ```
+
+> **`C23` sits at `U4`'s VOUT pin, on the RAW side of the bead.** An LDO's output capacitor is
+> part of its **compensation loop** — it must be at the pin. An earlier revision put *every*
+> vdd_pix capacitor behind `FB1`, leaving `+3V3_PIX_RAW` with **zero** capacitance; the bead's
+> impedance then swamps the cap's at the loop crossover and the regulator can peak or
+> oscillate. On the one rail whose whole purpose is to be quiet.
+
+> **`U3`'s R<sub>DS(on)</sub> must be ≤ 100 mΩ.** `vdd_33` is *unregulated* — it is
+> `+3V3_SYS` through a pass FET — against a **±3% window (3.2–3.4 V)** at **140 mA**. A typical
+> cheap SOT-23-5 switch at 500 mΩ drops 70 mV and lands `vdd_33` at **3.16 V, under the
+> minimum**. This is the same class of trap as `U4`'s ±1% requirement. Add it to the
+> do-not-substitute list.
 
 Three decisions worth understanding, because each looks odd in isolation:
 
@@ -409,7 +454,7 @@ what sets bank 13 to 2.5 V. **Not optional** — see §3.
 | Ref | Part | Role |
 |---|---|---|
 | `J1` | `DF40C-80DP-0.4V` | **Bank A** — 11 single-ended control signals (banks 14/35, 3.3 V) |
-| `J2` | `DF40C-80DP-0.4V` | **Bank B** — the 7 LVDS pairs (bank 13, 2.5 V), all on the ODD row |
+| `J2` | `DF40C-80DP-0.4V` | **Bank B** — the 7 LVDS pairs (bank 13, 2.5 V), all on the **EVEN** row (§5.1.1) |
 | `J3` | `DF40C-50DP-0.4V` | **Control header** — *all* element power, plus the VBSEL straps |
 
 The 80-pin symbol puts **odd pins on the left, even on the right**, mirroring the connector's
