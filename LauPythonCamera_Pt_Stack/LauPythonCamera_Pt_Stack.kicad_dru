@@ -14,17 +14,38 @@
 # reference plane sits 1.6 mm away across the core.
 #
 # STACKUP: JLCPCB JLC04161H-7628, 1.6 mm, 4-layer
-#   F.Cu    0.035  mm  1oz    <- ALL LVDS ROUTES HERE
+#   F.Cu    0.035  mm  1oz    <- image sensor SOCKET (faces UP), components
 #   prepreg 0.2104 mm  7628, Er ~ 4.4
-#   In1.Cu  0.0152 mm  0.5oz  <- SOLID GND. Do not split it under a pair.
+#   In1.Cu  0.0152 mm  0.5oz  <- SOLID GND
 #   core    1.065  mm
-#   In2.Cu  0.0152 mm  0.5oz  <- PWR
+#   In2.Cu  0.0152 mm  0.5oz  <- SOLID GND  (NOT power -- see below)
 #   prepreg 0.2104 mm  7628
-#   B.Cu    0.035  mm  1oz
+#   B.Cu    0.035  mm  1oz    <- DF40 connectors (face DOWN), LVDS pairs
+#
+# !! BOTH inner layers are GROUND. This is deliberate. !!
+#
+# The socket is on TOP and the DF40s are on the BOTTOM, so EVERY signal must
+# cross the board. One via per trace is UNAVOIDABLE -- 25 signals, 25 vias.
+#
+# If In2 were a POWER plane, a pair routed on B.Cu would reference power, and at
+# the via the return current would have to hop from the In1 ground reference to
+# the In2 power reference -- which it can only do THROUGH the decoupling caps.
+# That is the classic way to wreck a high-speed layer transition.
+#
+# With In1 and In2 both GND, the transition is a ground-to-ground hop and a
+# stitching via right beside the signal via gives the return current a direct
+# path. We can afford to spend both inner layers on ground because the power is
+# trivial: 140 mA + 80 mA + 5 mA. Three rails, all tiny; they route as ordinary
+# traces / small pours on F.Cu. Do NOT spend an inner layer on a power plane.
+#
+# ROUTING: escape the socket on F.Cu (1.016 mm pitch, roomy), drop through in
+# OPEN BOARD AREA -- not in the congested 0.4 mm DF40 fanout -- then run the
+# controlled-impedance length on B.Cu referenced to the solid In2 ground.
 #
 # GEOMETRY: W = 0.24 mm, S = 0.20 mm -> ~100R differential (IPC-2141 approx,
-# 99.8R). CONFIRM in KiCad Board Setup -> Board Stackup with the real Er, and
-# tick "Impedance controlled" when ordering so JLC verifies it.
+# 99.8R). Same on F.Cu and B.Cu -- the stackup is symmetric (0.2104 mm prepreg to
+# the adjacent ground on both outer layers). CONFIRM in KiCad Board Setup ->
+# Board Stackup with the real Er, and tick "Impedance controlled" when ordering.
 # =====================================================================
 
 (version 1)
@@ -89,14 +110,31 @@
 	(condition "A.NetClass == 'CamLVDS'")
 	(constraint edge_clearance (min 0.30mm)))
 
-# --- No layer changes on the LVDS pairs. On this stackup a pair on F.Cu is
-#     referenced to the solid GND on In1.Cu, 0.21mm below. A via breaks that
-#     reference and adds a stub. Severity warning, not error: if one transition
-#     is truly unavoidable, put GND stitching vias immediately beside it. ---
-(rule "CamLVDS avoid vias"
-	(severity warning)
-	(condition "A.NetClass == 'CamLVDS'")
-	(constraint disallow via))
+# --- VIAS: EXACTLY ONE per trace. Not zero -- one.
+#
+#     An earlier revision of this file forbade vias on the LVDS pairs. That was
+#     WRONG and is corrected here: the socket is on TOP and the DF40s are on the
+#     BOTTOM, so every trace MUST cross the board. Zero vias is geometrically
+#     impossible; the goal is exactly one, placed well.
+#
+#     DRC cannot express "at most one via per net" -- these are rules for a human:
+#
+#       1. BOTH VIAS OF A PAIR, SYMMETRIC. Same distance along the pair, so P and
+#          N pick up equal delay through the transition. An asymmetric via pair
+#          converts differential signal into common mode.
+#       2. A GND STITCHING VIA IMMEDIATELY BESIDE each pair's vias. This is what
+#          carries the return current between In1 and In2. Without it the return
+#          has no path and the transition radiates.
+#       3. DROP THROUGH IN OPEN BOARD AREA -- not in the 0.4mm DF40 fanout, where
+#          there is no room to stitch.
+#       4. NO STUB, for free: a through-hole via on a 4-layer board spans the full
+#          stack, so nothing dangles.
+#
+#     What DRC CAN check is the via geometry, below. ---
+(rule "CamLVDS via size"
+	(condition "A.NetClass == 'CamLVDS' && A.Type == 'Via'")
+	(constraint hole_size (min 0.3mm) (opt 0.3mm))
+	(constraint via_diameter (min 0.5mm) (opt 0.5mm)))
 
 # --- The 100R termination R2 belongs AT the sensor, not near the connector.
 #     It is the far-end termination for the clock the FPGA drives into U1.

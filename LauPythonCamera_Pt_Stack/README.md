@@ -546,13 +546,66 @@ JLCPCB's standard 4-layer stackup. Set this in **Board Setup → Physical Stacku
 
 | Layer | Thickness | Material | Role |
 |---|---|---|---|
-| `F.Cu` | 0.035 mm (1 oz) | copper | **all LVDS routes here** |
-| prepreg | **0.2104 mm** | 7628, Er ≈ 4.4 | LVDS references across this |
-| `In1.Cu` | 0.0152 mm (0.5 oz) | copper | **solid GND — never split under a pair** |
+| `F.Cu` | 0.035 mm (1 oz) | copper | image sensor **socket (faces UP)**, all components |
+| prepreg | **0.2104 mm** | 7628, Er ≈ 4.4 | |
+| `In1.Cu` | 0.0152 mm (0.5 oz) | copper | **SOLID GND — never split under a pair** |
 | core | 1.065 mm | FR-4 | |
-| `In2.Cu` | 0.0152 mm (0.5 oz) | copper | PWR |
+| `In2.Cu` | 0.0152 mm (0.5 oz) | copper | **SOLID GND** (not power — see below) |
 | prepreg | 0.2104 mm | 7628 | |
-| `B.Cu` | 0.035 mm (1 oz) | copper | slow signals, pours |
+| `B.Cu` | 0.035 mm (1 oz) | copper | **DF40 connectors (face DOWN)**, LVDS pairs |
+
+### 11.2.1 ⚠️ Vias are MANDATORY, and both inner layers are GROUND
+
+**The socket is on TOP and the DF40s are on the BOTTOM.** They mate downward into the Pt V2,
+while the sensor must look upward. **So every signal has to cross the board. One via per trace
+is geometrically unavoidable — 25 signals, 25 vias.** Zero-via routing is not an option, and
+an earlier revision of this document that claimed otherwise was simply wrong.
+
+**That is why `In2.Cu` is ground, not power.** If it were a power plane, a pair routed on
+`B.Cu` would reference *power*, and at the via the return current would have to hop from the
+`In1` ground reference to the `In2` power reference — which it can only do **through the
+decoupling capacitors**. That is the classic way to wreck a high-speed layer transition.
+
+With both inner layers ground, the transition is a **ground-to-ground hop**, and a stitching
+via right beside the signal via gives the return current a direct path.
+
+**You can afford to spend both inner layers on ground because the power here is trivial:**
+140 mA + 80 mA + 5 mA. Three rails, all tiny. They route as ordinary traces or small pours on
+`F.Cu`. **Do not spend an inner layer on a power plane** — it would buy you nothing and cost
+you the LVDS reference.
+
+**Routing the transition:**
+
+```
+  F.Cu    socket pads ──escape──┐          (1.016 mm pitch: roomy)
+                                │
+          ═══════ via ══════════╪═════ + GND stitching via alongside
+                                │
+  In1     ████ solid GND ███████╪████████
+  In2     ████ solid GND ███████╪████████
+                                │
+  B.Cu                          └──── 100 Ω diff pair ────> DF40 pads
+```
+
+Escape the socket on `F.Cu` where the pitch is generous, **drop through in open board area** —
+*not* in the congested 0.4 mm DF40 fanout, where there is no room to stitch — then run the
+controlled-impedance length on `B.Cu`.
+
+Four rules for the transition, none of which DRC can enforce:
+
+1. **Both vias of a pair, symmetric.** Same distance along the pair, so P and N pick up equal
+   delay. An asymmetric via pair converts differential signal into common mode.
+2. **A GND stitching via immediately beside each pair's vias.** This is what carries the return
+   current between `In1` and `In2`. Without it, the return has no path and the transition
+   radiates.
+3. **Drop through in open area**, per above.
+4. **No stub — for free.** A through-hole via on a 4-layer board spans the full stack, so
+   nothing dangles.
+
+Via geometry is `0.5 mm / 0.3 mm` (JLCPCB standard process), set in the `CamLVDS` netclass.
+
+> The impedance target `W = 0.24 / S = 0.20` applies **on both outer layers** — the stackup is
+> symmetric, with 0.2104 mm of prepreg to the adjacent ground plane on each side.
 
 ### 11.3 Geometry for 100 Ω differential
 
