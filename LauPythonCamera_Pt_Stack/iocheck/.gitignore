@@ -1,9 +1,13 @@
-# Vivado run artefacts — regenerate with: vivado -mode batch -source run_iocheck.tcl
+# Vivado run artefacts — regenerate with:
+#   vivado -mode batch -source run_iocheck.tcl      (camera alone)
+#   vivado -mode batch -source run_stackcheck.tcl   (Pt + Hd + Ft+ + camera)
 *.log
 *.jou
 *.str
 .Xil/
 io_report.txt
 drc_report.txt
+stack_io_report.txt
+stack_drc_report.txt
 clockInfo.txt
 dfx_runtime.txt
