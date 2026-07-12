@@ -492,48 +492,72 @@ element standard or the board will not mate. Everything below is measured from
   Mount holes   4 x Ø2.2 mm at (2.5, 2.5) (2.5, 42.5) (52.5, 2.5) (52.5, 42.5)
                 -> a 50 x 40 mm rectangle, 2.5 mm in from each corner
 
-  J3  Bank B    80-pin DF40C-80DP  at (38.0, 41.0)   <- the 7 LVDS pairs
+  J2  Bank B    80-pin DF40C-80DP  at (38.0, 41.0)   <- the 7 LVDS pairs
   J1  Bank A    80-pin DF40C-80DP  at (38.0,  4.0)   <- 11 control signals
-  J2  Control   50-pin DF40C-50DP  at (16.5,  4.0)   <- ALL power + VBSEL
+  J3  Control   50-pin DF40C-50DP  at (16.5,  4.0)   <- ALL power + VBSEL
 
   ALL THREE CONNECTORS ARE ON B.Cu (bottom). They mate DOWNWARD into the Pt V2.
 ```
 
+> ⚠️ **Refdes differ from the fabbed reference board.** `LauCameraTrigger_Alchitry_Stack` calls
+> the control header `J1` and Bank B `J3`. **This** board calls Bank A `J1`, Bank B `J2`, and
+> the control header `J3` — matching its own schematic. The *positions* above are what matter;
+> take the refdes from our schematic, not from theirs.
+
 > **Bank B is the one at y = 41.** Confirmed by tracing nets on the fabbed board — it is the
 > connector carrying that design's `CAM_TRIG`/`CAM_READY`, which its own notes place on Bank B.
 
-### 8.1 Floorplan
+### 8.1 The board has a NOTCH — and the socket is bigger than its body
 
-The sensor socket **must** sit above Bank B (nothing else fits), which is what forces the
-even-row LVDS assignment (§5.1.1).
+Two things that constrain placement, both easy to miss:
+
+**1. The socket's copper is 22.35 mm square, not 16.76 mm.** The *body* is 16.76 mm, but the
+pads sit at a 9.906 mm radius and are 2.54 mm long, so they reach **±11.176 mm**. That is what
+must clear everything.
+
+**2. There is a notch in the right edge**, cut in to **x = 49.5 mm**, spanning y ≈ 8–37. It is
+on the fabbed board, so it is presumably connector/cable clearance for the stack. **Keep it.**
+
+Those two together bite:
+
+| Sensor centre x | Socket pads reach | Gap to notch | |
+|---|---|---|---|
+| **38.0** (aligned with Bank B) | 49.18 | **0.32 mm** | ✗ inside our own 0.3 mm edge-clearance rule |
+| 37.0 | 48.18 | 1.32 mm | ok |
+| **36.0** | **47.18** | **2.32 mm** | ✓ **use this** |
+
+### 8.2 Floorplan
 
 ```
         +--------------------------------------------------+  y=0
-        |  o                                            o  |   mount holes
-        |         [J2 ctrl]        [J1 Bank A]             |   y=4
+        |  o                                            o  |   mount holes (2.5, 2.5) etc
+        |         [J3 ctrl]        [J1 Bank A]             |   y=4   (J3=control, J1=Bank A)
         |                                                  |
-        |              +----------------------+            |
-        |              |                      |            |
-        |              |   U1  PYTHON 1300    |            |   socket 16.76 mm sq
-        |              |   (socket, F.Cu)     |            |   centre ~ (38, 22)
-        |              |                      |            |
-        |              +----------+-----------+            |   LVDS edge (pins 7-18)
-        |                    :::::::::::                   |   <- via field, ~6 mm
-        |                   [ J1  Bank B ]                 |   y=41
+        |          +----------------------+          +-----+
+        |          |                      |          |
+        |          |   U1  PYTHON 1300    |          | NOTCH    x >= 49.5
+        |          |   socket, F.Cu       |          |          y ~ 8..37
+        |          |   centre (36, 22)    |          |
+        |          +----------+-----------+          +-----+
+        |                 :::::::::::                      |   via field, ~6 mm
+        |                [ J2  Bank B ]                    |   y=41  (J2 = Bank B, the LVDS)
         |  o                                            o  |
         +--------------------------------------------------+  y=45
 ```
 
-- **Sensor centred near (38, 22)**, LVDS edge facing down at Bank B. That leaves roughly
-  **6 mm** between the socket's bottom pad row and Bank B's even-row pads — the **via field**.
-- The socket is on `F.Cu`; the connectors are on `B.Cu`. **Every signal crosses the board**
-  (§11.2.1). Reserve that 6 mm band for the 14 signal vias **plus their GND stitching vias** —
-  do not let placement eat it.
-- Control signals exit the sensor's **left** edge and route up to Bank A. They are slow; length
-  does not matter.
-- `R2` (100 Ω termination) sits at the sensor's **right** edge, at pins 23/24. `R1` (47 kΩ
-  bias) also right, at pin 28.
-- Keep the regulators well away from the LVDS band.
+- **Sensor centre (36, 22).** Not 38 — see §8.1. Socket copper spans x 24.8–47.2, y 10.8–33.2.
+- **LVDS fan skews right.** The sensor's LVDS pads span x 30.4–41.6; Bank B's usable even pairs
+  span x 37.8–45.4. So the bundle runs ~5 mm to the right over a ~6 mm drop. Diagonal, but
+  **intra-pair matching is preserved** — that is what matters.
+- **~6 mm between the socket's bottom pad row and Bank B** is the **via field**. Every signal
+  crosses the board (§11.2.1). Reserve it for the 14 signal vias **plus their GND stitching
+  vias**. Do not let component placement eat it.
+- Control signals exit the sensor's **left** edge → route up to Bank A. Slow; length irrelevant.
+- **`R2`** (100 Ω termination) at the sensor's **right** edge, pins 23/24. **`R1`** (47 kΩ bias)
+  also right, at pin 28.
+- Regulators and bulk caps go **left** (x < 24), well away from the LVDS band.
+- **Fiducials:** the fabbed board has none and JLC assembled it anyway. Optional — but for
+  0.4 mm-pitch DF40s, three local fiducials are cheap insurance.
 
 ## 9. Consequences for the RTL / constraints
 
