@@ -393,61 +393,87 @@ that matters. **The external resistors are the only guarantee.**
 ### 6.5 The regulator chain, as implemented
 
 ```
-  C header  +3.3V ──┬──> U2  AP2112K-1.8 LDO ──────────────────> +1V8_CAM  (vdd_18,  ~80 mA)
-                    └──> U3  load switch     ──────────────────> +3V3_CAM  (vdd_33, ~140 mA)
-                             Rds(on) <= 100 mOhm
-  C header  VDD ───────> U4  ADP7158-3.3 ──┬── C23 (2u2) ── FB1 ──> +3V3_PIX (vdd_pix, ~5 mA)
-                                           |               BLM18
-                                        +3V3_PIX_RAW
+  C hdr +3.3V ──┬──> U2  AP2112K-1.8 LDO ───────────────────────> +1V8_CAM (vdd_18,  ~80 mA)
+                └──> U3  load switch, Rds(on) <= 100 mOhm ──────> +3V3_CAM (vdd_33, ~140 mA)
+
+  C hdr VDD ────────> U4  ADJUSTABLE lo-noise LDO ──┬── C23 ── FB1 ──> +3V3_PIX (vdd_pix, ~5 mA)
+                          R17/R18 0.1% set 3.30 V   │  2u2    BLM18
+                                                +3V3_PIX_RAW
+
+  Q1 (PMOS) + R16 : power-down clamp on vdd_pix.
+  D1  across R10  : collapses U4's enable the instant +3V3_CAM falls.
 ```
 
-> **`C23` sits at `U4`'s VOUT pin, on the RAW side of the bead.** An LDO's output capacitor is
-> part of its **compensation loop** — it must be at the pin. An earlier revision put *every*
-> vdd_pix capacitor behind `FB1`, leaving `+3V3_PIX_RAW` with **zero** capacitance; the bead's
-> impedance then swamps the cap's at the loop crossover and the regulator can peak or
-> oscillate. On the one rail whose whole purpose is to be quiet.
+Five decisions here that each look odd in isolation, and each has a reason.
 
-> **`U3`'s R<sub>DS(on)</sub> must be ≤ 100 mΩ.** `vdd_33` is *unregulated* — it is
-> `+3V3_SYS` through a pass FET — against a **±3% window (3.2–3.4 V)** at **140 mA**. A typical
-> cheap SOT-23-5 switch at 500 mΩ drops 70 mV and lands `vdd_33` at **3.16 V, under the
-> minimum**. This is the same class of trap as `U4`'s ±1% requirement. Add it to the
-> do-not-substitute list.
+**1. `vdd_pix` gets its own LDO fed from `VDD`, not the 3.3 V rail.** It needs **3.25–3.35 V**.
+A ±2% tolerance on a nominal 3.3 V rail is 3.23–3.37 V — already outside — and you cannot LDO
+3.3 V down to 3.3 V. So it has to come from `VDD`.
 
-Three decisions worth understanding, because each looks odd in isolation:
-
-**`vdd_pix` gets its own ±1% LDO fed from `VDD`, not from the 3.3 V rail.** The sensor
-demands **3.25–3.35 V** on this pin. A ±2% tolerance on a nominal 3.3 V rail is 3.23–3.37 V —
-**already outside that window** — so tapping the Pt's 3.3 V rail cannot meet spec, and you
-cannot LDO 3.3 V down to 3.3 V (no headroom). It has to come from `VDD`. Its current is only
-~5 mA, so even at `VDD` = 12 V the dissipation is <90 mW — no thermal issue.
-
-> **Specify U4 as ±1% or better.** A garden-variety ±2% 3.3 V LDO does **not** meet the
-> `vdd_pix` window. This is the one part on the board where the tolerance line in the
-> datasheet actually bites.
-
-**`vdd_33` gets a LOAD SWITCH, not a regulator.** It's already 3.3 V, so nothing needs
-regulating — but it needs an **enable**, because a straight rail tap comes up whenever the
-board does, which would violate the power-up order. The switch exists purely so `vdd_33` can
-be *sequenced*.
-
-**Sequencing is an RC cascade** (`R8`–`R10`, `C15`–`C17`). Each stage's output enables the
-next:
+**2. `U4` is ADJUSTABLE, with a 0.1% divider. A fixed "±1%" LDO is NOT good enough.**
 
 ```
-  +3V3_SYS ─R8─┬─> U2.EN     (vdd_18 comes up first)
-               C15
-  +1V8_CAM ─R9─┬─> U3.EN     (vdd_33 follows)
-               C16
-  +3V3_CAM ─R10┬─> U4.EN     (vdd_pix last)
-               C17
+  vdd_pix window : 3.25 .. 3.35 V  =  +/-1.52% of 3.3 V
+  a "+/-1%" fixed LDO is usually +/-1% at 25 C and +/-2% OVER TEMPERATURE
+                                 -> 3.234 .. 3.366 V  ** outside at BOTH ends **
+  adjustable + 0.1% divider      -> ~3.260 .. 3.340 V   inside
 ```
 
-That yields **`vdd_18` → `vdd_33` → `vdd_pix`**, the datasheet order, with ~1 ms between
-stages — comfortably over the 10 µs minimum. Power-down is not sequenced; if that turns out to
-matter, it needs a proper sequencer IC.
+An earlier revision specified `ADP7158-3.3`. That was wrong twice: it is a **2 A** part (our
+load is 5 mA), in a 10-lead LFCSP — not the 5-pin SOT-23 the symbol drew — and its *fixed*
+output still drifts over temperature. **Requirement for whatever lands here:** adjustable,
+low-noise, high-PSRR, V<sub>in</sub> ≥ 12 V, I<sub>out</sub> ≥ 50 mA, EN pin, **reference
+accuracy ≤ ±1% over temperature.**
 
-**`VBSEL_A` / `VBSEL_B` are strapped HIGH** through `R11`/`R12` (1 k to `+3V3_SYS`). This is
-what sets bank 13 to 2.5 V. **Not optional** — see §3.
+> Not a destruction risk — abs-max on the 3.3 V group is 4.3 V. It is a **performance** risk on
+> the pixel array supply, which is the rail this entire section exists to protect.
+
+**3. `C23` sits at `U4`'s VOUT pin, on the RAW side of the bead.** An LDO's output capacitor is
+part of its **compensation loop** and must be at the pin. An earlier revision put *every*
+vdd_pix cap behind `FB1`, leaving `+3V3_PIX_RAW` with **zero** capacitance — the bead's
+impedance then swamps the cap's at loop crossover and the regulator can peak or oscillate.
+
+**4. `vdd_33` gets a LOAD SWITCH, not a regulator.** It is already 3.3 V; nothing needs
+regulating. It needs an **enable**, because a straight rail tap comes up whenever the board
+does, which violates the power-up order. **R<sub>DS(on)</sub> must be ≤ 100 mΩ** — `vdd_33` is
+unregulated against a ±3% window at 140 mA, and a typical 500 mΩ switch drops 70 mV and lands
+it at **3.16 V, under the 3.2 V minimum.**
+
+**5. Sequencing.**
+
+*Power-UP* is an RC cascade (`R8`–`R10`, `C15`–`C17`); each stage's output enables the next,
+giving **`vdd_18` → `vdd_33` → `vdd_pix`** with ~1 ms per stage against a 10 µs minimum. ✅
+
+*Power-DOWN* needed a real fix. **`VDD_SYS` outlives `+3V3_SYS`** — the Pt's 3.3 V regulator is
+fed *from* VDD — and `vdd_pix` is the only rail fed from `VDD_SYS`. Left alone, `vdd_33` and
+`vdd_18` collapse while **`vdd_pix` sits at 3.3 V into a dead core for ~9 ms** (14 µF against a
+5 mA load), forward-biasing internal junctions against a **100 mA latch-up rating** — on every
+unplug and every reset. The datasheet (p.18) is explicit: *"first vdd_pix, second vdd_33, and
+finally vdd_18. **Any other sequence can cause high peak currents.**"*
+
+The board was not merely unsequenced on the way down. It was **anti-sequenced**.
+
+```
+  Q1  PMOS.  source = +3V3_PIX,  gate = +3V3_SYS,  drain -> R16 (47R) -> GND
+
+    normal     Vgs = 3.3 - 3.3 = 0      -> OFF
+    startup    Vgs = 3.3 - 0   = +3.3   -> OFF  (it is a PMOS)
+    power-down +3V3_SYS falls below vdd_pix by |Vth|  -> ON, dumps the rail
+
+  => vdd_pix can never sit more than ~|Vth| above vdd_33.
+  => when vdd_33 = 0, vdd_pix <= ~0.9 V.  The failure mode is gone.
+```
+
+**`D1` (across `R10`) is not optional.** Without it, `SEQ_PIX` decays with a 1 ms RC *after*
+`+3V3_CAM` dies, so `U4` keeps regulating 3.3 V into a conducting `Q1` — the clamp fights the
+regulator. The diode collapses `U4`'s enable the instant `+3V3_CAM` falls, and is
+reverse-biased on the way up, so the slow ramp is preserved.
+
+> **No diode across `R8`, deliberately.** `vdd_18` must be the **last** rail down; collapsing
+> its enable early would defeat that.
+
+**`VBSEL_A` / `VBSEL_B` strapped HIGH** through `R11`/`R12` (1 k to `+3V3_SYS`). This is what
+sets bank 13 to 2.5 V. **Not optional** — §3.
 
 ### 6.6 Connectors
 
