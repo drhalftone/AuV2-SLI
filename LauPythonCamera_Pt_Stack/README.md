@@ -575,19 +575,51 @@ From the PYTHON 1300 datasheet, **Figure 51** (tick marks around the package) an
   top   edge:  31..42  right -> left
 ```
 
-- `lvds_clock_in` (23/24) sits on the **right edge, 5th/6th pin up from the bottom-right
-  corner** — i.e. just around the corner from pin 18. This is why it takes the *last* pair in
-  the DF40 odd-row run (§5.1).
+- `lvds_clock_in` (23/24) sits on the **right edge, at roughly MID-HEIGHT** — pin 24 at
+  y = −0.508 mm, pin 23 at y = −1.524 mm. That is **4–5 pitches (~5 mm) up from the
+  bottom-right corner**, *not* immediately around the corner from pin 18. It still takes the
+  rightmost DF40 pair (`B75/B77`, §5.1) since it approaches from the right — but budget for a
+  longer trace than a corner-adjacent exit would need.
 
 > Earlier notes appeared to conflict — one read said "pin 1 mid-left", another "pin 1 just
 > right of top-centre". Both were right: the second was describing the **bottom view**, which
-> mirrors. Figure 52 shows both, and they are consistent.
+> mirrors. Figure 52 prints both side by side and they are consistent.
+>
+> **Independent chirality check:** onsemi's *recommended mounting footprint* (CASE 115AO) puts
+> pin 1 on the **bottom** edge, **right** of centre. No rotation of the *bottom* view can
+> produce that — only a **mirror** can. So the handedness is confirmed twice, by different
+> drawings.
+
+### ⚠️ ASSEMBLY: the sensor is NOT mechanically keyed
+
+**The package has no chamfer and no dot. All four ceramic corners are identical (R0.20).**
+The only physical index is **pin 1's castellation, which is roughly twice as long as the other
+47** (L1 = 1.90–2.42 mm vs L = 0.84–1.20 mm) and T-shaped.
+
+**Consequence: the sensor can physically drop into the socket in four orientations.** Nothing
+stops a 90° error.
+
+- **Orient by the top-surface laser marking.** "ON / PYTHON 1300 A" reads upright when pin 1
+  is at mid-left. (The protective foil's tab, on `-QTI` parts, also points toward pin 1 — but
+  we order `-QDI`, which has no foil.)
+- The board's silkscreen carries a **pin-1 dot** outside the left pad row. Use it.
+- **Cross-check that closes the loop:** Andon's own Fig. 17 puts **pin 1 on the left-hand
+  column, middle** — matching onsemi's mid-left. The socket and the sensor agree.
+- **The socket's asymmetric index pins fix the board rotation** — but only if you order the
+  **`-1`**. The **`-0`** has no index pins and therefore no keying to the board at all; you
+  would be relying on silkscreen alignment by eye. Prefer `-1` if the index-pin protrusion
+  (open item 2) can be resolved.
+
+> **Pad uniformity is correct here.** onsemi's *direct-solder* land pattern gives pin 1 a
+> longer pad (2.54 mm vs 1.39 mm for the other 47) to match its longer castellation. **Our
+> footprint is for the SOCKET**, whose 48 contacts are identical, so all 48 pads are uniform
+> (2.54 × 0.635 mm). This is not an oversight — do not "fix" it.
 
 ### Still not known
 
 - **PCB-surface-to-sensor-glass height.** Not in the Andon catalog, not in the Eagle library.
   Sets the lens flange focal distance. Currently harmless (bare socket, no lens mount), but it
-  will block any optics design.
+  will block any optics design. Easiest path: measure it on the physical socket.
 
 ---
 
