@@ -108,29 +108,72 @@ create_clock -name cam_clkout -period 2.778 [get_ports cam_clkout_p]   ;# 360 MH
 #
 # DELIBERATELY NOT IN BANK 13. The sensor's CMOS pins are 3.3 V; driving them
 # from a 2.5 V bank would put VOH uncomfortably close to the sensor's VIH.
-# Top Bank A is hardwired 3.3 V and is entirely free (the Ft+ and Hd are on the
-# BOTTOM of the Pt).
 #
-# !! TODO - PACKAGE_PIN VALUES NOT YET FILLED IN !!
-# The element-bus assignments below are settled (see README section 5.2), but the
-# FGG484 package pins for top Bank A pins A3-A18 have not been pulled from
-# Alchitry's PtV2TopPin.kt yet. DO NOT GUESS THEM.
+# Top Bank A is HARDWIRED 3.3 V and cannot be dragged to 2.5 V by the VBSEL
+# straps. Confirmed in PtV2TopPin.kt: bankToVcco() returns a single-element
+# list ["3.3"] for banks 14/16/34/35, and only bank 13 returns
+# ["3.3","2.5","1.8"]. VBSEL controls bank 13 and nothing else. So banks 14/35
+# (control) and bank 13 (LVDS) are electrically independent.
 #
-#   sensor mosi      (pin 2)   -> elem A3    -> PACKAGE_PIN ???
-#   sensor miso      (pin 3)   -> elem A4    -> PACKAGE_PIN ???
-#   sensor sck       (pin 4)   -> elem A5    -> PACKAGE_PIN ???
-#   sensor ss_n      (pin 47)  -> elem A6    -> PACKAGE_PIN ???
-#   sensor reset_n   (pin 46)  -> elem A9    -> PACKAGE_PIN ???
-#   sensor clk_pll   (pin 25)  -> elem A10   -> PACKAGE_PIN ???   (unused; routed anyway)
-#   sensor trigger0  (pin 41)  -> elem A11   -> PACKAGE_PIN ???
-#   sensor trigger1  (pin 42)  -> elem A12   -> PACKAGE_PIN ???
-#   sensor trigger2  (pin 43)  -> elem A15   -> PACKAGE_PIN ???
-#   sensor monitor0  (pin 44)  -> elem A16   -> PACKAGE_PIN ???
-#   sensor monitor1  (pin 45)  -> elem A17   -> PACKAGE_PIN ???
+# All of top Bank A (52 pins) is free: every element ACF that touches it
+# declares SIDE(TOP), and our Ft+/Hd are on the BOTTOM.
 #
-# set_property -dict {PACKAGE_PIN ??? IOSTANDARD LVCMOS33} [get_ports {cam_mosi}]
-# ... etc
+# ---------------------------------------------------------------------
+# BANK 14 vs BANK 35 -- this split is deliberate, do not shuffle it.
 #
-# These are all slow (SPI <= a few MHz, triggers, reset), so no timing
-# constraints are needed beyond false paths if they cross domains.
+#   A3-A6   = bank 14 = the Artix-7 CONFIGURATION bank.
+#   A9-A18  = bank 35 = ordinary IO.
+#
+# FPGA user I/O are Hi-Z until DONE goes high. Anything that could disturb the
+# sensor if it floated during configuration is kept OFF bank 14 and given an
+# external pull on the camera board:
+#
+#   ss_n      -> R3, 10k PULL-UP    (a floating ss_n could read as ASSERTED)
+#   reset_n   -> R4, 10k PULL-DOWN  (holds the sensor in reset until released)
+#   trigger0  -> R5, 10k PULL-DOWN  (no spurious exposure during config)
+#   trigger1  -> R6, 10k PULL-DOWN
+#   trigger2  -> R7, 10k PULL-DOWN
+#
+# Bank 14 therefore carries only signals that are harmless while floating:
+# mosi, sck (inert while ss_n is deasserted), miso (an input), and clk_pll
+# (unused entirely in this clocking scheme).
+# ---------------------------------------------------------------------
+
+# --- bank 14 (A3-A6): harmless-if-floating only ----------------------
+# sensor pin 2   elem A3    IO_L10N_T1_D15_14
+set_property -dict {PACKAGE_PIN AB22 IOSTANDARD LVCMOS33} [get_ports {cam_mosi}]
+# sensor pin 3   elem A4    IO_L17N_T2_A13_D29_14
+set_property -dict {PACKAGE_PIN AB18 IOSTANDARD LVCMOS33} [get_ports {cam_miso}]
+# sensor pin 4   elem A5    IO_L10P_T1_D14_14
+set_property -dict {PACKAGE_PIN AB21 IOSTANDARD LVCMOS33} [get_ports {cam_sck}]
+# sensor pin 25  elem A6    IO_L17P_T2_A14_D30_14   (clk_pll: UNUSED - PLL bypassed)
+set_property -dict {PACKAGE_PIN AA18 IOSTANDARD LVCMOS33} [get_ports {cam_clk_pll}]
+
+# --- bank 35 (A9-A18): everything that must be safe during config ----
+# sensor pin 46  elem A9    IO_L6N_T0_VREF_35    (VREF pin; unused for LVCMOS33)
+set_property -dict {PACKAGE_PIN E3  IOSTANDARD LVCMOS33} [get_ports {cam_reset_n}]
+# sensor pin 47  elem A10   IO_L22N_T3_35
+set_property -dict {PACKAGE_PIN N2  IOSTANDARD LVCMOS33} [get_ports {cam_ss_n}]
+# sensor pin 41  elem A11   IO_L6P_T0_35
+set_property -dict {PACKAGE_PIN F3  IOSTANDARD LVCMOS33} [get_ports {cam_trigger[0]}]
+# sensor pin 42  elem A12   IO_L22P_T3_35
+set_property -dict {PACKAGE_PIN P2  IOSTANDARD LVCMOS33} [get_ports {cam_trigger[1]}]
+# sensor pin 43  elem A15   IO_L16N_T2_35
+set_property -dict {PACKAGE_PIN M2  IOSTANDARD LVCMOS33} [get_ports {cam_trigger[2]}]
+# sensor pin 44  elem A16   IO_L15N_T2_DQS_35
+set_property -dict {PACKAGE_PIN L1  IOSTANDARD LVCMOS33} [get_ports {cam_monitor[0]}]
+# sensor pin 45  elem A17   IO_L16P_T2_35
+set_property -dict {PACKAGE_PIN M3  IOSTANDARD LVCMOS33} [get_ports {cam_monitor[1]}]
+
+# elem A18 (M1, IO_L15P_T2_DQS_35) is spare.
+
+# These are all slow -- SPI at a few MHz, triggers, reset. No timing
+# constraints are needed beyond false paths where they cross clock domains.
+set_false_path -to   [get_ports {cam_reset_n cam_ss_n cam_sck cam_mosi cam_trigger[*]}]
+set_false_path -from [get_ports {cam_miso cam_monitor[*]}]
+
+# --- Belt and braces: hold unused I/O low through configuration -------
+# The external pulls (R3-R7) are the primary guarantee. This makes the FPGA
+# agree with them rather than fight them.
+set_property BITSTREAM.CONFIG.UNUSEDPIN PULLDOWN [current_design]
 # =====================================================================

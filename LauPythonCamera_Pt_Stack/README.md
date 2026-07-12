@@ -211,23 +211,55 @@ on any bank-13 pin (bank 13 is a single HR bank = one clock region).
 
 **Deliberately NOT in bank 13.** The sensor's CMOS pins are **3.3 V** level; driving them
 from a 2.5 V bank would put V<sub>OH</sub> uncomfortably close to the sensor's V<sub>IH</sub>.
-Top Bank A is hardwired 3.3 V and entirely free (the Ft+ and Hd are on the *bottom*).
+
+Top Bank A is **hardwired 3.3 V and cannot be dragged to 2.5 V by the VBSEL straps** —
+`PtV2TopPin.bankToVcco()` returns a single-element `["3.3"]` for banks 14/16/34/35, and only
+bank 13 returns `["3.3","2.5","1.8"]`. VBSEL controls bank 13 and nothing else. All 52 pins of
+top Bank A are free (the Ft+ and Hd are on the *bottom*).
 
 `IOSTANDARD LVCMOS33`.
 
-| Sensor signal | Sensor pin | Dir (FPGA) | Elem pin |
-|---|---|---|---|
-| `mosi` | 2 | OUT | A3 |
-| `miso` | 3 | IN | A4 |
-| `sck` | 4 | OUT | A5 |
-| `ss_n` | 47 | OUT | A6 |
-| `reset_n` | 46 | OUT | A9 |
-| `clk_pll` | 25 | OUT | A10 *(unused in this clocking scheme; routed anyway)* |
-| `trigger0` | 41 | OUT | A11 |
-| `trigger1` | 42 | OUT | A12 |
-| `trigger2` | 43 | OUT | A15 |
-| `monitor0` | 44 | IN | A16 |
-| `monitor1` | 45 | IN | A17 |
+#### The bank 14 / bank 35 split is deliberate — do not shuffle it
+
+**`A3-A6` are bank 14, the Artix-7 configuration bank. `A9-A18` are bank 35, ordinary IO.**
+
+FPGA user I/O sit **Hi-Z until `DONE` goes high**. Between power-up and bitstream load, every
+control line into the sensor floats. So anything that could *disturb* the sensor while
+floating is kept **off bank 14** and given an **external pull on this board**:
+
+| Sensor signal | Sensor pin | Dir | Elem pin | FPGA pin | Bank | Pull |
+|---|---|---|---|---|---|---|
+| `mosi` | 2 | OUT | A3 | AB22 | 14 | — |
+| `miso` | 3 | IN | A4 | AB18 | 14 | — |
+| `sck` | 4 | OUT | A5 | AB21 | 14 | — |
+| `clk_pll` | 25 | OUT | A6 | AA18 | 14 | — *(unused; PLL bypassed)* |
+| `reset_n` | 46 | OUT | A9 | E3 | 35 | **R4, 10k PULL-DOWN** |
+| `ss_n` | 47 | OUT | A10 | N2 | 35 | **R3, 10k PULL-UP** |
+| `trigger0` | 41 | OUT | A11 | F3 | 35 | **R5, 10k PULL-DOWN** |
+| `trigger1` | 42 | OUT | A12 | P2 | 35 | **R6, 10k PULL-DOWN** |
+| `trigger2` | 43 | OUT | A15 | M2 | 35 | **R7, 10k PULL-DOWN** |
+| `monitor0` | 44 | IN | A16 | L1 | 35 | — |
+| `monitor1` | 45 | IN | A17 | M3 | 35 | — |
+
+`A18` (M1) is spare.
+
+**Why each pull:**
+- **`ss_n` pulled HIGH** — a floating SPI select could read as **asserted**, and the sensor
+  would try to clock in garbage from a floating `sck`/`mosi`.
+- **`reset_n` pulled LOW** — holds the sensor *in reset* until the FPGA is configured and
+  deliberately releases it. Fail-safe direction.
+- **`trigger0-2` pulled LOW** — no spurious exposures during configuration.
+
+Bank 14 then carries only signals that are harmless while floating: `mosi` and `sck` (inert
+while `ss_n` is deasserted), `miso` (an input), and `clk_pll` (unused entirely).
+
+The XDC also sets `BITSTREAM.CONFIG.UNUSEDPIN PULLDOWN` so the FPGA's internal weak pulls
+agree with the external ones rather than fight them. **The external resistors are the primary
+guarantee** — don't rely on the bitstream setting alone, since it does nothing before the
+bitstream loads, which is exactly the window that matters.
+
+> **No I²C pull-ups.** Unlike `LauMipiCamera_Alchitry_Stack` (which has `R_SCL`/`R_SDA` at
+> 4k7), the PYTHON uses **SPI**, not I²C. Push-pull, no bus pull-ups needed.
 
 ### 5.3 Control header (C) — power and strapping
 
