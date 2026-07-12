@@ -409,6 +409,35 @@ schematic rather than buried in a table.
 
 **`J1` and `J2` carry no power pins at all** — only IO and GND. Every volt arrives on `J3`.
 
+### 6.7 Cross-checked against a fabbed board
+
+This design was compared against
+**[ruffner/lupa300](https://github.com/ruffner/lupa300) → `pcb/uZed/lupa-hdmi-carrier.sch`** —
+a *manufactured* FPGA carrier for a LUPA300 in the **same Andon LCC48 socket**. Three changes
+came out of that comparison:
+
+| Change | Why |
+|---|---|
+| **`FB1` — ferrite bead on `vdd_pix`** | Their board beads `VPIX`, `VDDA` and `VADC` (BLM18). We had **nothing** on the pixel supply — the most noise-sensitive rail on the sensor. This was a genuine omission. |
+| **`U4` → `ADP7158-3.3`** | They used the `ADP7158` (ultra-low-noise, high-PSRR, ±0.8%) for their sensitive rails. It satisfies the `vdd_pix` 3.25–3.35 V window with margin, where a garden-variety ±2% LDO does not. |
+| **Per-pin decoupling 100 nF → 1 µF**, plus `C20-C22` (100 nF per rail) | Their primary decoupler is **1 µF**, not 100 nF, backed by 0.1 µF. A modern 1 µF X7R in 0402 has similar ESL to a 100 nF but 10× the capacitance, so it holds supply impedance down across a wider band. |
+
+**Two things from that board we deliberately did NOT copy:**
+
+- **Their bias network.** Every LUPA300 bias pin (`BIAS1-4`, `ADC_BIAS`, `PRECHARGE_BIAS`) has
+  an R **and** a C. It is tempting to look at our bare `R1` and think a cap is missing. **It is
+  not.** Those are *voltage* nodes fed by RC dividers; the PYTHON's `ibias_master` is a
+  **current reference** — the 47 kΩ to `gnd_33` sets a reference current and the datasheet
+  specifies nothing else. Hanging a cap on a current-set node is not obviously safe and onsemi
+  does not ask for one. (If you want certainty, that is an AND9158 question.)
+- **Their LVDS termination — because they have none.** The LUPA300 is a **parallel** sensor
+  (`D0`–`D9`, `FRAME_VALID`, `LINE_VALID`). Their board says nothing about our termination
+  scheme. The 51 Ω networks on it are not on the sensor.
+
+They also generate the sensor clock **locally, with an SI514 oscillator**, rather than driving
+it from the FPGA. We deliberately do the opposite (§5) — a local oscillator would break
+phase-lock to the projector, which is the whole point of the SLI system.
+
 ---
 
 ## 7. Socket and optics
