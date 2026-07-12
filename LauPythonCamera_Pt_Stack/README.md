@@ -350,6 +350,67 @@ and Bank B 80-pin connectors carry **IO + GND exclusively — no power pins.** R
 
 ---
 
+### 6.5 The regulator chain, as implemented
+
+```
+  C header  +3.3V ──┬──> U2  AP2112K-1.8  LDO   ──> +1V8_CAM   (vdd_18,  ~80 mA)
+                    └──> U3  load switch  3V3   ──> +3V3_CAM   (vdd_33, ~140 mA)
+  C header  VDD ───────> U4  LDO 3V3 ±1%        ──> +3V3_PIX   (vdd_pix,  ~5 mA)
+```
+
+Three decisions worth understanding, because each looks odd in isolation:
+
+**`vdd_pix` gets its own ±1% LDO fed from `VDD`, not from the 3.3 V rail.** The sensor
+demands **3.25–3.35 V** on this pin. A ±2% tolerance on a nominal 3.3 V rail is 3.23–3.37 V —
+**already outside that window** — so tapping the Pt's 3.3 V rail cannot meet spec, and you
+cannot LDO 3.3 V down to 3.3 V (no headroom). It has to come from `VDD`. Its current is only
+~5 mA, so even at `VDD` = 12 V the dissipation is <90 mW — no thermal issue.
+
+> **Specify U4 as ±1% or better.** A garden-variety ±2% 3.3 V LDO does **not** meet the
+> `vdd_pix` window. This is the one part on the board where the tolerance line in the
+> datasheet actually bites.
+
+**`vdd_33` gets a LOAD SWITCH, not a regulator.** It's already 3.3 V, so nothing needs
+regulating — but it needs an **enable**, because a straight rail tap comes up whenever the
+board does, which would violate the power-up order. The switch exists purely so `vdd_33` can
+be *sequenced*.
+
+**Sequencing is an RC cascade** (`R8`–`R10`, `C15`–`C17`). Each stage's output enables the
+next:
+
+```
+  +3V3_SYS ─R8─┬─> U2.EN     (vdd_18 comes up first)
+               C15
+  +1V8_CAM ─R9─┬─> U3.EN     (vdd_33 follows)
+               C16
+  +3V3_CAM ─R10┬─> U4.EN     (vdd_pix last)
+               C17
+```
+
+That yields **`vdd_18` → `vdd_33` → `vdd_pix`**, the datasheet order, with ~1 ms between
+stages — comfortably over the 10 µs minimum. Power-down is not sequenced; if that turns out to
+matter, it needs a proper sequencer IC.
+
+**`VBSEL_A` / `VBSEL_B` are strapped HIGH** through `R11`/`R12` (1 k to `+3V3_SYS`). This is
+what sets bank 13 to 2.5 V. **Not optional** — see §3.
+
+### 6.6 Connectors
+
+| Ref | Part | Role |
+|---|---|---|
+| `J1` | `DF40C-80DP-0.4V` | **Bank A** — 11 single-ended control signals (banks 14/35, 3.3 V) |
+| `J2` | `DF40C-80DP-0.4V` | **Bank B** — the 7 LVDS pairs (bank 13, 2.5 V), all on the ODD row |
+| `J3` | `DF40C-50DP-0.4V` | **Control header** — *all* element power, plus the VBSEL straps |
+
+The 80-pin symbol puts **odd pins on the left, even on the right**, mirroring the connector's
+two physical rows — so each differential pair (odd, odd+2) lands adjacent on the same side of
+the symbol, and the row split that drives the whole layout (§5.1.1) is visible in the
+schematic rather than buried in a table.
+
+**`J1` and `J2` carry no power pins at all** — only IO and GND. Every volt arrives on `J3`.
+
+---
+
 ## 7. Socket and optics
 
 **Socket: Andon Electronics `680-48-SM-G10-R14-1`** — recommended *by name* in both the
