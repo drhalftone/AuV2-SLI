@@ -3,8 +3,20 @@
 Custom Alchitry **element board** carrying an onsemi **PYTHON 1300** global-shutter image
 sensor in a **socketed 48-pin LCC**, for the AuV2-SLI structured-light system.
 
-Status: **design blueprint / not yet laid out.** See [Open items](#open-items) — the socket
-land pattern is still blocked on a vendor drawing.
+## Status
+
+| | |
+|---|---|
+| Pin plan | ✅ **Confirmed by Vivado** (§13.1) |
+| Whole stack — Pt V2 + Hd + Ft+ + camera | ✅ **Confirmed by Vivado** — 105 ports, no conflicts (§13.2) |
+| Schematic | ✅ Complete; net-checked, and cross-checked against a *fabbed* board (§6.7) |
+| Socket footprint | ✅ Built and verified (§12) — **no longer blocked** |
+| Stackup / netclasses / DRC rules | ✅ Written (§11) |
+| **Layout** | ❌ Not started — needs KiCad |
+| **Sensor + socket ordered** | ❌ **27-week factory lead if the in-stock units go. Do this first.** |
+
+Nothing in the electrical design is unverified. The remaining work is layout, and the
+remaining *risk* is procurement.
 
 ---
 
@@ -290,12 +302,11 @@ pins 79,80   GND
 > **Bottom-side connector numbering is MIRRORED** relative to the silkscreen. Irrelevant here
 > (this board is on top) — but it will bite if the board is ever moved to the bottom.
 
-### 5.5 Pre-fab safety net
+### 5.5 ✅ This pin plan is CONFIRMED BY VIVADO — see §13
 
-Before releasing copper, drop the §5.1 pins into an XDC with `IOSTANDARD LVDS_25` +
-`DIFF_TERM TRUE` and run `synth_design` / `report_io`. **Vivado hard-errors on a non-pair or
-a reversed P/N** — a 2-minute check that independently confirms this table against Vivado's
-own device database. Do this. It is the cheapest insurance in the project.
+Everything in §5 was derived by hand, from Alchitry's `.acf` files, a Kotlin source file, and
+a scraped Xilinx package CSV. **It has since been checked against Xilinx's own device
+database and it passes.** Do not "correct" this table from memory. See **§13**.
 
 <!-- PIN_TABLE_END -->
 
@@ -766,18 +777,121 @@ stops a 90° error.
 
 ---
 
+## 13. Validation — what a tool has checked, not just me
+
+Almost everything in this document was derived by hand: from Alchitry's `.acf` constraint
+files, a Kotlin source file (`PtV2TopPin.kt`), a scraped Xilinx package CSV, and two datasheet
+PDFs. That is a lot of places to make a quiet mistake. So it has been checked.
+
+Everything below is **reproducible** — the scripts are in `iocheck/`.
+
+### 13.1 Camera pin plan — ✅ PASS
+
+```
+vivado -mode batch -source iocheck/run_iocheck.tcl
+```
+
+`iocheck/pt_camera_iocheck.v` is not a functional design. It exists only to hand Vivado a top
+level whose ports are exactly those in `pt_camera.xdc`, with `IBUFDS`/`OBUFDS` instantiated
+but **`IOSTANDARD` and `DIFF_TERM` deliberately left to the XDC — because the XDC is the thing
+under test**.
+
+```
+  ports placed as constrained : ALL OK
+  bank 13 VCCO = 2.50 V     bank 14 VCCO = 3.30 V     bank 35 VCCO = 3.30 V
+  DIFF_TERM on input pairs    : 6 / 6
+  DIFF_TERM on the OUTPUT pair: 0
+  BUFG driven from cam_clkout : 1
+  Synthesis: 0 errors    DRC: 0 errors    place_design: succeeded
+```
+
+**What that actually proves:**
+
+- **P/N polarity, all seven pairs.** The rule "lower element-bus pin = N, higher = P" was
+  derived by hand. Vivado's placement bears it out on every pair — `cam_clkout_p` → W11 =
+  `IO_L12`**`P`**`_T1_MRCC_13`, `cam_clkout_n` → W12 = `IO_L12`**`N`**`_...`. **A single
+  reversal is a hard error in Vivado**, and would have been a scrapped board and a $139 sensor.
+- **The MRCC pair is real.** `cam_clkout` landed on `IO_L12P/N_T1_MRCC_13` and the BUFG placed,
+  so the forwarded bit clock genuinely can clock the ISERDES.
+- **`R2` is right, and Vivado says so unprompted.** `report_io` gives the six *input* pairs
+  `100 Ohm Differential` **on-chip** termination, and gives `cam_lvdsclk` — the *output* — an
+  **off-chip `FD_100`**: far-end differential 100 Ω. Vivado independently states that this
+  output needs an external far-end terminator. **That is `R2`, at the sensor.** The tool
+  arrived at the schematic's termination scheme on its own.
+
+### 13.2 The WHOLE STACK — ✅ PASS
+
+```
+vivado -mode batch -source iocheck/run_stackcheck.tcl
+```
+
+§13.1 proved the camera's 25 pins were self-consistent. It did **not** prove the Hd and Ft+
+could coexist with them — that still rested on reading Alchitry's `.acf` sources by hand.
+
+`iocheck/run_stackcheck.tcl` loads **Alchitry's own published constraint files** alongside ours
+and places all four boards as one design:
+
+| File | Board |
+|---|---|
+| `alchitry_pt_base.xdc` | the Pt's own clk / rst_n / LEDs / USB |
+| `alchitry_pt_hd_bottom.xdc` | 2× micro-HDMI, `TMDS_33` |
+| `alchitry_pt_ft_plus_bottom.xdc` | FT601Q 32-bit FIFO, `LVCMOS33` |
+| `pt_camera.xdc` | **ours** — 7 `LVDS_25` pairs + 11 `LVCMOS33` |
+
+```
+  ports placed                 : 105
+  pin collisions               : NONE
+  bank 13 VCCO = 2.50 V     <-- camera LVDS
+  bank 14 VCCO = 3.30 V
+  bank 16 VCCO = 3.30 V
+  bank 34 VCCO = 3.30 V
+  bank 35 VCCO = 3.30 V
+  LVDS_25  (camera)            : 14
+  TMDS_33  (Hd HDMI)           : 16
+  LVCMOS33 (Ft+/base/cam ctrl) : 75
+  Synthesis: 0 errors, 0 critical warnings.   place_design: succeeded.
+```
+
+**This settles the question that could have killed the project.** HDMI needs `TMDS_33` at
+3.3 V; the sensor needs `LVDS_25` at 2.5 V; a bank gets exactly one VCCO; and the camera
+**must** run *simultaneously* with the HDMI pass-through, because it has to capture in sync
+with the projected patterns (§1). Vivado confirms bank 13 @ 2.5 V coexists with banks
+14/16/34/35 @ 3.3 V on the real device, with **no pin claimed twice across the four boards.**
+
+Corroboration worth noting: the pin counts came out **Hd = 24, Ft+ = 44, camera = 25, Pt base
+= 12** — exactly the hand-derived figures from the `.acf` files. The scraping was right.
+
+### 13.3 What is still NOT tool-checked
+
+Be clear about the boundary. Vivado has validated the **FPGA side**. It knows nothing about:
+
+| Not checked | How it *was* checked |
+|---|---|
+| The socket land pattern | Cross-checked against Andon's catalog on every dimension they publish (§12) |
+| Sensor pin 1 / orientation | Read directly off the datasheet package drawings, twice, independently (§12) |
+| The schematic | Programmatic net check (31 nets, no orphans) + compared against a **fabbed** board (§6.7) |
+| Impedance geometry | IPC-2141 closed-form, ±10%. **Confirm with KiCad's stackup calculator and tick "impedance controlled" when ordering** (§11.3) |
+| Layout | Not started |
+
+---
+
 ## Open items
 
 | # | Item | Blocks | Owner |
 |---|---|---|---|
-| 1 | **PCB-surface-to-sensor-glass height.** Not published anywhere. Sets lens flange focal distance. | Lens mount (not the current board) | Measure on the physical socket, or ask Andon |
-| 2 | Index-pin protrusion (~1.66 mm) vs. a 1.6 mm board. Order the **`-0`** (no index pins) or confirm the protrusion with Andon. Note the footprint *does* include the two Ø1.6 holes, so the `-1` remains an option. | Socket variant choice | Andon, or just order `-0` |
-| 3 | Neck-down at the 0.4 mm DF40 pads violates `track_width (min 0.22mm)` — needs an **area-scoped DRC exception**, not a lower global minimum. | Clean DRC | Add once the board exists |
-| 4 | Local regulators + power sequencing (`vdd_18` → `vdd_33` → `vdd_pix`) | Schematic completion | — |
-| 5 | DF40 connectors not yet placed in the schematic (footprints already exist on the earlier boards) | Schematic completion | — |
-| 6 | Ft+ and Hd current draw — not documented by Alchitry | Power budget | Measure or ask Alchitry |
-| 7 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
-| 8 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — none of which are in the public datasheet. | Tight trigger synchronisation | Request portal access |
+| **1** | **🔴 ORDER THE SENSOR AND SOCKET.** `NOIP1SN1300A-QDI` had **49 in stock at DigiKey and a 27-week factory lead**. If that stock goes, the board arrives and sits on a bench for six months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. | Nothing — do it now | **You** |
+| 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. | Item 1 | Andon (one email), or default to `-0` |
+| 3 | **`U4` must be ±1% or better.** `ADP7158-3.3` is specified. A garden-variety ±2% 3.3 V LDO does **not** meet the `vdd_pix` 3.25–3.35 V window — see §6.5. Do not let a BOM optimiser substitute it. | Correct `vdd_pix` | Purchasing |
+| 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
+| 5 | Neck-down at the 0.4 mm DF40 pads violates `track_width (min 0.22mm)` — needs an **area-scoped DRC exception**, not a lower global minimum. | Clean DRC | Add once the board exists |
+| 6 | **Impedance geometry is an IPC-2141 approximation (±10%)**, not a field solver. Confirm in KiCad's stackup calculator and **tick "impedance controlled" when ordering** so JLC verifies it. | Signal integrity | At layout |
+| 7 | **Power-DOWN is not sequenced** — only power-up. The RC cascade (§6.5) handles the rise order only. If reverse sequencing turns out to matter, this needs a real sequencer IC. | Possibly nothing | Watch for it in bring-up |
+| 8 | Ft+ and Hd current draw — not documented by Alchitry | Power budget | Measure or ask Alchitry |
+| 9 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
+| 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
+
+**Closed:** socket land pattern (§12) · bank-13 pin map (§5.1) · P/N polarity (§13.1) ·
+stack compatibility (§13.2) · regulators + sequencing (§6.5) · DF40 connectors (§6.6)
 
 ---
 
