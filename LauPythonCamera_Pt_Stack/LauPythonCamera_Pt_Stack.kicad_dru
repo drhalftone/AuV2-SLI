@@ -1,0 +1,106 @@
+# =====================================================================
+# Custom DRC rules - LauPythonCamera_Pt_Stack
+# onsemi PYTHON 1300 LVDS routing constraints.
+#
+# Applies to the "CamLVDS" netclass:
+#   CAM_LVDSCLK_P/N   FPGA -> sensor, ~360 MHz   (terminated at U1 by R2, 100R)
+#   CAM_CLKOUT_P/N    sensor -> FPGA, 360 MHz DDR forwarded bit clock
+#   CAM_D0..D3_P/N    sensor -> FPGA, 720 Mbps per lane
+#   CAM_SYNC_P/N      sensor -> FPGA, 720 Mbps
+#
+# Adapted from LauMipiCamera_Alchitry_Stack's MipiHS rules. The difference
+# that matters: THIS BOARD IS 4-LAYER. The two earlier stacked boards are
+# 2-layer, which cannot hold a controlled 100R at 720 Mbps -- the only
+# reference plane sits 1.6 mm away across the core.
+#
+# STACKUP: JLCPCB JLC04161H-7628, 1.6 mm, 4-layer
+#   F.Cu    0.035  mm  1oz    <- ALL LVDS ROUTES HERE
+#   prepreg 0.2104 mm  7628, Er ~ 4.4
+#   In1.Cu  0.0152 mm  0.5oz  <- SOLID GND. Do not split it under a pair.
+#   core    1.065  mm
+#   In2.Cu  0.0152 mm  0.5oz  <- PWR
+#   prepreg 0.2104 mm  7628
+#   B.Cu    0.035  mm  1oz
+#
+# GEOMETRY: W = 0.24 mm, S = 0.20 mm -> ~100R differential (IPC-2141 approx,
+# 99.8R). CONFIRM in KiCad Board Setup -> Board Stackup with the real Er, and
+# tick "Impedance controlled" when ordering so JLC verifies it.
+# =====================================================================
+
+(version 1)
+
+# --- 100 ohm differential pair gap ---
+(rule "CamLVDS diff-pair gap"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint diff_pair_gap (min 0.18mm) (opt 0.20mm) (max 0.24mm)))
+
+# --- Diff-pair trace width for 100R ---
+(rule "CamLVDS track width"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint track_width (min 0.22mm) (opt 0.24mm) (max 0.26mm)))
+
+# --- Keep P and N tightly coupled: limit uncoupled run length ---
+(rule "CamLVDS max uncoupled length"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint diff_pair_uncoupled (max 1.5mm)))
+
+# --- Intra-pair (P vs N) skew, PER PAIR. Inter-lane matching is intentionally
+#     NOT constrained: the PYTHON LVDS link is source-synchronous and sends
+#     training patterns, so the FPGA's ISERDES bitslips each lane independently.
+#     Match P to N; do not waste effort matching lane to lane. ---
+(rule "CamLVDS skew - LVDSCLK pair (FPGA -> sensor)"
+	(condition "A.NetName == 'CAM_LVDSCLK_P' || A.NetName == 'CAM_LVDSCLK_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - CLKOUT pair (sensor -> FPGA)"
+	(condition "A.NetName == 'CAM_CLKOUT_P' || A.NetName == 'CAM_CLKOUT_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D0 pair"
+	(condition "A.NetName == 'CAM_D0_P' || A.NetName == 'CAM_D0_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D1 pair"
+	(condition "A.NetName == 'CAM_D1_P' || A.NetName == 'CAM_D1_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D2 pair"
+	(condition "A.NetName == 'CAM_D2_P' || A.NetName == 'CAM_D2_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D3 pair"
+	(condition "A.NetName == 'CAM_D3_P' || A.NetName == 'CAM_D3_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - SYNC pair"
+	(condition "A.NetName == 'CAM_SYNC_P' || A.NetName == 'CAM_SYNC_N'")
+	(constraint skew (max 0.08mm)))
+
+# --- Extra clearance from the LVDS pairs to all other nets.
+#     Held at 0.25mm rather than a true 3W (0.72mm) because the DF40 is a
+#     0.4mm-pitch connector -- 3W is not physically achievable at the pads.
+#     Open it up to >=0.5mm in the field, away from the connector. ---
+(rule "CamLVDS clearance to other nets"
+	(condition "A.NetClass == 'CamLVDS' && B.NetClass != 'CamLVDS'")
+	(constraint clearance (min 0.25mm)))
+
+# --- Keep LVDS pairs away from the board edge (fringing fields / EMI) ---
+(rule "CamLVDS edge clearance"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint edge_clearance (min 0.30mm)))
+
+# --- No layer changes on the LVDS pairs. On this stackup a pair on F.Cu is
+#     referenced to the solid GND on In1.Cu, 0.21mm below. A via breaks that
+#     reference and adds a stub. Severity warning, not error: if one transition
+#     is truly unavoidable, put GND stitching vias immediately beside it. ---
+(rule "CamLVDS avoid vias"
+	(severity warning)
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint disallow via))
+
+# --- The 100R termination R2 belongs AT the sensor, not near the connector.
+#     It is the far-end termination for the clock the FPGA drives into U1.
+#     DRC cannot express "place R2 within 5mm of U1 pins 23/24" -- this is a
+#     placement rule for a human. It is written here so it is not forgotten.
+#     (The six sensor OUTPUT pairs need no resistors: they terminate inside the
+#      FPGA via internal DIFF_TERM, legal because bank 13 is at 2.5V.)

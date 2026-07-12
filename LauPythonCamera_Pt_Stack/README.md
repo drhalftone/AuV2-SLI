@@ -137,15 +137,61 @@ FT2232HQ is USB 2.0 (JTAG/UART only) — not a data path.
 All 7 differential pairs. `IOSTANDARD LVDS_25`; inputs use internal `DIFF_TERM TRUE`
 (legal because bank 13 is at 2.5 V).
 
+**All seven pairs are on the DF40's ODD row.** This is not cosmetic — see §5.1.1.
+
 | Sensor signal | Sensor pins (N/P) | Dir (FPGA) | Elem pins (N, P) | FPGA pins (N, P) | Clock cap. |
 |---|---|---|---|---|---|
-| `lvds_clock_in±` | 23 / 24 | **OUT** | **B39, B41** | **W12, W11** | MRCC |
-| `clock_out±` | 7 / 8 | IN | **B45, B47** | **V14, V13** | **MRCC** — forwarded bit clock |
-| `sync±` | 17 / 18 | IN | B40, B42 | Y12, Y11 | SRCC |
-| `doutn0 / doutp0` | 9 / 10 | IN | B46, B48 | V15, U15 | SRCC |
+| `clock_out±` | 7 / 8 | IN | **B39, B41** | **W12, W11** | **MRCC** — forwarded bit clock |
+| `doutn0 / doutp0` | 9 / 10 | IN | B45, B47 | V14, V13 | (spare MRCC) |
 | `doutn1 / doutp1` | 11 / 12 | IN | B51, B53 | W10, V10 | — |
-| `doutn2 / doutp2` | 13 / 14 | IN | B52, B54 | AB17, AB16 | — |
-| `doutn3 / doutp3` | 15 / 16 | IN | B57, B59 | AB12, AB11 | — |
+| `doutn2 / doutp2` | 13 / 14 | IN | B57, B59 | AB12, AB11 | — |
+| `doutn3 / doutp3` | 15 / 16 | IN | B63, B65 | AA11, AA10 | — |
+| `sync±` | 17 / 18 | IN | B69, B71 | AB13, AA13 | — |
+| `lvds_clock_in±` | 23 / 24 | **OUT** | B75, B77 | AA14, Y13 | — |
+
+Spare: `(B33,B35)` on the odd row, plus all 8 even-row pairs.
+
+#### 5.1.1 Why all-odd-row, and why THIS order
+
+**The DF40's two rows escape in opposite directions.** Measured from the footprint used on the
+existing boards (`Hirose_DF40C-80DP-0.4V_2x40-1MP_P0.4mm`): **odd pins sit at y = +1.355 mm,
+even pins at y = −1.355 mm**, 40 each, aligned in X on 0.4 mm pitch. A pair on the even row
+would escape out the *far* side of the connector, away from the sensor — forcing it to loop
+around the connector body or via down. Both are bad, and the second trips the `.kicad_dru`
+via warning.
+
+Alchitry's pairs are always (odd, odd+2) or (even, even+2), so **both halves of a pair are
+always in the same row.** Bank 13 has exactly **8 odd-row and 8 even-row pairs**; we need 7.
+And **both MRCC pairs — (B39,B41) and (B45,B47) — are odd-row.** So all seven fit on the odd
+row *and* the forwarded clock still lands on an MRCC.
+
+**The order matters too.** The sensor's LVDS pins are contiguous around the perimeter:
+
+```
+side "B" of the LCC, 12 pins, no power interleaved:
+  7/8  clock_out | 9/10 dout0 | 11/12 dout1 | 13/14 dout2 | 15/16 dout3 | 17/18 sync
+  [corner]
+  23/24 lvds_clock_in     <- adjacent side, just around the corner
+```
+
+The table above assigns connector pairs in that same sequence, so **nothing crosses**.
+`lvds_clock_in` sits at the end of the run, which is where it wants to be — it comes around
+the corner from the adjacent sensor edge.
+
+**Polarity falls out for free.** On the sensor, N is always the lower pin number
+(7 = `clock_outn`, 8 = `clock_outp`). On the connector, N is also the lower element-bus pin.
+**Orient U1 so pin 7 faces the B39 end** and every pair runs N-to-N, P-to-P with no intra-pair
+swap.
+
+**Fan-in geometry.** Sensor pair centres are 2.032 mm apart (2 × 1.016 mm pitch); connector
+pair centres are 1.2 mm apart. The bundle tapers from ~11.2 mm wide at the socket to ~6.4 mm
+at the connector. Gentle and symmetric — keep both legs of a pair bending together and the
+intra-pair skew budget survives.
+
+> **Neck-down at the connector.** DF40 pads are 0.4 mm pitch, so traces must narrow below the
+> 0.24 mm `CamLVDS` width to enter them. That is normal and acceptable over a short run, but
+> it will trip `track_width (min 0.22mm)` in the `.kicad_dru`. Add an **area-scoped exception**
+> around the connector rather than lowering the global minimum.
 
 > **POLARITY RULE — in every pair, the LOWER element-bus pin number is N, the HIGHER is P.**
 > No exceptions in bank 13. P/N is fixed by the FPGA die and **cannot be swapped in layout.**
@@ -350,6 +396,102 @@ structure carries over, but ISERDES placement and clock routing get re-solved.
 > **Pin 21 differs by variant:** `gnd_18` on the LVDS parts, `clk_out` on the parallel parts.
 > Grounding it on a parallel part would destroy a driven output. The two symbols keep this
 > straight; don't hand-edit around them.
+
+---
+
+## 11. Stackup and high-speed routing
+
+### 11.1 This board is 4-layer — unlike its predecessors
+
+`LauCameraTrigger_Alchitry_Stack` and `LauMipiCamera_Alchitry_Stack` are both **2-layer**
+(`F.Cu` + `B.Cu` only). For the trigger board that is entirely fine — the signals are slow.
+
+**It is not fine here.** Every LVDS pair on this board runs at **720 Mbps** (data and sync)
+or **360 MHz** (both clocks). On a 2-layer 1.6 mm board the only reference plane sits across
+the full core, so the return path is ~1.6 mm from the signal: large loop area, poor field
+containment, and an impedance set by P-to-N edge coupling rather than by a controlled height
+over a plane. You can build it; you cannot *control* it. Add a socket and a board-to-board
+connector already eating margin, and that is where the eye closes.
+
+> Note: `LauMipiCamera_Alchitry_Stack.kicad_dru` describes its geometry as *"typical for
+> ~0.10-0.13 mm trace on a thin (~0.1 mm) prepreg to the GND plane"* — a **4-layer** stackup
+> description sitting in a **2-layer** board, with the width/gap left as explicit
+> placeholders. The impedance on that board was never actually resolved. Don't inherit it.
+
+### 11.2 Stackup — JLCPCB `JLC04161H-7628`, 1.6 mm
+
+JLCPCB's standard 4-layer stackup. Set this in **Board Setup → Physical Stackup**.
+
+| Layer | Thickness | Material | Role |
+|---|---|---|---|
+| `F.Cu` | 0.035 mm (1 oz) | copper | **all LVDS routes here** |
+| prepreg | **0.2104 mm** | 7628, Er ≈ 4.4 | LVDS references across this |
+| `In1.Cu` | 0.0152 mm (0.5 oz) | copper | **solid GND — never split under a pair** |
+| core | 1.065 mm | FR-4 | |
+| `In2.Cu` | 0.0152 mm (0.5 oz) | copper | PWR |
+| prepreg | 0.2104 mm | 7628 | |
+| `B.Cu` | 0.035 mm (1 oz) | copper | slow signals, pours |
+
+### 11.3 Geometry for 100 Ω differential
+
+Edge-coupled microstrip on `F.Cu` over `In1.Cu`, H = 0.2104 mm, T = 0.035 mm, Er ≈ 4.4:
+
+| W (mm) | S (mm) | Z<sub>diff</sub> |
+|---|---|---|
+| 0.20 | 0.20 | 108.7 Ω |
+| 0.22 | 0.20 | 104.1 Ω |
+| **0.24** | **0.20** | **99.8 Ω  ← use this** |
+| 0.25 | 0.20 | 97.8 Ω |
+
+**`W = 0.24 mm, S = 0.20 mm`.** This is set in the `CamLVDS` netclass.
+
+> These are **IPC-2141 closed-form approximations (±10%)**, not a field-solver result. Before
+> fab: confirm in **KiCad Board Setup → Board Stackup** (which has a built-in impedance
+> calculator — enter the real Er) and/or JLCPCB's own calculator, and **tick "Impedance
+> controlled" when ordering** so JLC verifies the geometry against their actual process.
+> Do not treat the table above as final.
+
+### 11.4 Netclasses and DRC
+
+`LauPythonCamera_Pt_Stack.kicad_pro` defines three netclasses:
+
+| Netclass | Track | Diff W / gap | Clearance | Matches |
+|---|---|---|---|---|
+| `CamLVDS` | 0.24 | 0.24 / 0.20 | 0.25 | `CAM_LVDSCLK*` `CAM_CLKOUT*` `CAM_D0-3*` `CAM_SYNC*` |
+| `Power` | 0.5 | — | 0.2 | `+3V3_CAM` `+1V8_CAM` `+3V3_PIX` `GND` `VDD` |
+| `Default` | 0.25 | — | 0.2 | everything else |
+
+`LauPythonCamera_Pt_Stack.kicad_dru` enforces: 100 Ω geometry, ≤1.5 mm uncoupled run,
+**0.08 mm intra-pair skew**, 0.25 mm clearance to foreign nets, 0.3 mm edge clearance, and
+a **warning on any via** in an LVDS pair.
+
+**Intra-pair skew is constrained; inter-lane is deliberately not.** The PYTHON's LVDS link is
+source-synchronous and sends training patterns, so the FPGA's `ISERDES` bitslips each lane
+independently. Match P to N obsessively; don't waste effort matching lane to lane. (Same
+reasoning as the MIPI board's D-PHY rules — it transfers verbatim.)
+
+Because the nets are named `_P`/`_N`, KiCad's **Route Differential Pairs** tool finds all
+seven automatically.
+
+### 11.5 Placement rules DRC cannot express
+
+- **`R2` (100 Ω) must sit within a few mm of U1 pins 23/24**, at the *end* of the trace. It is
+  the far-end termination for the clock the FPGA drives into the sensor. A termination in the
+  wrong place is worse than none.
+- **The six sensor-output pairs get no resistors.** They terminate inside the FPGA via
+  internal `DIFF_TERM`. This looks like an omission and is not.
+- **Decoupling caps hard against their supply pins.** All 11 of them.
+- **Keep the LVDS away from the switching regulators.** They are the loudest thing on the board.
+
+### 11.6 Connectors — already solved
+
+Both existing stacked boards use stock KiCad footprints for the Alchitry element bus. Reuse
+them directly; nothing needs authoring:
+
+| Connector | Footprint |
+|---|---|
+| Bank A, Bank B (80-pin) | `Connector_Hirose_DF40:Hirose_DF40C-80DP-0.4V_2x40-1MP_P0.4mm` |
+| Control header (50-pin) | `Connector_Hirose_DF40:Hirose_DF40C-50DP-0.4V_2x25-1MP_P0.4mm` |
 
 ---
 
