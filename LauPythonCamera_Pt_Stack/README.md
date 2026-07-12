@@ -527,16 +527,82 @@ them directly; nothing needs authoring:
 
 ---
 
+## 12. The socket footprint — where it came from
+
+`LauCamera.pretty/Andon_680-48-SM-G10-R14.kicad_mod`.
+
+Andon's public catalogs give pitch, pad width, and the outer-pad span, but **never dimension
+the centreline-to-pad-row offset or the index-hole positions** — the two numbers you cannot
+lay out a board without. They came instead from
+**[ruffner/lupa300](https://github.com/ruffner/lupa300) → `pcb/libraries/andon.lbr`**, package
+`LUPA300` (also a 48-pin LCC on the same Andon socket).
+
+**Every dimension that can be cross-checked against Andon's catalog matches exactly:**
+
+| | Andon catalog | `andon.lbr` |
+|---|---|---|
+| Pitch | .040 in = 1.016 mm | **1.016 mm** ✓ |
+| Pad width | .025 in = 0.635 mm | **0.635 mm** ✓ |
+| Outer-pad span (A/B) | .440 in = 11.18 mm | **11.176 mm** ✓ |
+| Index holes | Ø1.50 mm, diagonal corners | **Ø1.6 drill, diagonal** ✓ |
+
+And it supplies what Andon withheld:
+
+- **Centreline → pad-row centre = 9.906 mm** (a clean 0.390 in)
+- **Index holes at (−8.382, +8.128) and (+8.128, −8.382)** — note these are **deliberately
+  asymmetric**: they key the socket so it can only mount one way. Do not "tidy" them into
+  symmetry.
+- Pad 2.54 × 0.635 mm; socket body 16.764 mm square.
+
+> **The Eagle library's pad NUMBERS were discarded.** They are Eagle auto-names (`P$1`…`P$48`)
+> running left/right/bottom/top — **not a perimeter walk**, so they are meaningless. Pin
+> numbers in our footprint are assigned from the PYTHON 1300 package drawing.
+
+### Pin 1 and orientation — verified, do not re-derive from memory
+
+From the PYTHON 1300 datasheet, **Figure 51** (tick marks around the package) and **Figure 52
+"Top view"**:
+
+- **TOP VIEW: pin 1 is at the MIDDLE OF THE LEFT EDGE**, and numbering increases
+  **counter-clockwise**. Figure 51's left-edge ticks read, top to bottom: **45, 48, 1, 5** —
+  the numbering wraps 48 → 1 at the middle of that edge.
+- Edges, top view:
+
+```
+  left  edge:  43..48 (top-left corner DOWN to mid-left), then 1..6 (mid-left DOWN to bottom-left)
+  bottom edge: 7..18   left -> right      <-- ALL SIX LVDS OUTPUT PAIRS, contiguous
+  right edge:  19..30  bottom -> top      <-- lvds_clock_in = 23/24
+  top   edge:  31..42  right -> left
+```
+
+- `lvds_clock_in` (23/24) sits on the **right edge, 5th/6th pin up from the bottom-right
+  corner** — i.e. just around the corner from pin 18. This is why it takes the *last* pair in
+  the DF40 odd-row run (§5.1).
+
+> Earlier notes appeared to conflict — one read said "pin 1 mid-left", another "pin 1 just
+> right of top-centre". Both were right: the second was describing the **bottom view**, which
+> mirrors. Figure 52 shows both, and they are consistent.
+
+### Still not known
+
+- **PCB-surface-to-sensor-glass height.** Not in the Andon catalog, not in the Eagle library.
+  Sets the lens flange focal distance. Currently harmless (bare socket, no lens mount), but it
+  will block any optics design.
+
+---
+
 ## Open items
 
 | # | Item | Blocks | Owner |
 |---|---|---|---|
-| 1 | **Andon socket land pattern.** The public catalogs give pitch (1.016 mm), 12 pads/side, and an 11.18 mm span between outermost pad centers — but **never dimension the centerline-to-pad-row offset, the index-hole positions, or the body keepout.** Cannot author a footprint without them. | **Layout** | Request full `680-48-SM-G10-R14-1` drawing from Andon |
-| 2 | **PCB-surface-to-sensor-glass height.** Not published for any Andon socket. Sets the lens flange focal distance. | **Lens mount** | Andon |
-| 3 | Index-pin protrusion (~1.66 mm) vs. 1.6 mm board thickness | Board stackup / socket variant choice | Andon |
-| 4 | Bank-13 element-bus → FPGA pin map with P/N polarity | §5 pin plan | In progress |
-| 5 | Ft+ and Hd current draw — not documented by Alchitry | Power budget | Measure or ask Alchitry |
-| 6 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
+| 1 | **PCB-surface-to-sensor-glass height.** Not published anywhere. Sets lens flange focal distance. | Lens mount (not the current board) | Measure on the physical socket, or ask Andon |
+| 2 | Index-pin protrusion (~1.66 mm) vs. a 1.6 mm board. Order the **`-0`** (no index pins) or confirm the protrusion with Andon. Note the footprint *does* include the two Ø1.6 holes, so the `-1` remains an option. | Socket variant choice | Andon, or just order `-0` |
+| 3 | Neck-down at the 0.4 mm DF40 pads violates `track_width (min 0.22mm)` — needs an **area-scoped DRC exception**, not a lower global minimum. | Clean DRC | Add once the board exists |
+| 4 | Local regulators + power sequencing (`vdd_18` → `vdd_33` → `vdd_pix`) | Schematic completion | — |
+| 5 | DF40 connectors not yet placed in the schematic (footprints already exist on the earlier boards) | Schematic completion | — |
+| 6 | Ft+ and Hd current draw — not documented by Alchitry | Power budget | Measure or ask Alchitry |
+| 7 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
+| 8 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — none of which are in the public datasheet. | Tight trigger synchronisation | Request portal access |
 
 ---
 

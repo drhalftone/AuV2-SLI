@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "LauSensors")(type "KiCad")(uri "${KIPRJMOD}/../LauSensorLibrary/LauSensors.kicad_sym")(options "")(descr "onsemi PYTHON 1300 / VITA 1300 image sensor symbols"))
+)
