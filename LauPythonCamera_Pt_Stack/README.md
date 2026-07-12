@@ -149,75 +149,74 @@ FT2232HQ is USB 2.0 (JTAG/UART only) — not a data path.
 All 7 differential pairs. `IOSTANDARD LVDS_25`; inputs use internal `DIFF_TERM TRUE`
 (legal because bank 13 is at 2.5 V).
 
-**All seven pairs are on the DF40's ODD row.** This is not cosmetic — see §5.1.1.
+**All seven pairs are on the DF40's EVEN row.** This is **forced by geometry, not chosen** —
+see §5.1.1. An earlier revision used the odd row (both MRCC pairs are there) and was wrong.
 
 | Sensor signal | Sensor pins (N/P) | Dir (FPGA) | Elem pins (N, P) | FPGA pins (N, P) | Clock cap. |
 |---|---|---|---|---|---|
-| `clock_out±` | 7 / 8 | IN | **B39, B41** | **W12, W11** | **MRCC** — forwarded bit clock |
-| `doutn0 / doutp0` | 9 / 10 | IN | B45, B47 | V14, V13 | (spare MRCC) |
-| `doutn1 / doutp1` | 11 / 12 | IN | B51, B53 | W10, V10 | — |
-| `doutn2 / doutp2` | 13 / 14 | IN | B57, B59 | AB12, AB11 | — |
-| `doutn3 / doutp3` | 15 / 16 | IN | B63, B65 | AA11, AA10 | — |
-| `sync±` | 17 / 18 | IN | B69, B71 | AB13, AA13 | — |
-| `lvds_clock_in±` | 23 / 24 | **OUT** | B75, B77 | AA14, Y13 | — |
+| `clock_out±` | 7 / 8 | IN | **B40, B42** | **Y12, Y11** | **SRCC** — forwarded bit clock |
+| `doutn0 / doutp0` | 9 / 10 | IN | B46, B48 | V15, U15 | (spare SRCC) |
+| `doutn1 / doutp1` | 11 / 12 | IN | B52, B54 | AB17, AB16 | — |
+| `doutn2 / doutp2` | 13 / 14 | IN | B58, B60 | AA16, Y16 | — |
+| `doutn3 / doutp3` | 15 / 16 | IN | B64, B66 | T15, T14 | — |
+| `sync±` | 17 / 18 | IN | B70, B72 | Y14, W14 | — |
+| `lvds_clock_in±` | 23 / 24 | **OUT** | B76, B78 | W16, W15 | — |
 
-Spare: `(B33,B35)` on the odd row, plus all 8 even-row pairs.
+Spare: all 8 odd-row pairs. **`(B34,B36)` is deliberately NOT used** — `B36` is the Alchitry
+`Fn` fan-control pin.
 
-#### 5.1.1 Why all-odd-row, and why THIS order
+#### 5.1.1 Why the EVEN row — geometry, not preference
 
-**The DF40's two rows escape in opposite directions.** Measured from the footprint used on the
-existing boards (`Hirose_DF40C-80DP-0.4V_2x40-1MP_P0.4mm`): **odd pins sit at y = +1.355 mm,
-even pins at y = −1.355 mm**, 40 each, aligned in X on 0.4 mm pitch. A pair on the even row
-would escape out the *far* side of the connector, away from the sensor — forcing it to loop
-around the connector body or via down. Both are bad, and the second trips the `.kicad_dru`
-via warning.
+**The DF40's two rows escape in OPPOSITE directions.** Measured from the footprint on the
+fabbed boards: **odd pins at y = +1.355 mm, even pins at y = −1.355 mm**, 40 each, on 0.4 mm
+pitch. Each row's SMT tails splay *outward*, away from the connector centreline.
 
-Alchitry's pairs are always (odd, odd+2) or (even, even+2), so **both halves of a pair are
-always in the same row.** Bank 13 has exactly **8 odd-row and 8 even-row pairs**; we need 7.
-And **both MRCC pairs — (B39,B41) and (B45,B47) — are odd-row.** So all seven fit on the odd
-row *and* the forwarded clock still lands on an MRCC.
-
-**The order matters too.** The sensor's LVDS pins are contiguous around the perimeter:
+Now put that on the real board (§8, taken from the fabbed `LauCameraTrigger_Alchitry_Stack`):
 
 ```
-side "B" of the LCC, 12 pins, no power interleaved:
-  7/8  clock_out | 9/10 dout0 | 11/12 dout1 | 13/14 dout2 | 15/16 dout3 | 17/18 sync
+   board:   55 x 45 mm
+   Bank B:  at y = 41       -> odd row at y = 42.4, even row at y = 39.6
+   board edge at y = 45     -> the ODD row escapes into a 2.6 mm strip.
+```
+
+**A 16.76 mm socket cannot fit below Bank B.** So the sensor must sit *above* it — and
+therefore **only the EVEN row faces the sensor.** An odd-row pair would have to cross the even
+row's 0.4 mm-pitch pads (impossible on `B.Cu`) or loop around the connector body. Seven
+differential pairs looped around a connector at 720 Mbps is not a route anyone wants.
+
+**The catch, and how it was settled.** Bank 13's even row has **no MRCC pairs** — only two
+**SRCC**. So: can an SRCC pin drive `BUFIO` + `BUFR` into a cascaded `ISERDESE2`? I.e. does
+the *real* 1:10 LVDS receiver place on these pins?
+
+**Vivado says yes** (§13.1 — `iocheck/pt_camera_rx.v` is the actual receiver, not a stub):
+
+```
+  BUFIO placed     : 1     <- an SRCC pin drives it
+  BUFR  placed     : 1     <- an SRCC pin drives it
+  ISERDESE2 placed : 10    <- 5 lanes x master+slave cascade, 10 bits each
+```
+
+A `BUFG` (which *does* need MRCC) is the wrong structure for a 720 Mbps source-synchronous
+link anyway. **`BUFIO` is the low-skew I/O clock you actually want**, and SRCC drives it.
+
+#### The order, and why nothing crosses
+
+With the (corrected, §12) footprint at rotation 0, the sensor's LVDS pins land contiguously on
+the edge facing Bank B:
+
+```
+  sensor bottom edge, left -> right:
+  7/8 clock_out | 9/10 dout0 | 11/12 dout1 | 13/14 dout2 | 15/16 dout3 | 17/18 sync
   [corner]
-  23/24 lvds_clock_in     <- adjacent side, just around the corner
+  23/24 lvds_clock_in     <- right edge, mid-height
 ```
 
-The table above assigns connector pairs in that same sequence, so **nothing crosses**.
-`lvds_clock_in` sits at the end of the run, which is where it wants to be — it comes around
-the corner from the adjacent sensor edge.
+The table assigns even-row pairs in that same left-to-right sequence, so **nothing crosses**.
+`lvds_clock_in` takes the far-right pair because it exits the sensor's right edge.
 
-**Polarity falls out for free.** On the sensor, N is always the lower pin number
-(7 = `clock_outn`, 8 = `clock_outp`). On the connector, N is also the lower element-bus pin.
-**Orient U1 so pin 7 faces the B39 end** and every pair runs N-to-N, P-to-P with no intra-pair
-swap.
-
-**Fan-in geometry.** Sensor pair centres are 2.032 mm apart (2 × 1.016 mm pitch); connector
-pair centres are 1.2 mm apart. The bundle tapers from ~11.2 mm wide at the socket to ~6.4 mm
-at the connector. Gentle and symmetric — keep both legs of a pair bending together and the
-intra-pair skew budget survives.
-
-> **Neck-down at the connector.** DF40 pads are 0.4 mm pitch, so traces must narrow below the
-> 0.24 mm `CamLVDS` width to enter them. That is normal and acceptable over a short run, but
-> it will trip `track_width (min 0.22mm)` in the `.kicad_dru`. Add an **area-scoped exception**
-> around the connector rather than lowering the global minimum.
-
-> **POLARITY RULE — in every pair, the LOWER element-bus pin number is N, the HIGHER is P.**
-> No exceptions in bank 13. P/N is fixed by the FPGA die and **cannot be swapped in layout.**
->
-> Verified against the Xilinx package file `xc7a100tfgg484pkg.csv` — all 16 bank-13 pairs
-> resolve to genuine `IO_L##P/N_T#_13` pairs with matching polarity. Note two pairs are
-> *diagonal* BGA neighbors — (B33,B35) = AB10/AA9 and (B75,B77) = AA14/Y13 — which look
-> wrong but are correct. Do not infer polarity from package-pin adjacency.
-
-`clock_out±` is on an **MRCC** pair so it can drive `BUFIO`/`BUFR` and clock the `ISERDES`
-on any bank-13 pin (bank 13 is a single HR bank = one clock region).
-
-**9 spare pairs remain.** Avoid **(B34,B36)** — B36 is the Alchitry `Fn` fan-control pin.
-(B70,B72) is usable; B70 is the bank VREF pin, irrelevant for LVDS_25.
+**Polarity is free.** On the sensor, N is the lower pin number (7 = `clock_outn`). On the
+connector, N is also the lower element-bus pin (B40 = N). Every pair runs N-to-N, P-to-P with
+no intra-pair swap.
 
 ### 5.2 Single-ended control — top Bank A, 3.3 V
 
@@ -482,17 +481,59 @@ is identical on PYTHON and VITA.
 
 ---
 
-## 8. Mechanical
+## 8. Mechanical — the Alchitry element standard
 
-- Connectors: **DF40, 1.5 mm stack height** (Pt V2 convention).
-- The Pt V2 keeps **no components taller than 1.5 mm** on its underside. This board mates to
-  the **top**, so that constraint applies to *our* bottom side if anything is ever stacked
-  above — but nothing is, so we are free. Keep the bottom clean anyway.
-- Total optical height from this board's surface to the sensor glass is **not yet known** —
-  it depends on the socket's internal seating plane, which Andon does not publish. **This
-  blocks the lens mount design.** See Open items.
+**These are not free parameters.** The board outline and the DF40 positions must match the
+element standard or the board will not mate. Everything below is measured from
+`LauCameraTrigger_Alchitry_Stack`, which was **fabbed and works**.
 
----
+```
+  Board         55 x 45 mm, 1.5 mm chamfered corners, notch on the right edge
+  Mount holes   4 x Ø2.2 mm at (2.5, 2.5) (2.5, 42.5) (52.5, 2.5) (52.5, 42.5)
+                -> a 50 x 40 mm rectangle, 2.5 mm in from each corner
+
+  J3  Bank B    80-pin DF40C-80DP  at (38.0, 41.0)   <- the 7 LVDS pairs
+  J1  Bank A    80-pin DF40C-80DP  at (38.0,  4.0)   <- 11 control signals
+  J2  Control   50-pin DF40C-50DP  at (16.5,  4.0)   <- ALL power + VBSEL
+
+  ALL THREE CONNECTORS ARE ON B.Cu (bottom). They mate DOWNWARD into the Pt V2.
+```
+
+> **Bank B is the one at y = 41.** Confirmed by tracing nets on the fabbed board — it is the
+> connector carrying that design's `CAM_TRIG`/`CAM_READY`, which its own notes place on Bank B.
+
+### 8.1 Floorplan
+
+The sensor socket **must** sit above Bank B (nothing else fits), which is what forces the
+even-row LVDS assignment (§5.1.1).
+
+```
+        +--------------------------------------------------+  y=0
+        |  o                                            o  |   mount holes
+        |         [J2 ctrl]        [J1 Bank A]             |   y=4
+        |                                                  |
+        |              +----------------------+            |
+        |              |                      |            |
+        |              |   U1  PYTHON 1300    |            |   socket 16.76 mm sq
+        |              |   (socket, F.Cu)     |            |   centre ~ (38, 22)
+        |              |                      |            |
+        |              +----------+-----------+            |   LVDS edge (pins 7-18)
+        |                    :::::::::::                   |   <- via field, ~6 mm
+        |                   [ J1  Bank B ]                 |   y=41
+        |  o                                            o  |
+        +--------------------------------------------------+  y=45
+```
+
+- **Sensor centred near (38, 22)**, LVDS edge facing down at Bank B. That leaves roughly
+  **6 mm** between the socket's bottom pad row and Bank B's even-row pads — the **via field**.
+- The socket is on `F.Cu`; the connectors are on `B.Cu`. **Every signal crosses the board**
+  (§11.2.1). Reserve that 6 mm band for the 14 signal vias **plus their GND stitching vias** —
+  do not let placement eat it.
+- Control signals exit the sensor's **left** edge and route up to Bank A. They are slow; length
+  does not matter.
+- `R2` (100 Ω termination) sits at the sensor's **right** edge, at pins 23/24. `R1` (47 kΩ
+  bias) also right, at pin 28.
+- Keep the regulators well away from the LVDS band.
 
 ## 9. Consequences for the RTL / constraints
 
@@ -712,6 +753,28 @@ And it supplies what Andon withheld:
 > running left/right/bottom/top — **not a perimeter walk**, so they are meaningless. Pin
 > numbers in our footprint are assigned from the PYTHON 1300 package drawing.
 
+### ⚠️ THE FOOTPRINT WAS MIRRORED ONCE. Here is the guard.
+
+**KiCad's canvas has +y DOWN. The datasheet drawings use +y UP.** The first version of this
+footprint was built straight from the datasheet without converting, which produced a
+**mirrored** footprint: numbering ran **clockwise** on the canvas where the real part runs
+**counter-clockwise**.
+
+**No rotation of a physical part can fix a mirrored footprint.** It would have been a scrapped
+board and a $139 sensor. And it passed every other check — 48 pads, correct pitch, pins 7-18
+contiguous — because none of them looked at *handedness*.
+
+**The check that catches it** (now an assert in the generator, and it fires on the old map):
+
+> Read the **left edge, top to bottom, on the KiCad canvas**. It must give
+> **`43, 44, 45, 46, 47, 48, 1, 2, 3, 4, 5, 6`** — numbers *increasing* downward, matching
+> datasheet Fig. 51 which reads `45, 48, 1, 5` going down.
+>
+> The mirrored version gave `6, 5, 4, 3, 2, 1, 48, 47, …` — decreasing. That one line is the
+> whole test.
+
+If you ever regenerate this footprint, keep that assert.
+
 ### Pin 1 and orientation — verified, do not re-derive from memory
 
 From the PYTHON 1300 datasheet, **Figure 51** (tick marks around the package) and **Figure 52
@@ -785,39 +848,51 @@ PDFs. That is a lot of places to make a quiet mistake. So it has been checked.
 
 Everything below is **reproducible** — the scripts are in `iocheck/`.
 
-### 13.1 Camera pin plan — ✅ PASS
+### 13.1 Camera pin plan + the REAL LVDS receiver — ✅ PASS
 
 ```
-vivado -mode batch -source iocheck/run_iocheck.tcl
+vivado -mode batch -source iocheck/run_camcheck.tcl
 ```
 
-`iocheck/pt_camera_iocheck.v` is not a functional design. It exists only to hand Vivado a top
-level whose ports are exactly those in `pt_camera.xdc`, with `IBUFDS`/`OBUFDS` instantiated
-but **`IOSTANDARD` and `DIFF_TERM` deliberately left to the XDC — because the XDC is the thing
-under test**.
+`iocheck/pt_camera_rx.v` is **the actual 1:10 LVDS receiver**, not a stub:
 
 ```
-  ports placed as constrained : ALL OK
-  bank 13 VCCO = 2.50 V     bank 14 VCCO = 3.30 V     bank 35 VCCO = 3.30 V
+  IBUFDS -> BUFIO   -> ISERDESE2.CLK      (360 MHz bit clock, DDR)
+         -> BUFR/5  -> ISERDESE2.CLKDIV   (72 MHz word clock)
+  ISERDESE2 master+slave cascade = 10 bits/lane, x5 (4 data + sync)
+```
+
+`IOSTANDARD` and `DIFF_TERM` are deliberately left to the XDC — the XDC is the thing under
+test.
+
+```
+  ports placed as constrained : ALL OK (25)
   DIFF_TERM on input pairs    : 6 / 6
-  DIFF_TERM on the OUTPUT pair: 0
-  BUFG driven from cam_clkout : 1
-  Synthesis: 0 errors    DRC: 0 errors    place_design: succeeded
+  DIFF_TERM on the OUTPUT pair: 0        (R2 terminates it at the sensor)
+  BUFIO placed     : 1                   <- an SRCC pin drives it
+  BUFR  placed     : 1                   <- an SRCC pin drives it
+  ISERDESE2 placed : 10                  <- 5 lanes x master+slave
+  cam_clkout_p pin : Y11 = IO_L11P_T1_SRCC_13
+  LVDS ports outside bank 13 : 0
+  Synthesis: 0 errors   place_design: succeeded
 ```
 
-**What that actually proves:**
+**What this proves:**
 
-- **P/N polarity, all seven pairs.** The rule "lower element-bus pin = N, higher = P" was
-  derived by hand. Vivado's placement bears it out on every pair — `cam_clkout_p` → W11 =
-  `IO_L12`**`P`**`_T1_MRCC_13`, `cam_clkout_n` → W12 = `IO_L12`**`N`**`_...`. **A single
-  reversal is a hard error in Vivado**, and would have been a scrapped board and a $139 sensor.
-- **The MRCC pair is real.** `cam_clkout` landed on `IO_L12P/N_T1_MRCC_13` and the BUFG placed,
-  so the forwarded bit clock genuinely can clock the ISERDES.
+- **The EVEN-row plan works with the real receiver.** Bank 13's even row has no MRCC pairs,
+  and the whole layout depends on using it (§5.1.1). **An SRCC pin drives `BUFIO` and `BUFR`
+  into a full 10× `ISERDESE2` cascade.** Without this, the floorplan would have had to change.
+- **P/N polarity.** The rule "lower element-bus pin = N" was derived by hand; Vivado's
+  placement bears it out on every pair. **A single reversal is a hard error in Vivado.**
 - **`R2` is right, and Vivado says so unprompted.** `report_io` gives the six *input* pairs
   `100 Ohm Differential` **on-chip** termination, and gives `cam_lvdsclk` — the *output* — an
-  **off-chip `FD_100`**: far-end differential 100 Ω. Vivado independently states that this
-  output needs an external far-end terminator. **That is `R2`, at the sensor.** The tool
-  arrived at the schematic's termination scheme on its own.
+  **off-chip `FD_100`**: far-end differential 100 Ω. The tool independently arrived at the
+  schematic's termination scheme.
+
+> One trap worth recording. An early version of this harness exposed `word_clk` and the pixel
+> buses as **unconstrained top-level ports**. Vivado defaulted them to `LVCMOS18` and then
+> failed placement with `[Place 30-294]` — which looked exactly like an SRCC/BUFIO
+> incompatibility and was nothing of the sort. Keep the deserialised data internal.
 
 ### 13.2 The WHOLE STACK — ✅ PASS
 
