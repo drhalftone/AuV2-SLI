@@ -566,6 +566,14 @@
       },
       {
         "netclass": "Power",
+        "pattern": "VDD_SYS"
+      },
+      {
+        "netclass": "Power",
+        "pattern": "+3V3_SYS"
+      },
+      {
+        "netclass": "Power",
         "pattern": "+3V3_CAM"
       },
       {
@@ -579,10 +587,6 @@
       {
         "netclass": "Power",
         "pattern": "GND"
-      },
-      {
-        "netclass": "Power",
-        "pattern": "VDD"
       }
     ]
   },
