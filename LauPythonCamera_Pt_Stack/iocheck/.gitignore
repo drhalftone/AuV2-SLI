@@ -1,0 +1,9 @@
+# Vivado run artefacts — regenerate with: vivado -mode batch -source run_iocheck.tcl
+*.log
+*.jou
+*.str
+.Xil/
+io_report.txt
+drc_report.txt
+clockInfo.txt
+dfx_runtime.txt
