@@ -1,0 +1,144 @@
+# =====================================================================
+# Custom DRC rules - LauPythonCamera_Pt_Stack
+# onsemi PYTHON 1300 LVDS routing constraints.
+#
+# Applies to the "CamLVDS" netclass:
+#   CAM_LVDSCLK_P/N   FPGA -> sensor, ~360 MHz   (terminated at U1 by R2, 100R)
+#   CAM_CLKOUT_P/N    sensor -> FPGA, 360 MHz DDR forwarded bit clock
+#   CAM_D0..D3_P/N    sensor -> FPGA, 720 Mbps per lane
+#   CAM_SYNC_P/N      sensor -> FPGA, 720 Mbps
+#
+# Adapted from LauMipiCamera_Alchitry_Stack's MipiHS rules. The difference
+# that matters: THIS BOARD IS 4-LAYER. The two earlier stacked boards are
+# 2-layer, which cannot hold a controlled 100R at 720 Mbps -- the only
+# reference plane sits 1.6 mm away across the core.
+#
+# STACKUP: JLCPCB JLC04161H-7628, 1.6 mm, 4-layer
+#   F.Cu    0.035  mm  1oz    <- image sensor SOCKET (faces UP), components
+#   prepreg 0.2104 mm  7628, Er ~ 4.4
+#   In1.Cu  0.0152 mm  0.5oz  <- SOLID GND
+#   core    1.065  mm
+#   In2.Cu  0.0152 mm  0.5oz  <- SOLID GND  (NOT power -- see below)
+#   prepreg 0.2104 mm  7628
+#   B.Cu    0.035  mm  1oz    <- DF40 connectors (face DOWN), LVDS pairs
+#
+# !! BOTH inner layers are GROUND. This is deliberate. !!
+#
+# The socket is on TOP and the DF40s are on the BOTTOM, so EVERY signal must
+# cross the board. One via per trace is UNAVOIDABLE -- 25 signals, 25 vias.
+#
+# If In2 were a POWER plane, a pair routed on B.Cu would reference power, and at
+# the via the return current would have to hop from the In1 ground reference to
+# the In2 power reference -- which it can only do THROUGH the decoupling caps.
+# That is the classic way to wreck a high-speed layer transition.
+#
+# With In1 and In2 both GND, the transition is a ground-to-ground hop and a
+# stitching via right beside the signal via gives the return current a direct
+# path. We can afford to spend both inner layers on ground because the power is
+# trivial: 140 mA + 80 mA + 5 mA. Three rails, all tiny; they route as ordinary
+# traces / small pours on F.Cu. Do NOT spend an inner layer on a power plane.
+#
+# ROUTING: escape the socket on F.Cu (1.016 mm pitch, roomy), drop through in
+# OPEN BOARD AREA -- not in the congested 0.4 mm DF40 fanout -- then run the
+# controlled-impedance length on B.Cu referenced to the solid In2 ground.
+#
+# GEOMETRY: W = 0.24 mm, S = 0.20 mm -> ~100R differential (IPC-2141 approx,
+# 99.8R). Same on F.Cu and B.Cu -- the stackup is symmetric (0.2104 mm prepreg to
+# the adjacent ground on both outer layers). CONFIRM in KiCad Board Setup ->
+# Board Stackup with the real Er, and tick "Impedance controlled" when ordering.
+# =====================================================================
+
+(version 1)
+
+# --- 100 ohm differential pair gap ---
+(rule "CamLVDS diff-pair gap"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint diff_pair_gap (min 0.18mm) (opt 0.20mm) (max 0.24mm)))
+
+# --- Diff-pair trace width for 100R ---
+(rule "CamLVDS track width"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint track_width (min 0.22mm) (opt 0.24mm) (max 0.26mm)))
+
+# --- Keep P and N tightly coupled: limit uncoupled run length ---
+(rule "CamLVDS max uncoupled length"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint diff_pair_uncoupled (max 1.5mm)))
+
+# --- Intra-pair (P vs N) skew, PER PAIR. Inter-lane matching is intentionally
+#     NOT constrained: the PYTHON LVDS link is source-synchronous and sends
+#     training patterns, so the FPGA's ISERDES bitslips each lane independently.
+#     Match P to N; do not waste effort matching lane to lane. ---
+(rule "CamLVDS skew - LVDSCLK pair (FPGA -> sensor)"
+	(condition "A.NetName == 'CAM_LVDSCLK_P' || A.NetName == 'CAM_LVDSCLK_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - CLKOUT pair (sensor -> FPGA)"
+	(condition "A.NetName == 'CAM_CLKOUT_P' || A.NetName == 'CAM_CLKOUT_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D0 pair"
+	(condition "A.NetName == 'CAM_D0_P' || A.NetName == 'CAM_D0_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D1 pair"
+	(condition "A.NetName == 'CAM_D1_P' || A.NetName == 'CAM_D1_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D2 pair"
+	(condition "A.NetName == 'CAM_D2_P' || A.NetName == 'CAM_D2_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - D3 pair"
+	(condition "A.NetName == 'CAM_D3_P' || A.NetName == 'CAM_D3_N'")
+	(constraint skew (max 0.08mm)))
+
+(rule "CamLVDS skew - SYNC pair"
+	(condition "A.NetName == 'CAM_SYNC_P' || A.NetName == 'CAM_SYNC_N'")
+	(constraint skew (max 0.08mm)))
+
+# --- Extra clearance from the LVDS pairs to all other nets.
+#     Held at 0.25mm rather than a true 3W (0.72mm) because the DF40 is a
+#     0.4mm-pitch connector -- 3W is not physically achievable at the pads.
+#     Open it up to >=0.5mm in the field, away from the connector. ---
+(rule "CamLVDS clearance to other nets"
+	(condition "A.NetClass == 'CamLVDS' && B.NetClass != 'CamLVDS'")
+	(constraint clearance (min 0.25mm)))
+
+# --- Keep LVDS pairs away from the board edge (fringing fields / EMI) ---
+(rule "CamLVDS edge clearance"
+	(condition "A.NetClass == 'CamLVDS'")
+	(constraint edge_clearance (min 0.30mm)))
+
+# --- VIAS: EXACTLY ONE per trace. Not zero -- one.
+#
+#     An earlier revision of this file forbade vias on the LVDS pairs. That was
+#     WRONG and is corrected here: the socket is on TOP and the DF40s are on the
+#     BOTTOM, so every trace MUST cross the board. Zero vias is geometrically
+#     impossible; the goal is exactly one, placed well.
+#
+#     DRC cannot express "at most one via per net" -- these are rules for a human:
+#
+#       1. BOTH VIAS OF A PAIR, SYMMETRIC. Same distance along the pair, so P and
+#          N pick up equal delay through the transition. An asymmetric via pair
+#          converts differential signal into common mode.
+#       2. A GND STITCHING VIA IMMEDIATELY BESIDE each pair's vias. This is what
+#          carries the return current between In1 and In2. Without it the return
+#          has no path and the transition radiates.
+#       3. DROP THROUGH IN OPEN BOARD AREA -- not in the 0.4mm DF40 fanout, where
+#          there is no room to stitch.
+#       4. NO STUB, for free: a through-hole via on a 4-layer board spans the full
+#          stack, so nothing dangles.
+#
+#     What DRC CAN check is the via geometry, below. ---
+(rule "CamLVDS via size"
+	(condition "A.NetClass == 'CamLVDS' && A.Type == 'Via'")
+	(constraint hole_size (min 0.3mm) (opt 0.3mm))
+	(constraint via_diameter (min 0.5mm) (opt 0.5mm)))
+
+# --- The 100R termination R2 belongs AT the sensor, not near the connector.
+#     It is the far-end termination for the clock the FPGA drives into U1.
+#     DRC cannot express "place R2 within 5mm of U1 pins 23/24" -- this is a
+#     placement rule for a human. It is written here so it is not forgotten.
+#     (The six sensor OUTPUT pairs need no resistors: they terminate inside the
+#      FPGA via internal DIFF_TERM, legal because bank 13 is at 2.5V.)

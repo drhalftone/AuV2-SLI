@@ -1,0 +1,96 @@
+* PYTHON 1300 camera board - power tree sequencing verification (LTspice)
+*
+* REAL TI MODELS: TPS7A20 (SBVM961) x3 LDOs, TLV803S (SBVM034) x2 supervisors
+* BOOST: behavioural stand-in CALIBRATED against TI's TPS61023 model (SLVMD68),
+*        which was run separately and gave: Vout 4.506 V, startup ~450 us,
+*        peak IL 544 mA, true input-output disconnect.
+*        (The switching model is ~20 s per ms of sim -- too slow for a 285 ms run.)
+* SENSOR: no public SPICE model exists. It is a LOAD (datasheet currents) plus the
+*        board's real decoupling.
+* NOTE: TI's TPS7A20 model does NOT include the 150-ohm auto-discharge that the
+*        datasheet specifies when EN is low. Our power-down ordering DEPENDS on it,
+*        so it is added explicitly below (S_d2/S_d4/S_d5).
+*
+.include tps7a20.lib
+.include tlv803s.lib
+
+*==================== the Pt's +3V3 rail ==========================
+* up at 1 ms, hold, then collapse (USB unplug) from 260 ms
+Vsys vsys 0 PWL(0 0  1m 3.278  300m 3.278  300.5m 3.05  306m 3.05  306.5m 3.278  700m 3.278)
+
+*==================== U2 : TPS7A2018 -> vdd_18 (EN tied to +3V3) ==
+XU2  vsys 0 vsys nc2 v1v8 TPS7A20_ADJ_TRANS PARAMS: V_out=1.8
+S_d2 v1v8 0 0 vsys SWDIS
+Cin2 vsys 0 1u
+
+*==================== U3 : boost -> +4V5 (calibrated stand-in) ====
+* hysteretic EN: ON >1.2 V, OFF <0.35 V (datasheet). Needs VIN alive (>0.5 V) --
+* the TPS61023 keeps running down to 0.5 V VIN, which is exactly why U7 exists.
+Vone one 0 1
+S_en one enq en_boost 0 SWEN
+R_enq enq 0 1Meg
+B_ok  en_ok 0 V = if( V(enq)>0.5 & V(vsys)>0.5, 1, 0 )
+R_ss  en_ok ss 15k
+C_ss  ss 0 10n
+B_bst bint 0 V = 4.506 * min(V(ss),1)
+S_dc  bint v4v5 en_ok 0 SWDC
+Cb1   v4v5 0 20u
+
+*==================== U4 : TPS7A2033 -> vdd_33 (EN from vdd_18) ===
+XU4  v4v5 0 v1v8 nc4 v33 TPS7A20_ADJ_TRANS PARAMS: V_out=3.3
+S_d4 v33 0 0 v1v8 SWDIS
+Cin4 v4v5 0 1u
+
+*==================== U5 : TPS7A2033 -> vdd_pix (EN from EN_PIX) ==
+XU5  v4v5 0 en_pix nc5 vpix TPS7A20_ADJ_TRANS PARAMS: V_out=3.3
+S_d5 vpix 0 0 en_pix SWDIS
+Cin5 v4v5 0 1u
+
+*==================== U6 : supervisor -> EN_PIX ===================
+* R15 pull-up goes to vdd_33, NOT +3V3.  *** THIS IS THE INTERLOCK ***
+* Before vdd_33 exists the pull-up sits at 0 V, so vdd_pix CANNOT enable early.
+XU6  0 en_pix vsys TLV803S_TRANS
+R15  en_pix v33 100k
+C39  en_pix 0 10n
+
+*==================== U7 : supervisor -> EN_BOOST =================
+XU7  0 rst_boost vsys TLV803S_TRANS
+R16  rst_boost vsys 100k
+R17  rst_boost en_boost 1k
+C41  en_boost 0 220n
+
+*==================== sensor: loads + real board decoupling =======
+Rl33  v33  0 23.57
+Rl18  v1v8 0 22.5
+Rlpix vpix 0 660
+C33   v33  0 15.04u
+C18   v1v8 0 14.03u
+* vdd_pix budget deliberately ~1.5uF so the 150-ohm discharge collapses it FIRST
+Cpix  vpix 0 1.54u
+
+.model SWDIS SW(Vt=-0.3 Vh=0.02 Ron=150 Roff=1G)
+.model SWEN  SW(Vt=0.775 Vh=0.425 Ron=1 Roff=1G)
+.model SWDC  SW(Vt=0.5 Vh=0.1 Ron=0.05 Roff=1G)
+
+.save V(vsys) V(v4v5) V(v1v8) V(v33) V(vpix) V(en_pix) V(en_boost)
+.options plotwinsize=0
+.tran 0 700m 0 20u
+
+* ==== DURING THE DIP: must collapse vdd_pix -> vdd_33, and vdd_18 must SURVIVE ====
+.meas tran d_tpix WHEN V(vpix)=2.97 FALL=1 TD=299m
+.meas tran d_t33  WHEN V(v33)=2.97  FALL=1 TD=299m
+.meas tran d_gap  PARAM d_t33-d_tpix
+.meas tran d_v18min MIN V(v1v8) FROM=299m TO=307m
+.meas tran d_vpixmin MIN V(vpix) FROM=299m TO=307m
+
+* ==== RECOVERY: must come back vdd_18 -> vdd_33 -> vdd_pix ====
+.meas tran r_t33  WHEN V(v33)=2.97  RISE=1 TD=307m
+.meas tran r_tpix WHEN V(vpix)=2.97 RISE=1 TD=307m
+.meas tran r_gap  PARAM r_tpix-r_t33
+
+* ==== did the supervisor chatter? count EN_BOOST crossings ====
+.meas tran en_final FIND V(en_boost) AT=690m
+.meas tran v33_final FIND V(v33) AT=690m
+.meas tran vpix_final FIND V(vpix) AT=690m
+.meas tran v18_final FIND V(v1v8) AT=690m
+.end

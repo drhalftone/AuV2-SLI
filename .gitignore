@@ -39,3 +39,8 @@ CMakeLists.txt.user*
 .vscode/
 .idea/
 *.autosave
+
+# KiCad backups
+*.kicad_sch.bak*
+*.kicad_pcb.bak*
+*-backups/

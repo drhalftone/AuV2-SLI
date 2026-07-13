@@ -1,0 +1,4 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "LauCamera")(type "KiCad")(uri "${KIPRJMOD}/LauCamera.pretty")(options "")(descr "Camera board footprints - Andon LCC48 socket"))
+)
