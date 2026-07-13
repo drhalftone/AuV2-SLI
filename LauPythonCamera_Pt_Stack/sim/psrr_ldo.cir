@@ -1,0 +1,16 @@
+* TPS7A20 PSRR: AC sweep VIN->VOUT. Datasheet: 95dB@1k, 75dB@10k, 75dB@100k, 45dB@1M
+.include tps7a20.lib
+Vin  vin 0 DC 4.5 AC 1
+Ven  en  0 DC 3.3
+XU5  vin 0 en nc vpix TPS7A20_ADJ_TRANS PARAMS: V_out=3.3
+* vdd_pix load + the board's ACTUAL vdd_pix capacitance (1.54uF total)
+Rl   vpix 0 660
+Cl   vpix 0 1.54u
+Cin  vin 0 1u
+.ac dec 20 10 10Meg
+.meas ac psrr_100  FIND V(vpix) AT=100
+.meas ac psrr_1k   FIND V(vpix) AT=1k
+.meas ac psrr_10k  FIND V(vpix) AT=10k
+.meas ac psrr_100k FIND V(vpix) AT=100k
+.meas ac psrr_1M   FIND V(vpix) AT=1Meg
+.end

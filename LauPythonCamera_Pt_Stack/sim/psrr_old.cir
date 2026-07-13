@@ -1,0 +1,26 @@
+* THE OLD DESIGN: ferrite tap off +3V3. What does it actually pass to the sensor?
+* FB1 -> vdd_33 : the README demanded DCR <= 50 mohm (it carries 140 mA).
+* FB2 -> vdd_pix: BLM18 600R@100MHz, DCR ~0.3 ohm.
+* Bead modelled as series L + DCR with the lossy R in parallel (standard bead model).
+Vin  vin 0 DC 3.278 AC 1
+
+* ---- FB1 -> vdd_33 (low-DCR bead, as the old README REQUIRED) ----
+L1   vin  n33 1u
+R1   vin  n33 600
+Rd1  n33  v33 50m
+C33  v33 0 15u
+R33  v33 0 23.57
+
+* ---- FB2 -> vdd_pix (600R bead, DCR 0.3) ----
+L2   vin  npx 1u
+R2   vin  npx 600
+Rd2  npx  vpx 0.3
+Cpx  vpx 0 14.1u
+Rpx  vpx 0 660
+
+.ac dec 40 100 10Meg
+.meas ac g33_peak  MAX V(v33)
+.meas ac g33_100k  FIND V(v33) AT=100k
+.meas ac gpx_peak  MAX V(vpx)
+.meas ac gpx_100k  FIND V(vpx) AT=100k
+.end

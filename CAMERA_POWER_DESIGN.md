@@ -3,6 +3,9 @@
 **Status:** Boost stage, LDO stage and sequencing all designed and costed. Layout not started.
 **Mount side: RESOLVED — this board sits ON TOP of the stack (§2.5). It cannot go below the Pt.**
 
+**Simulation test report:** [`CAMERA_POWER_SIMULATION.md`](CAMERA_POWER_SIMULATION.md) — all
+tests pass; one found a real bug (a saturating inductor).
+
 **Scope:** how the NOIP1SN1300A sensor gets its three supplies from the Alchitry Pt V2's `+3V3`
 rail. I/O, LVDS and pin mapping are a separate document.
 

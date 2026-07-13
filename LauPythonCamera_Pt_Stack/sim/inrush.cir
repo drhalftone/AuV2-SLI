@@ -1,0 +1,29 @@
+* Boost INRUSH -> +3V3 droop -> does it reach the supervisors' 2.93 V trip?
+* REAL TPS61023 model. Source impedance = Pt buck + DF40 connector + traces.
+.include tps61023.lib
+.param SS=0
+Vsrc src 0 3.278
+* Rs: 8x DF40 pins in parallel (~2.5mR) + trace/plane (~10mR) + Pt buck output Z.
+* 50 mohm is a deliberately PESSIMISTIC lump.
+Rs   src vsys 50m
+Lc   vsys vin 5n
+Cin  vin 0 10u
+Cin2 vin 0 1u
+Ven  en 0 PWL(0 0 1m 0 1.1m 1.8 20m 1.8)
+L1   vin sw 2.2u
+XU3  en fb 0 sw vin vout TPS61023_Symbol
+R8   vout fb 330k
+R9   fb  0  51k
+* the two 3.3V LDOs' input caps + boost output caps
+Cb1  vout 0 20u
+Cb2  vout 0 2u
+* worst case: LDOs already drawing full load the instant +4V5 appears
+Rl   vout 0 30.7
+.save V(vsys) V(vin) V(vout) I(Rs) I(L1)
+.options plotwinsize=0
+.tran 0 4m 0 500n
+.meas tran vsys_min   MIN V(vsys) FROM=1m TO=3m
+.meas tran isrc_pk    MAX I(Rs)   FROM=1m TO=3m
+.meas tran il_pk      MAX I(L1)   FROM=1m TO=3m
+.meas tran vout_f     FIND V(vout) AT=3.5m
+.end
