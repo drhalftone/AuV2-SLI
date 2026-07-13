@@ -103,19 +103,19 @@ OSERDES/BUFG ceiling, and the HDMI I/O is on 3.3 V TMDS HR banks (~1.2 Gb/s/ch).
 ## Flashing the board
 
 **Easiest — the included one-click flasher:** run `AlchitryFlasher/AlchitryFlasher.cmd`. It installs
-the Alchitry loader if needed, downloads/verifies `Bitstream/Au2_SLI_stackB.bin` (SHA-256 checked), and
+the Alchitry loader if needed, downloads/verifies `Bitstream/Au2_SLI.bin` (SHA-256 checked), and
 programs the board. See [`AlchitryFlasher/README.md`](AlchitryFlasher/README.md).
 
 **Manual:** with Alchitry Labs V2 (loader **2.0.52+**, required for the Au V2):
 
 ```
-alchitry.exe load --bin Bitstream/Au2_SLI_stackB.bin --board AuV2 --flash   # persistent
-alchitry.exe load --bin Bitstream/Au2_SLI_stackB.bin --board AuV2 --ram     # temporary (testing)
+alchitry.exe load --bin Bitstream/Au2_SLI.bin --board AuV2 --flash   # persistent
+alchitry.exe load --bin Bitstream/Au2_SLI.bin --board AuV2 --ram     # temporary (testing)
 ```
 
 | Bitstream | Use |
 |---|---|
-| `Bitstream/Au2_SLI_stackB.bin` | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected). |
+| `Bitstream/Au2_SLI.bin` | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected; USB control protocol + display EDID read-back). |
 
 ## Building from source
 
@@ -291,7 +291,7 @@ The newer board folders:
 ├── MIPI_CSI2_ROADMAP.md             # custom MIPI CSI-2 receiver design plan (Pt V2)
 ├── build.tcl                        # non-project Vivado batch build (sources -> bitstream + .bin)
 ├── program.tcl                      # volatile JTAG load for bring-up
-├── Bitstream/                       # prebuilt bitstream (Au2_SLI_stackB.bin)
+├── Bitstream/                       # prebuilt bitstream (Au2_SLI.bin)
 ├── sources_1/                       # HDL sources (sources_1/imports/RTL)
 ├── constrs_1/                       # Xilinx design constraints (XDC)
 ├── Matlab/                          # .m scripts + LUT outputs (legacy pattern generation)

@@ -39,10 +39,10 @@ $BitstreamDir = Join-Path $PSScriptRoot '..\Bitstream'
 
 # label -> @{ Path (local, preferred) ; Url (fallback) ; Sha256 (verified before flash) }
 $BinChoices = [ordered]@{
-    'Au2_SLI_stackB.bin (SLI system, Bank-B stack board)' = @{
-        Path   = (Join-Path $BitstreamDir 'Au2_SLI_stackB.bin')
-        Url    = "$RepoRaw/Au2_SLI_stackB.bin"
-        Sha256 = 'F42D6A612C20F048AF4FED9DC465D40A9556B6DFF2A4E6FF2AC5856F6E977627'
+    'Au2_SLI.bin (SLI system, Bank-B stack board)' = @{
+        Path   = (Join-Path $BitstreamDir 'Au2_SLI.bin')
+        Url    = "$RepoRaw/Au2_SLI.bin"
+        Sha256 = '2448EB484F9177FC9C33B8D30EC40C53C963CC65DB29DCB3E044F2E366EC92B6'
     }
 }
 
@@ -127,7 +127,7 @@ PowerShell cannot talk to the board&rsquo;s FTDI flash chip directly.</p>
 <p>The <code>.bin</code> file that gets written to the FPGA. These come straight from the
 <a href="https://github.com/drhalftone/AuV2-SLI">drhalftone/AuV2-SLI</a> GitHub repo.</p>
 <table><tr><th>File</th><th>Use</th></tr>
-<tr><td>Au2_SLI_stackB.bin</td><td>The full structured-light illumination design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected).</td></tr></table>
+<tr><td>Au2_SLI.bin</td><td>The full structured-light illumination design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected; USB control + EDID read-back).</td></tr></table>
 <p>Each download is checked against a known <b>SHA-256</b> hash; a mismatch aborts the flash so a
 corrupted file never reaches the board. Verified files are cached and reused.</p>
 '@

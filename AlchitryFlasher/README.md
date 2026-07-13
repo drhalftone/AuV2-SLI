@@ -76,7 +76,7 @@ reconstruction. The system scans **1280×720 at 120 FPS**. In brief, the FPGA ca
 
 | File | Use it when |
 |------|-------------|
-| **`Au2_SLI_stackB.bin`** | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; runs an idle LED slider when nothing is connected). |
+| **`Au2_SLI.bin`** | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; runs an idle LED slider when nothing is connected; USB control protocol + display EDID read-back). |
 
 ### Integrity
 
@@ -84,7 +84,7 @@ Each `.bin` is checked against a known **SHA-256** hash after download. A mismat
 **aborts the flash**, so a corrupted or tampered file never reaches the board:
 
 ```
-Au2_SLI_stackB.bin  F42D6A612C20F048AF4FED9DC465D40A9556B6DFF2A4E6FF2AC5856F6E977627
+Au2_SLI.bin  2448EB484F9177FC9C33B8D30EC40C53C963CC65DB29DCB3E044F2E366EC92B6
 ```
 
 ---
