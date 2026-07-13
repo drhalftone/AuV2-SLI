@@ -142,3 +142,90 @@
 #     placement rule for a human. It is written here so it is not forgotten.
 #     (The six sensor OUTPUT pairs need no resistors: they terminate inside the
 #      FPGA via internal DIFF_TERM, legal because bank 13 is at 2.5V.)
+
+# =====================================================================
+# FINE-PITCH LAND PATTERNS -- scoped clearance exceptions.
+#
+# These relax clearance ONLY between pads of the SAME component, and only for
+# the components whose manufacturer land pattern is finer than our 0.2 mm
+# default netclass clearance. They do NOT relax clearance to any other net,
+# track or via -- routing rules are untouched.
+#
+#   J1/J2/J3  Hirose DF40, 0.4 mm pitch -> 0.15 mm between adjacent pads.
+#             This is Hirose's own footprint, and the FABBED
+#             LauCameraTrigger_Alchitry_Stack uses the identical land pattern,
+#             so JLCPCB demonstrably builds it.
+#   U3        TPS61023 in SOT-563, 0.5 mm pitch -> 0.15 mm between pads.
+#
+# This is the "area-scoped DRC exception" called for in README open item 5.
+# Do NOT fix these by lowering the GLOBAL clearance -- that would silently
+# relax the LVDS routing rules too.
+# =====================================================================
+
+(rule "DF40 land pattern - 0.4mm pitch, intra-connector only"
+	(condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Reference == B.Reference && (A.Reference == 'J1' || A.Reference == 'J2' || A.Reference == 'J3')")
+	(constraint clearance (min 0.1mm)))
+
+(rule "TPS61023 SOT-563 land pattern - 0.5mm pitch, intra-package only"
+	(condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Reference == 'U3' && B.Reference == 'U3'")
+	(constraint clearance (min 0.1mm)))
+
+# =====================================================================
+# DF40 FANOUT NECK-DOWN -- this is what makes the LVDS routable AT ALL.
+#
+# THE ARITHMETIC, because it is not obvious and it is what blocks everything:
+#
+#   DF40 pads are 0.23 mm wide on a 0.4 mm pitch -> 0.17 mm of bare gap.
+#   A CamLVDS track at its 0.22 mm minimum leaves 0.4 - 0.22 = 0.18 mm to the
+#   neighbouring track. But CamLVDS ALSO demands 0.25 mm clearance to foreign
+#   nets. 0.18 < 0.25, so THE TWO CamLVDS RULES CONTRADICT EACH OTHER AT THE PAD.
+#   There is no legal track that can leave a DF40 pad. Not a narrow one -- NONE.
+#
+#   Proven empirically: Freerouting 2.2.4 left 143 of 254 connections unrouted
+#   and did not route a single complete LVDS pair, because it could not escape
+#   these pads.
+#
+#   Neck down to 0.15 mm and the gap becomes 0.4 - 0.15 = 0.25 mm -- exactly the
+#   clearance CamLVDS wants. That is why 0.15 mm is the target width, not a
+#   number picked for comfort.
+#
+# SCOPE -- via the CONNECTOR'S OWN COURTYARD, not a drawn region.
+#
+# An earlier version of this file scoped these rules to three DF40_FANOUT_*
+# rule-area zones drawn on the board. Those zones were created through the
+# pcbnew scripting API and CRASHED the KiCad GUI (a wxWidgets assertion; the
+# CLI loaded the same file fine). They have been deleted. Do not re-add them.
+#
+# intersectsCourtyard() needs no board geometry at all, and it scopes BETTER:
+# the DF40 courtyard extends exactly 0.54 mm beyond the pads, so only the short
+# track segment that actually touches the connector is relaxed. The moment a
+# track is clear of the courtyard, the full 0.24 / 0.20 / 0.25 mm CamLVDS
+# geometry applies again. The 100 ohm controlled length CANNOT be silently
+# swallowed by an over-large region -- which is a real hazard with a hand-drawn
+# rule area, and is why the diagonal-routing attempt had to be thrown away.
+#
+# Do NOT instead fix the fanout by lowering the GLOBAL minimum track width. That
+# would relax the 100 ohm geometry everywhere, with no warning.
+#
+# Keep the neck SHORT: it is an impedance discontinuity, tolerable only because
+# it is a small fraction of a wavelength at 720 Mbps. Widen back to 0.24 mm as
+# soon as the track leaves the courtyard.
+#
+# Closes README open item 5.
+# =====================================================================
+
+(rule "DF40 fanout - neck-down track width"
+	(condition "A.intersectsCourtyard('J1') || A.intersectsCourtyard('J2') || A.intersectsCourtyard('J3')")
+	(constraint track_width (min 0.12mm) (opt 0.15mm) (max 0.26mm)))
+
+(rule "DF40 fanout - neck-down clearance"
+	(condition "(A.intersectsCourtyard('J1') && B.intersectsCourtyard('J1')) || (A.intersectsCourtyard('J2') && B.intersectsCourtyard('J2')) || (A.intersectsCourtyard('J3') && B.intersectsCourtyard('J3'))")
+	(constraint clearance (min 0.15mm)))
+
+# The diff-pair gap also cannot hold 0.20 mm while both legs are necked down
+# between 0.4 mm-pitch pads, and a 0.44 mm-pitch pair must splay to >= 0.75 mm
+# to fit two 0.5 mm vias side by side at a layer change. Relax it at the
+# connector only.
+(rule "DF40 fanout - diff pair gap"
+	(condition "A.NetClass == 'CamLVDS' && (A.intersectsCourtyard('J2') || A.intersectsCourtyard('J1'))")
+	(constraint diff_pair_gap (min 0.15mm) (opt 0.20mm) (max 0.90mm)))

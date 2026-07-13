@@ -494,40 +494,40 @@
   "net_settings": {
     "classes": [
       {
-        "name": "Default",
-        "priority": -1,
         "clearance": 0.2,
-        "track_width": 0.25,
-        "via_diameter": 0.6,
-        "via_drill": 0.3,
+        "name": "Default",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": -1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "tuning_profile": ""
+        "track_width": 0.25,
+        "tuning_profile": "",
+        "via_diameter": 0.6,
+        "via_drill": 0.3
       },
       {
-        "name": "CamLVDS",
-        "priority": 0,
         "clearance": 0.25,
-        "track_width": 0.24,
-        "diff_pair_width": 0.24,
         "diff_pair_gap": 0.2,
         "diff_pair_via_gap": 0.25,
-        "via_diameter": 0.5,
-        "via_drill": 0.3,
+        "diff_pair_width": 0.24,
+        "name": "CamLVDS",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 0,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "tuning_profile": ""
+        "track_width": 0.24,
+        "tuning_profile": "",
+        "via_diameter": 0.5,
+        "via_drill": 0.3
       },
       {
-        "name": "Power",
-        "priority": 1,
         "clearance": 0.2,
-        "track_width": 0.5,
-        "via_diameter": 0.8,
-        "via_drill": 0.4,
+        "name": "Power",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
+        "priority": 1,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "tuning_profile": ""
+        "track_width": 0.5,
+        "tuning_profile": "",
+        "via_diameter": 0.8,
+        "via_drill": 0.4
       }
     ],
     "meta": {
@@ -713,18 +713,18 @@
     "subpart_id_separator": 0,
     "top_level_sheets": [
       {
-        "filename": "LauMipiCamera_Alchitry_Stack.kicad_sch",
-        "name": "LauMipiCamera_Alchitry_Stack",
+        "filename": "LauPythonCamera_Pt_Stack.kicad_sch",
+        "name": "LauPythonCamera_Pt_Stack",
         "uuid": "fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c"
       }
     ],
-    "used_designators": "MASTER1",
+    "used_designators": "#PWR1-210",
     "variants": []
   },
   "sheets": [
     [
       "fcd4dd93-c3dd-49e9-b78a-67baf19f0e7c",
-      "LauMipiCamera_Alchitry_Stack"
+      "LauPythonCamera_Pt_Stack"
     ]
   ],
   "text_variables": {},
