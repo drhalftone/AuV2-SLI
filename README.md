@@ -204,7 +204,7 @@ of block 0 is the authoritative extension count.
 | 0x02 | STATUS | R | live byte `{vsync,hsync,VPol,sel,mode,rdy,f_frm,trig}` (same as the LEDs) |
 | 0x06 | FLAGS | R | `{…, usb_sw_en, lut_loaded}` |
 | 0x10 | PINS | R | `{eff_sw[3:0], phys_sw[3:0]}` — active vs physical R/G/B/orient switch pins |
-| 0x13 | SLICTRL | R/W | `{7:sw_en, 3:R, 2:G, 1:B, 0:orient}` |
+| 0x13 | SLICTRL | R/W | `{7:sw_en, 6:mode_en, 5:mode_val, 3:R, 2:G, 1:B, 0:orient}` — `sw_en` overrides the R/G/B/orient pins; `mode_en`+`mode_val` override the camera `mode` GPIO to force the SLI pattern on |
 | 0x20 | MODE | R | `{7:valid, 6:edid_ok, 3..0:mode_idx}` — the curated-table index **in use** |
 | 0x21 | REFR | R | refresh rate (Hz) |
 | 0x22–0x23 | HACT | R | active pixels, lo/hi (12-bit) |
@@ -234,10 +234,36 @@ R/G/B-enable and orientation **instead of the physical `SW[3:0]` pins** —
 `effective_sw = sw_en ? usb_value : SW` — clear it to fall back to the board switches. Reading `PINS`
 (0x10) shows both nibbles so you can confirm the override took (and read live switch state any time).
 
-> **Status (Stage 1).** Register access, the `0x13` switch override (wired into the pixel datapath),
-> and table upload/**readback** are hardware-verified. The uploaded `corr`/`LUT`/`LUT_V` tables are
-> stored in BRAM but **not yet consumed by the pattern generator** — wiring them in (runtime-writable
-> LUT + on-the-fly `out = corr[cos]` linearisation) is the next step.
+**The `corr` table is live in the pixel datapath.** `pattern_gen` presents its raw cosine value to a
+256-entry transfer LUT and uses the result for every **fringe** pixel, so `corr` is the radiometric /
+gamma linearisation curve: `out = corr[cos]`. It powers up **identity** (no correction), so leaving it
+unwritten changes nothing. FLASH pixels bypass the LUT inside `pattern_gen` and stay true `0x00`/`0xFF`.
+
+The lookup is **combinational** by necessity — `pattern_gen` consumes the corrected value in the same
+pipeline stage it emits the raw one, so a registered BRAM read would apply each pixel's correction to
+the *next* pixel. It synthesises as 256×8 distributed RAM (LUTRAM).
+
+[`host/upload_corr.py`](host/upload_corr.py) uploads a curve (`identity` / `const:NN` / `invert` /
+`gamma:G`) and verifies it by readback. `--selftest` **proves the LUT reaches the pixels**: it uploads
+a constant curve and watches the pipe-OUTPUT top-left sample (`O=`) collapse onto that constant while
+the pipe-INPUT sample (`P=`) does not move — so the change is happening inside the pipe.
+
+```
+python host/upload_corr.py COM6 --selftest
+  corr = 0x40 everywhere    P= 0x06 (unchanged)   O= 0x40  -> 8/8 output samples
+  corr = 0xC0 everywhere    P= 0x06 (unchanged)   O= 0xC0  -> 7/7 output samples
+```
+
+> **The LUT only shapes FRINGE pixels**, so it does nothing until the pattern generator is actually
+> running. `pattern_gen`'s enable comes from the camera board's `mode` GPIO (`C1_in[1]`), which the XDC
+> **pulls low** ("default passthrough for colour-bar test") — with no camera attached the generator is
+> off and the offline colour bars pass straight through. Set `0x13` `mode_en`+`mode_val` to force the
+> SLI fringes on over USB with no camera board.
+
+> **`LUT` (0x00, 720 B) and `LUT_V` (0x01, 1280 B) have no consumer.** They upload and read back fine,
+> but `pattern_gen` is DDS-based with its own internal 4096-entry master cosine and does not need
+> external row/column LUTs — these targets are vestigial from the old `indexMap`/`LUT` ROM design
+> (those IP ROMs are no longer instantiated).
 
 ## Setting resolution / FPS on the PC
 
@@ -353,7 +379,7 @@ The newer board folders:
 ├── build_scripts/                   # historical project-mode build scripts (superseded by build.tcl)
 ├── Matlab/                          # .m scripts + LUT outputs (legacy pattern generation)
 ├── AlchitryFlasher/                 # one-click Windows flasher (GUI + docs)
-├── host/                            # Qt host app + USB tools (dump_edid.py, read_mode.py, tests)
+├── host/                            # Qt host app + USB tools (dump_edid.py, read_mode.py, upload_corr.py)
 ├── LauCameraTrigger_Alchitry/       # camera-trigger breakout PCB (KiCad) + camera-wiring docs
 ├── LauCameraTrigger_Alchitry_3xJST/ # breakout variant: 3× on-board JST-7 (ordered)
 ├── LauCameraTrigger_Alchitry_Stack/ # DF40 stacking daughter board (mates the Br/Hd stack)

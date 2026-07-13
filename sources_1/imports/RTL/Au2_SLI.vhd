@@ -196,9 +196,16 @@ architecture Behavioral of Au2_SLI is
             out_blue  : out std_logic_vector(7 downto 0);
             tlp_dbg      : out std_logic_vector(7 downto 0);
             olp_dbg      : out std_logic_vector(7 downto 0);
-            trig_cnt_dbg : out std_logic_vector(7 downto 0)
+            trig_cnt_dbg : out std_logic_vector(7 downto 0);
+            -- radiometric transfer LUT seam -> uart_ctrl's host-uploadable corr table
+            lut_din      : out std_logic_vector(7 downto 0);
+            lut_dout     : in  std_logic_vector(7 downto 0)
     );
     end component;
+
+    -- pattern_gen's tone-LUT seam: raw cosine out, linearised value back, SAME cycle.
+    signal pat_lut_din  : std_logic_vector(7 downto 0);
+    signal pat_lut_dout : std_logic_vector(7 downto 0);
 
     signal not_C1in1 : std_logic;
     signal pixel_clk : std_logic;
@@ -285,6 +292,9 @@ architecture Behavioral of Au2_SLI is
                -- captured-EDID read port -> edid_merge's 3rd port (rdtbl TGT_EDID)
                edid_rd_addr : out STD_LOGIC_VECTOR(7 downto 0);
                edid_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               -- radiometric transfer LUT read by pattern_gen (combinational)
+               corr_pat_addr : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               corr_pat_dout : out STD_LOGIC_VECTOR(7 downto 0);
                -- offline mode decision (regs 0x20..0x2A), already in clk100
                mode_idx_i     : in STD_LOGIC_VECTOR(3 downto 0)  := (others => '0');
                mode_valid_i   : in STD_LOGIC                     := '0';
@@ -345,7 +355,8 @@ architecture Behavioral of Au2_SLI is
     -- pixel_pipe's sw / newSW. When sw_en=1 the USB value drives the datapath.
     signal sli_ctrl_bus  : std_logic_vector(7 downto 0);   -- reg 0x13 (clk100 domain)
     signal sli_ctrl_en_w : std_logic;                      -- = sli_ctrl_bus(7)
-    signal sli_sw_p0, sli_sw_p1 : std_logic_vector(4 downto 0); -- 2FF sync -> pixel_clk {en,R,G,B,orient}
+    -- 2FF sync -> pixel_clk: {sw_en, mode_en, mode_val, R,G,B, orient} (reg 0x13 bits 7,6,5,3..0)
+    signal sli_sw_p0, sli_sw_p1 : std_logic_vector(6 downto 0);
     signal effective_sw  : std_logic_vector(3 downto 0);   -- USB override or physical newSW
     signal por        : std_logic := '1';
     signal por_cnt    : integer range 0 to 15 := 0;
@@ -439,9 +450,15 @@ begin
         usb_rx => usb_rx, usb_tx => usb_tx,
         phys_sw => newSW, eff_sw => effective_sw,
         sli_ctrl => sli_ctrl_bus, sli_ctrl_en => sli_ctrl_en_w, lut_loaded => open,
+        -- Stage-2 table taps. corr is LIVE: pattern_gen reads it as its radiometric
+        -- transfer LUT via corr_pat_* below. The lut/lutv (720/1280-entry row/column
+        -- cosine) targets remain uploadable + readable over USB but have NO consumer --
+        -- pattern_gen is DDS-based with its own internal master cosine and does not need
+        -- them; they are vestigial from the old indexMap/LUT ROM design.
         corr_addr => "00000000",    corr_dout => open,
         lut_addr  => "0000000000",  lut_dout  => open,
         lutv_addr => "00000000000", lutv_dout => open,
+        corr_pat_addr => pat_lut_din, corr_pat_dout => pat_lut_dout,
         edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data,
         -- offline mode decision. clkgen_mode_idx is the APPLIED index (already the
         -- clk100-synced one that drives the clock + timing), so the host reads the
@@ -689,7 +706,13 @@ process(pixel_clk)
 begin
     if rising_edge(pixel_clk) then
         rdy_buf    <= C1_in(0);
-        mode_buf   <= C1_in(1);
+        -- SLI pattern enable. C1_in(1) is the camera board's "mode" GPIO and is PULLED
+        -- LOW in the XDC ("default passthrough for color-bar test"), so with no camera
+        -- board attached pattern_gen is disabled and the vga colour bars just pass
+        -- through. Reg 0x13 bit6 (mode_en) lets the host force it: bit5 (mode_val) then
+        -- drives display_mode instead of the pin -- so the SLI fringes (and the corr
+        -- transfer LUT that shapes them) can be exercised over USB with no camera.
+        mode_buf   <= sli_sw_p1(4) when sli_sw_p1(5) = '1' else C1_in(1);   -- mode_val / mode_en
         sel_buf<=sel;
         -- REGISTERED offline/passthrough mux (was 6 concurrent combinational muxes).
         -- sel_buf was a high-fanout select at the head of a long combinational path into
@@ -711,13 +734,14 @@ begin
         end if;
         -- 2FF sync the quasi-static USB SLI-control bits clk100 -> pixel_clk.
         -- (clk100<->pixel_clk are async per set_clock_groups, so no extra timing exception.)
-        sli_sw_p0 <= sli_ctrl_en_w & sli_ctrl_bus(3 downto 0);
+        -- packing, MSB..LSB:  6=sw_en  5=mode_en  4=mode_val  3..0=R,G,B,orient
+        sli_sw_p0 <= sli_ctrl_bus(7) & sli_ctrl_bus(6) & sli_ctrl_bus(5) & sli_ctrl_bus(3 downto 0);
         sli_sw_p1 <= sli_sw_p0;
     end if;
 end process;
 
--- USB override (reg 0x13 bit7) selects USB R/G/B/orient over the physical switches.
-effective_sw <= sli_sw_p1(3 downto 0) when sli_sw_p1(4) = '1' else newSW;
+-- USB override (reg 0x13 bit7 = sw_en) selects USB R/G/B/orient over the physical switches.
+effective_sw <= sli_sw_p1(3 downto 0) when sli_sw_p1(6) = '1' else newSW;
 
 i_processing: pixel_pipe Port map (
         clk => pixel_clk, clk10 => clk10,
@@ -741,7 +765,9 @@ i_processing: pixel_pipe Port map (
         out_blue  => out_blue,
         tlp_dbg      => tlp_val,
         olp_dbg      => olp_val,
-        trig_cnt_dbg => trig_cnt
+        trig_cnt_dbg => trig_cnt,
+        lut_din  => pat_lut_din,
+        lut_dout => pat_lut_dout
     );
 --Vs  <= out_vsync; 
     -- Swap to this if you want to capture the HDMI symbols

@@ -43,7 +43,13 @@ module pixel_pipe(
     output out_blank,
     output reg [7:0] tlp_dbg,      // last sampled top-left red value (diagnostic, pipe INPUT)
     output reg [7:0] olp_dbg,      // same sample point on the pipe OUTPUT (diagnostic)
-    output reg [7:0] trig_cnt_dbg  // free-running count of trigger pulses (diagnostic)
+    output reg [7:0] trig_cnt_dbg, // free-running count of trigger pulses (diagnostic)
+
+    // Radiometric transfer LUT seam. Drive these from the host-uploadable `corr` table
+    // (uart_ctrl, 256 entries, USB target 0x02); it powers up identity, so leaving it
+    // unwritten is a no-op. COMBINATIONAL: lut_dout must come back in the same cycle.
+    output wire [7:0] lut_din,     // raw 8-bit cosine value out of pattern_gen
+    input  wire [7:0] lut_dout     // linearized value back in
     );
     parameter V=2'b01; parameter B=2'b10; parameter O=2'b11; //states for Vsync, V back porch + 1st hysnc period, others.
     reg flag=1'b0; // flag for pattern change
@@ -205,10 +211,13 @@ module pixel_pipe(
     // 288b : 48b : 8b (1:6:36), and DDS-samples a master cosine -> the stripe frequency
     // SCALES with the display resolution (always spans the field). Driven by THIS module's
     // existing phase/freq/orientation sequencing (EXT_SEQ); enable=display_mode (SLI vs
-    // pass-through); channel enables from sw[3:1]; frq==3 = flash block. lut_din->lut_dout
-    // tied identity (radiometric/tone LUT is a future add via pattern_lut + UART RX).
+    // pass-through); channel enables from sw[3:1]; frq==3 = flash block.
+    //
+    // The radiometric/tone LUT seam is now WIRED OUT (lut_din/lut_dout ports) to the
+    // host-uploadable `corr` table in uart_ctrl, so `out = corr[cos]` linearisation is
+    // live in the datapath. corr powers up identity => no correction until you upload
+    // one. FLASH pixels bypass the LUT inside pattern_gen and stay true 0x00/0xFF.
     //--------------------------------------------------------------------------
-    wire [7:0] pg_lut_din;
     wire [7:0] pg_r, pg_g, pg_b;
     pattern_gen #(
         .COS_AW(12), .FRAC(12), .AUTO_CYCLE(0), .EXT_SEQ(1), .RGB_RUNTIME(1)
@@ -219,7 +228,7 @@ module pixel_pipe(
         .orient(ori), .enable(display_mode),
         .chan_en({en_R, en_G, en_B}),
         .ext_frm(fra), .ext_frq(frq),
-        .lut_din(pg_lut_din), .lut_dout(pg_lut_din),     // identity transfer (no tone LUT yet)
+        .lut_din(lut_din), .lut_dout(lut_dout),          // -> host-uploadable corr table
         .out_red(pg_r), .out_green(pg_g), .out_blue(pg_b),
         .dbg()
     );

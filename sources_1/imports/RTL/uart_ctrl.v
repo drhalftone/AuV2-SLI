@@ -29,7 +29,15 @@
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
 //   0x01 VERSION = 0x01          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
 //   0x10 PINS    = {eff_sw[3:0], phys_sw[3:0]}  (RO -- active vs physical R/G/B/orient)
-//   0x13 SLICTRL = {7:sw_en,3:R,2:G,1:B,0:orient}  (R/W -- the one writable register)
+//   0x13 SLICTRL = {7:sw_en, 6:mode_en, 5:mode_val, 3:R,2:G,1:B,0:orient}  (R/W)
+//        sw_en   : USB drives R/G/B/orient instead of the physical SW[3:0] pins.
+//        mode_en : USB drives the SLI pattern enable instead of the camera "mode" GPIO
+//                  (C1_in[1]). That pin is PULLED LOW in the XDC ("default passthrough
+//                  for colour-bar test"), so with no camera board attached pattern_gen
+//                  is off and the vga colour bars just pass through. Set mode_en=1,
+//                  mode_val=1 to turn the SLI fringes on over USB with no camera.
+//        Note the corr transfer LUT (target 0x02) only shapes FRINGE pixels, so it has
+//        no visible effect until the pattern generator is actually enabled.
 //
 //   Offline-mode decision (RO) -- what mode_select picked from the display's EDID,
 //   and what it had to pick from. Without these the choice is unobservable: you can
@@ -91,7 +99,20 @@ module uart_ctrl #(
     input  wire [11:0] mode_hact_i,     // active pixels
     input  wire [11:0] mode_vact_i,     // active lines
     input  wire [16:0] mode_pclk_i,     // pixel clock (kHz)
-    input  wire [12:0] mode_supp_i      // 13-bit supported-mode mask
+    input  wire [12:0] mode_supp_i,     // 13-bit supported-mode mask
+
+    // ---- radiometric transfer LUT, live in the PIXEL datapath ----
+    // pattern_gen's LUT seam: it presents the raw cosine value and consumes the
+    // linearized one in the SAME pipeline stage (pat_out = flash_d ? pat : lut_dout),
+    // so this read must be COMBINATIONAL -- a registered BRAM read would apply each
+    // pixel's correction to the next pixel. Async read => Vivado infers distributed
+    // RAM (256x8 LUTRAM), which is what we want.
+    //
+    // Clock domains: written on clk (clk100) during an upload, read continuously from
+    // pixel_clk. No handshake -- a table upload takes a few ms and tears the curve for
+    // that window (a few pixels get a mix of old/new). Upload while not scanning.
+    input  wire [7:0]  corr_pat_addr,
+    output wire [7:0]  corr_pat_dout
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
@@ -104,6 +125,15 @@ module uart_ctrl #(
     reg [7:0] corr [0:255];
     reg [7:0] lut  [0:719];
     reg [7:0] lutv [0:1279];
+
+    // corr powers up as IDENTITY (corr[i] = i), not zero. It is now live in the pixel
+    // datapath (pattern_gen's radiometric transfer LUT), so an all-zero power-up would
+    // black the pattern out until a table was uploaded. Identity == no correction.
+    integer ci;
+    initial for (ci = 0; ci < 256; ci = ci + 1) corr[ci] = ci[7:0];
+
+    // Combinational (async) read into the pixel datapath -- see the port comment.
+    assign corr_pat_dout = corr[corr_pat_addr];
 
     // ---- loaded flags ----
     reg corr_ld = 1'b0, lut_ld = 1'b0, lutv_ld = 1'b0;
