@@ -4,9 +4,14 @@
 //
 //   Reads the connected display's EDID (via i2c_master_edid's rd_addr/rd_data
 //   read-back port, or a TB RAM), determines which curated table modes it
-//   supports, and picks the best by HIGHEST REFRESH -> HIGHEST RESOLUTION under
-//   the 85 MHz ceiling. The table (mode_table.vh) is priority-sorted, so the
-//   pick is just "lowest set index in the supported mask, else failsafe".
+//   supports, and picks the best by HIGHEST REFRESH -> HIGHEST PIXEL COUNT under
+//   the 85 MHz ceiling.
+//
+//   The pick walks the PRIO[] list (see below), NOT the raw table index: mode_idx
+//   is a shared key into mode_table.vh AND drp_recfg's per-mode MMCM settings, so
+//   the table cannot be re-sorted to encode priority. Every table index has DRP
+//   settings in drp_recfg, so whatever is picked is always generatable.
+//   Empty intersection -> failsafe (index 12).
 //
 //   C1 parses the BASE block only: Established timings (B35-37), Standard timings
 //   (B38-53), and the four Detailed Timing Descriptors (B54-125). The CEA-861
@@ -43,7 +48,37 @@ module mode_select #(
     localparam integer NMODE = 13;
     localparam [3:0]   FAILSAFE = 4'd12;
 
-    // ---- curated table (priority-sorted) ----
+    // ---- selection priority: HIGHEST REFRESH -> HIGHEST PIXEL COUNT ----
+    // PRIO[p] = table index to try at priority p (p=0 is tried first).
+    //
+    // Priority is deliberately NOT the table index. mode_idx is a shared key into
+    // mode_table.vh (geometry) AND drp_recfg's per-mode MMCM M/D/O settings, so
+    // re-sorting the table to express priority would hand each mode another mode's
+    // pixel clock. Keeping the index binding fixed and ordering here decouples the
+    // two -- and every index is a mode drp_recfg can actually generate, so a pick
+    // is always clockable.
+    //
+    // The old "table is priority-sorted, take the lowest index" scheme had drifted
+    // out of order twice: idx5 (1024x768@70) outranked the 72 Hz modes, and idx8
+    // (1280x720@60) outranked idx9 (1280x800@60) despite 100k fewer pixels.
+    reg [3:0] PRIO [0:NMODE-1];
+    initial begin
+        PRIO[0]  = 4'd0;    // 800x600@120   480,000 px
+        PRIO[1]  = 4'd1;    // 640x480@120   307,200
+        PRIO[2]  = 4'd2;    // 1024x768@75   786,432
+        PRIO[3]  = 4'd3;    // 800x600@75    480,000
+        PRIO[4]  = 4'd4;    // 640x480@75    307,200
+        PRIO[5]  = 4'd6;    // 800x600@72    480,000   (72 Hz now beats 70 Hz)
+        PRIO[6]  = 4'd7;    // 640x480@72    307,200
+        PRIO[7]  = 4'd5;    // 1024x768@70   786,432
+        PRIO[8]  = 4'd9;    // 1280x800@60 1,024,000   (more pixels wins the 60 Hz tie)
+        PRIO[9]  = 4'd8;    // 1280x720@60   921,600
+        PRIO[10] = 4'd10;   // 1024x768@60   786,432
+        PRIO[11] = 4'd11;   // 800x600@60    480,000
+        PRIO[12] = 4'd12;   // 640x480@60    307,200  (failsafe)
+    end
+
+    // ---- curated table (indexed by mode_idx; NOT in priority order -- see PRIO) ----
     reg [11:0] T_HACT [0:NMODE-1];
     reg [11:0] T_VACT [0:NMODE-1];
     reg [7:0]  T_REFR [0:NMODE-1];
@@ -166,11 +201,14 @@ module mode_select #(
                     if (k == 4'd3) st <= S_PICK;
                     else k <= k + 4'd1;
                end
-        // ---- pick lowest set index (highest priority), else failsafe
+        // ---- pick the best supported mode by PRIO order, else failsafe.
+        // Walk priority positions high->low so the last write (p=0, the highest
+        // priority) wins. The pclk ceiling still gates every candidate.
         S_PICK: begin
                     chosen = FAILSAFE;
                     for (i=NMODE-1;i>=0;i=i-1)
-                        if (supported[i] && (T_PCLK[i] <= CEIL_KHZ[16:0])) chosen = i[3:0];
+                        if (supported[PRIO[i]] && (T_PCLK[PRIO[i]] <= CEIL_KHZ[16:0]))
+                            chosen = PRIO[i];
                     o_supported <= supported;
                     mode_idx   <= chosen;
                     o_hact <= T_HACT[chosen]; o_vact <= T_VACT[chosen];
