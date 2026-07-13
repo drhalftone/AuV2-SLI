@@ -54,6 +54,25 @@ projector's EDID**: a dedicated `MMCME2_ADV` is retuned over DRP (`drp_clkgen13`
 the timing generator is driven from a curated mode table, so the projector is driven at a resolution
 and refresh it actually advertises — automatically, with no PC attached.
 
+**How the mode is chosen.** `mode_select` parses the display's EDID (established + standard timings
+and the four detailed descriptors), marks which of the 13 curated modes it supports, and picks by
+**highest refresh → highest pixel count**, under the pixel-clock ceiling. No match → the
+640×480@60 failsafe.
+
+The EDID is a **filter, not a source**: the FPGA can only emit one of the 13 curated modes
+(`mode_table.vh` geometry + `drp_recfg` MMCM dividers, both keyed by `mode_idx`). A display's
+preferred timing is *matched against* the table, never adopted wholesale — so a display whose only
+supported modes are outside the table falls back to the failsafe even if the clock would be
+reachable.
+
+> Priority is deliberately **not** the table index — `mode_idx` is a shared key into both
+> `mode_table.vh` and `drp_recfg`'s per-mode MMCM settings, so re-sorting the table to express
+> priority would hand each mode another mode's pixel clock. `mode_select` walks an explicit `PRIO[]`
+> list instead. [`sim/tb_mode_select.v`](sim/tb_mode_select.v) covers this (xsim).
+
+Read the decision back over USB with [`host/read_mode.py`](host/read_mode.py) — see
+[USB control interface](#usb-control-interface-host--fpga).
+
 ---
 
 ## HDMI clocking & EDID merge
@@ -161,7 +180,20 @@ cross-check.
 | Read table | `A5 72 TGT CK` | `TGT D[0..N-1] CK2` |
 
 Table targets: `0x00` = 720-byte row LUT, `0x01` = 1280-byte column LUT, `0x02` = 256-byte intensity
-correction.
+correction, `0x03` = **256-byte display EDID** (read-only — `A5 5B 03 …` is rejected).
+
+**Reading the display's EDID.** `A5 72 03 8B` streams back the raw EDID the FPGA captured off the
+HDMI-**output** DDC — the same bytes `mode_select` makes its decision from.
+[`host/dump_edid.py`](host/dump_edid.py) dumps and decodes it (manufacturer, model, preferred timing):
+
+```
+python host/dump_edid.py COM6
+  manufacturer : DEL          model name : DELL U2417H
+  [PREFERRED] 1920x1080 @ 60.00 Hz   pixel clock 148.500 MHz
+```
+
+Always 256 bytes; if the display has no extension block, bytes 128–255 are stale RAM — byte `0x7E`
+of block 0 is the authoritative extension count.
 
 **Registers**
 
@@ -173,6 +205,29 @@ correction.
 | 0x06 | FLAGS | R | `{…, usb_sw_en, lut_loaded}` |
 | 0x10 | PINS | R | `{eff_sw[3:0], phys_sw[3:0]}` — active vs physical R/G/B/orient switch pins |
 | 0x13 | SLICTRL | R/W | `{7:sw_en, 3:R, 2:G, 1:B, 0:orient}` |
+| 0x20 | MODE | R | `{7:valid, 6:edid_ok, 3..0:mode_idx}` — the curated-table index **in use** |
+| 0x21 | REFR | R | refresh rate (Hz) |
+| 0x22–0x23 | HACT | R | active pixels, lo/hi (12-bit) |
+| 0x24–0x25 | VACT | R | active lines, lo/hi (12-bit) |
+| 0x26–0x28 | PCLK | R | pixel clock in kHz, lo/mid/hi (17-bit) |
+| 0x29–0x2A | SUPP | R | 13-bit supported-mode mask (bit *i* = table index *i*) |
+
+**Reading the offline mode decision.** `mode_select` is the most involved call the FPGA makes on its
+own — parse the display's EDID, work out which curated modes it supports, pick the best — and
+registers `0x20`–`0x2A` expose the whole thing: what it chose **and** what it had to choose from.
+[`host/read_mode.py`](host/read_mode.py) prints it:
+
+```
+python host/read_mode.py COM6
+  mode_idx : 2  (1024x768@75)     resolution : 1024x768 @ 75 Hz, 78.750 MHz
+  supported (mask 0x1C1C): [2] 1024x768@75  <-- PICKED
+                           [3] 800x600@75   [4] 640x480@75
+                           [10] 1024x768@60 [11] 800x600@60  [12] 640x480@60
+```
+
+> After a board reset, `edid_merge` needs a few seconds to finish the I²C read off the DDC. Until it
+> does, `edid_ok` is 0 and `SUPP` is empty while `MODE` still reads the power-up default — a
+> half-state that looks like a failed pick. `read_mode.py` waits for `edid_ok`.
 
 **Switch override.** Writing `SLICTRL` (0x13) with bit 7 (`sw_en`) set makes USB drive the
 R/G/B-enable and orientation **instead of the physical `SW[3:0]` pins** —
@@ -294,9 +349,11 @@ The newer board folders:
 ├── Bitstream/                       # prebuilt bitstream (Au2_SLI.bin)
 ├── sources_1/                       # HDL sources (sources_1/imports/RTL)
 ├── constrs_1/                       # Xilinx design constraints (XDC)
+├── sim/                             # testbenches (xsim) — tb_mode_select.v covers the EDID mode pick
+├── build_scripts/                   # historical project-mode build scripts (superseded by build.tcl)
 ├── Matlab/                          # .m scripts + LUT outputs (legacy pattern generation)
 ├── AlchitryFlasher/                 # one-click Windows flasher (GUI + docs)
-├── host/                            # Qt host app (3-D reconstruction + USB control driver + tests)
+├── host/                            # Qt host app + USB tools (dump_edid.py, read_mode.py, tests)
 ├── LauCameraTrigger_Alchitry/       # camera-trigger breakout PCB (KiCad) + camera-wiring docs
 ├── LauCameraTrigger_Alchitry_3xJST/ # breakout variant: 3× on-board JST-7 (ordered)
 ├── LauCameraTrigger_Alchitry_Stack/ # DF40 stacking daughter board (mates the Br/Hd stack)
