@@ -23,9 +23,10 @@ LAUSLICalibrationDialog::LAUSLICalibrationDialog(QWidget *parent)
 #ifdef USEBASLERUSBCAMERA
       camera(nullptr),
 #endif
-      sweeping(false), sweepLevel(0)
+      sweeping(false), sweepLevel(0),
+      triggerSweeping(false), curDelay(0), trigDelayStop(0), trigDelayStep(0)
 {
-    setWindowTitle(QString("AuV2-SLI Linearisation"));
+    setWindowTitle(QString("AuV2-SLI Linearisation + Diagnostics"));
 
     // ---- FPGA board group -----------------------------------------------------
     QGroupBox *boardBox = new QGroupBox(QString("Au V2 board (USB)"));
@@ -45,10 +46,15 @@ LAUSLICalibrationDialog::LAUSLICalibrationDialog(QWidget *parent)
         rCheck->setChecked(true);
         gCheck->setChecked(true);
         bCheck->setChecked(true);
+        usbOverrideCheck = new QCheckBox(QString("USB override"));
+        usbOverrideCheck->setChecked(true);
+        usbOverrideCheck->setToolTip(QString("Drive R/G/B/orientation from USB (reg 0x13 bit7) instead of the PCB switch pins"));
         QPushButton *applyButton = new QPushButton(QString("Apply SLI control"));
         connect(applyButton, &QPushButton::clicked, this, &LAUSLICalibrationDialog::onApplySLIControl);
         QPushButton *resetButton = new QPushButton(QString("Reset correction (identity)"));
         connect(resetButton, &QPushButton::clicked, this, &LAUSLICalibrationDialog::onResetCorrection);
+        QPushButton *verifyButton = new QPushButton(QString("Verify correction (read back)"));
+        connect(verifyButton, &QPushButton::clicked, this, &LAUSLICalibrationDialog::onVerifyCorrection);
 
         QGridLayout *grid = new QGridLayout();
         grid->addWidget(new QLabel(QString("Port:")), 0, 0);
@@ -56,13 +62,17 @@ LAUSLICalibrationDialog::LAUSLICalibrationDialog(QWidget *parent)
         grid->addWidget(connectButton, 0, 2);
         grid->addWidget(boardStatusLabel, 1, 0, 1, 3);
         QHBoxLayout *ctrlRow = new QHBoxLayout();
+        ctrlRow->addWidget(usbOverrideCheck);
         ctrlRow->addWidget(orientCheck);
         ctrlRow->addWidget(rCheck);
         ctrlRow->addWidget(gCheck);
         ctrlRow->addWidget(bCheck);
         ctrlRow->addWidget(applyButton);
         grid->addLayout(ctrlRow, 2, 0, 1, 3);
-        grid->addWidget(resetButton, 3, 0, 1, 3);
+        QHBoxLayout *corrRow = new QHBoxLayout();
+        corrRow->addWidget(resetButton);
+        corrRow->addWidget(verifyButton);
+        grid->addLayout(corrRow, 3, 0, 1, 3);
         boardBox->setLayout(grid);
     }
 
@@ -122,7 +132,7 @@ LAUSLICalibrationDialog::LAUSLICalibrationDialog(QWidget *parent)
         projBox->setLayout(form);
     }
 
-    // ---- calibration group ----------------------------------------------------
+    // ---- TAB 1: linearisation -------------------------------------------------
     toneWidget = new LAUToneCorrectionWidget(256);
     progress = new QProgressBar();
     progress->setRange(0, 255);
@@ -142,18 +152,98 @@ LAUSLICalibrationDialog::LAUSLICalibrationDialog(QWidget *parent)
     buttonRow->addWidget(saveButton);
     buttonRow->addWidget(loadButton);
 
-    // ---- assemble -------------------------------------------------------------
+    QWidget *linTab = new QWidget();
+    QVBoxLayout *linLayout = new QVBoxLayout();
+    linLayout->addWidget(toneWidget, 1);
+    linLayout->addWidget(progress);
+    linLayout->addLayout(buttonRow);
+    linTab->setLayout(linLayout);
+
+    // ---- TAB 2: trigger-delay sweep (projector temporal light profile) --------
+    QWidget *trigTab = new QWidget();
+    {
+        roiDivisorSpin = new QSpinBox();
+        roiDivisorSpin->setRange(1, 1024);
+        roiDivisorSpin->setValue(16);
+        roiDivisorSpin->setPrefix(QString("1/"));
+
+        trigExposureSpin = new QSpinBox();
+        trigExposureSpin->setRange(1, 100000);
+        trigExposureSpin->setValue(100);
+        trigExposureSpin->setSuffix(QString(" us"));
+
+        delayStartSpin = new QSpinBox();
+        delayStartSpin->setRange(0, 1000000);
+        delayStartSpin->setValue(0);
+        delayStartSpin->setSuffix(QString(" us"));
+        delayStopSpin = new QSpinBox();
+        delayStopSpin->setRange(0, 1000000);
+        delayStopSpin->setValue(20000);
+        delayStopSpin->setSuffix(QString(" us"));
+        delayStepSpin = new QSpinBox();
+        delayStepSpin->setRange(1, 100000);
+        delayStepSpin->setValue(100);
+        delayStepSpin->setSuffix(QString(" us"));
+
+        framesAvgSpin = new QSpinBox();
+        framesAvgSpin->setRange(1, 256);
+        framesAvgSpin->setValue(8);
+
+        flashPeriodSpin = new QSpinBox();
+        flashPeriodSpin->setRange(1, 1000);
+        flashPeriodSpin->setValue(16);
+        flashPeriodSpin->setSuffix(QString(" ms"));
+
+        delayPlot = new LAUXYPlotWidget();
+        delayPlot->setLabels(QString("trigger delay (us)"), QString("mean pixel"));
+
+        trigRunButton = new QPushButton(QString("Run trigger-delay sweep"));
+        connect(trigRunButton, &QPushButton::clicked, this, &LAUSLICalibrationDialog::onRunTriggerSweep);
+        trigStopButton = new QPushButton(QString("Stop"));
+        trigStopButton->setEnabled(false);
+        connect(trigStopButton, &QPushButton::clicked, this, &LAUSLICalibrationDialog::onStopTriggerSweep);
+        trigExportButton = new QPushButton(QString("Export CSV"));
+        connect(trigExportButton, &QPushButton::clicked, this, &LAUSLICalibrationDialog::onExportTriggerData);
+
+        trigStatusLabel = new QLabel(QString("idle"));
+        trigStatusLabel->setWordWrap(true);
+
+        QGridLayout *cfg = new QGridLayout();
+        cfg->addWidget(new QLabel(QString("Center ROI (1/N of FOV area):")), 0, 0); cfg->addWidget(roiDivisorSpin,   0, 1);
+        cfg->addWidget(new QLabel(QString("Exposure:")),                     0, 2); cfg->addWidget(trigExposureSpin, 0, 3);
+        cfg->addWidget(new QLabel(QString("Delay start:")),                  1, 0); cfg->addWidget(delayStartSpin,   1, 1);
+        cfg->addWidget(new QLabel(QString("Delay stop:")),                   1, 2); cfg->addWidget(delayStopSpin,    1, 3);
+        cfg->addWidget(new QLabel(QString("Delay step:")),                   2, 0); cfg->addWidget(delayStepSpin,    2, 1);
+        cfg->addWidget(new QLabel(QString("Frames / delay:")),               2, 2); cfg->addWidget(framesAvgSpin,    2, 3);
+        cfg->addWidget(new QLabel(QString("Flash half-cycle:")),             3, 0); cfg->addWidget(flashPeriodSpin,  3, 1);
+
+        QHBoxLayout *trigButtons = new QHBoxLayout();
+        trigButtons->addWidget(trigRunButton);
+        trigButtons->addWidget(trigStopButton);
+        trigButtons->addWidget(trigExportButton);
+
+        QVBoxLayout *trigLayout = new QVBoxLayout();
+        trigLayout->addLayout(cfg);
+        trigLayout->addWidget(delayPlot, 1);
+        trigLayout->addWidget(trigStatusLabel);
+        trigLayout->addLayout(trigButtons);
+        trigTab->setLayout(trigLayout);
+    }
+
+    QTabWidget *tabs = new QTabWidget();
+    tabs->addTab(linTab, QString("Linearisation"));
+    tabs->addTab(trigTab, QString("Trigger-delay sweep"));
+
+    // ---- assemble (shared hardware panel + experiment tabs) -------------------
     QVBoxLayout *layout = new QVBoxLayout();
     layout->addWidget(boardBox);
     layout->addWidget(camBox);
     layout->addWidget(projBox);
-    layout->addWidget(toneWidget, 1);
-    layout->addWidget(progress);
-    layout->addLayout(buttonRow);
+    layout->addWidget(tabs, 1);
     setLayout(layout);
 
     rampWindow = new LAURampWindow();
-    resize(560, 640);
+    resize(640, 800);
 }
 
 /****************************************************************************/
@@ -208,12 +298,19 @@ void LAUSLICalibrationDialog::refreshBoardStatus()
     int ver = board->readRegister(LAUAU_REG_VERSION);
     int status = board->readRegister(LAUAU_REG_STATUS);
     int flags = board->readRegister(LAUAU_REG_FLAGS);
-    boardStatusLabel->setText(QString("%1  ID=0x%2 VER=0x%3 STATUS=0x%4 FLAGS=0x%5")
+    int pins = board->readRegister(LAUAU_REG_PINS);
+    auto nib = [](int n) {
+        return QString("R%1G%2B%3/%4").arg((n >> 3) & 1).arg((n >> 2) & 1).arg((n >> 1) & 1).arg((n & 1) ? "horiz" : "vert");
+    };
+    QString pinsText = (pins < 0) ? QString("PINS=?")
+                                  : QString("switches phys[%1] active[%2]").arg(nib(pins & 0x0F)).arg(nib((pins >> 4) & 0x0F));
+    boardStatusLabel->setText(QString("%1  ID=0x%2 VER=0x%3 STATUS=0x%4 FLAGS=0x%5\n%6")
                                   .arg(board->portName())
                                   .arg(id < 0 ? 0 : id, 2, 16, QChar('0'))
                                   .arg(ver < 0 ? 0 : ver, 2, 16, QChar('0'))
                                   .arg(status < 0 ? 0 : status, 2, 16, QChar('0'))
-                                  .arg(flags < 0 ? 0 : flags, 2, 16, QChar('0')));
+                                  .arg(flags < 0 ? 0 : flags, 2, 16, QChar('0'))
+                                  .arg(pinsText));
 }
 
 /****************************************************************************/
@@ -224,6 +321,7 @@ void LAUSLICalibrationDialog::onResetCorrection()
         return;
     }
     if (board->uploadIdentityCorrection()) {
+        lastCorrTable = LAUAuBoard::identityTable();
         QMessageBox::information(this, windowTitle(), QString("Correction reset to identity (no linearisation)."));
     } else {
         QMessageBox::warning(this, windowTitle(), board->error());
@@ -237,7 +335,7 @@ void LAUSLICalibrationDialog::onApplySLIControl()
         QMessageBox::warning(this, windowTitle(), QString("Connect the board first."));
         return;
     }
-    if (!board->setSLIControl(true, rCheck->isChecked(), gCheck->isChecked(), bCheck->isChecked(), orientCheck->isChecked())) {
+    if (!board->setSLIControl(usbOverrideCheck->isChecked(), rCheck->isChecked(), gCheck->isChecked(), bCheck->isChecked(), orientCheck->isChecked())) {
         QMessageBox::warning(this, windowTitle(), board->error());
     }
     refreshBoardStatus();
@@ -274,6 +372,8 @@ void LAUSLICalibrationDialog::onConnectCamera()
     camera->moveToThread(&cameraThread);
     connect(this, &LAUSLICalibrationDialog::emitGrab, camera, &LAUBaslerUSBCamera::onUpdateBuffer, Qt::QueuedConnection);
     connect(camera, &LAUBaslerUSBCamera::emitMeanPixel, this, &LAUSLICalibrationDialog::onMeanPixel, Qt::QueuedConnection);
+    connect(camera, &LAUBaslerUSBCamera::emitBuffer, this, &LAUSLICalibrationDialog::onTriggerGrabComplete, Qt::QueuedConnection);
+    connect(camera, &LAUBaslerUSBCamera::emitROIChanged, this, &LAUSLICalibrationDialog::onROIChanged, Qt::QueuedConnection);
     connect(camera, &LAUBaslerUSBCamera::emitError, this, [this](QString e) {
         cameraStatusLabel->setText(QString("ERROR: %1").arg(e));
     }, Qt::QueuedConnection);
@@ -349,6 +449,11 @@ void LAUSLICalibrationDialog::onStepSweep()
 void LAUSLICalibrationDialog::onMeanPixel(unsigned int frame, unsigned int mean)
 {
     Q_UNUSED(frame);
+    // TRIGGER-DELAY SWEEP: accumulate every frame's mean at the current delay.
+    if (triggerSweeping) {
+        curDelayMeans.append((double)mean);
+        return;
+    }
     if (!sweeping) {
         return;
     }
@@ -369,11 +474,45 @@ void LAUSLICalibrationDialog::onUploadCorrection()
     // PERSIST LIVE SWEEP VALUES TO SETTINGS, THEN READ THE INVERSE-RESPONSE CURVE.
     toneWidget->onSave();
     LAUMemoryObject curve = toneWidget->toneCorrectionCurve();
+    lastCorrTable = LAUAuBoard::correctionTable(curve);   // remember what we send, for read-back verify
     if (board->uploadCorrectionTable(curve)) {
         refreshBoardStatus();
-        QMessageBox::information(this, windowTitle(), QString("256-byte correction table uploaded. FPGA now renders the linearised sinusoid."));
+        QMessageBox::information(this, windowTitle(), QString("256-byte correction table uploaded. Use \"Verify correction (read back)\" to confirm."));
     } else {
         QMessageBox::warning(this, windowTitle(), board->error());
+    }
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::onVerifyCorrection()
+{
+    if (!board || !board->isValid()) {
+        QMessageBox::warning(this, windowTitle(), QString("Connect the board first."));
+        return;
+    }
+    QByteArray got = board->readCorrectionTable();
+    if (got.size() != 256) {
+        QMessageBox::warning(this, windowTitle(), QString("Read-back failed: %1").arg(board->error()));
+        return;
+    }
+    if (lastCorrTable.size() == 256) {
+        if (got == lastCorrTable) {
+            QMessageBox::information(this, windowTitle(), QString("Verified: all 256 bytes read back match the uploaded correction table."));
+        } else {
+            int diff = 0, first = -1;
+            for (int i = 0; i < 256; i++) {
+                if (got.at(i) != lastCorrTable.at(i)) {
+                    diff++;
+                    if (first < 0) {
+                        first = i;
+                    }
+                }
+            }
+            QMessageBox::warning(this, windowTitle(), QString("MISMATCH: %1/256 bytes differ (first at index %2).").arg(diff).arg(first));
+        }
+    } else {
+        QMessageBox::information(this, windowTitle(), QString("Read 256 bytes (corr[0]=%1 .. corr[255]=%2). Upload a table first to compare.")
+                                                         .arg((quint8)got.at(0)).arg((quint8)got.at(255)));
     }
 }
 
@@ -407,4 +546,119 @@ void LAUSLICalibrationDialog::setBusy(bool busy)
 {
     runButton->setEnabled(!busy);
     uploadButton->setEnabled(!busy && !sweeping);
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::onRunTriggerSweep()
+{
+#ifdef USEBASLERUSBCAMERA
+    if (!camera || !camera->isValid()) {
+        QMessageBox::warning(this, windowTitle(), QString("Connect the camera first."));
+        return;
+    }
+    if (delayStopSpin->value() < delayStartSpin->value()) {
+        QMessageBox::warning(this, windowTitle(), QString("Delay stop must be >= delay start."));
+        return;
+    }
+
+    // PROJECT THE WBWB FLASH (also generates the per-frame pass-through trigger).
+    if (!rampWindow->isVisible()) {
+        onShowRampWindow();
+    }
+    camera->enableCalibration(true);
+    camera->enableHDMITriggering(true);
+    rampWindow->onSetFlashing(true, flashPeriodSpin->value());
+
+    // SHORT EXPOSURE (queued onto the camera worker).
+    QMetaObject::invokeMethod(camera, "onUpdateExposure", Qt::QueuedConnection, Q_ARG(int, trigExposureSpin->value()));
+
+    delayPlot->clearData();
+    triggerSweeping = true;
+    curDelay      = delayStartSpin->value();
+    trigDelayStop = delayStopSpin->value();
+    trigDelayStep = delayStepSpin->value();
+    trigRunButton->setEnabled(false);
+    trigStopButton->setEnabled(true);
+    trigStatusLabel->setText(QString("configuring ROI..."));
+
+    // setCenterROI -> emitROIChanged -> onROIChanged sizes the buffer and starts the sweep.
+    QMetaObject::invokeMethod(camera, "setCenterROI", Qt::QueuedConnection, Q_ARG(double, 1.0 / (double)roiDivisorSpin->value()));
+#else
+    QMessageBox::warning(this, windowTitle(), QString("This build has no camera support."));
+#endif
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::onROIChanged(unsigned int width, unsigned int height)
+{
+    // SIZE BOTH GRAB BUFFERS TO THE CURRENT ROI (keeps the linearisation grab valid too).
+    grabBuffer    = LAUMemoryObject(width, height, 1, sizeof(unsigned short), 1);
+    triggerBuffer = LAUMemoryObject(width, height, 1, sizeof(unsigned short), (unsigned int)framesAvgSpin->value());
+    if (triggerSweeping) {
+        trigStatusLabel->setText(QString("ROI %1x%2; sweeping...").arg(width).arg(height));
+        stepTriggerDelay();
+    }
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::stepTriggerDelay()
+{
+    if (!triggerSweeping) {
+        return;
+    }
+    if (curDelay > trigDelayStop) {
+        triggerSweeping = false;
+        rampWindow->onSetFlashing(false);
+        trigRunButton->setEnabled(true);
+        trigStopButton->setEnabled(false);
+        trigStatusLabel->setText(QString("done (%1 points)").arg(delayPlot->count()));
+        return;
+    }
+    curDelayMeans.clear();
+#ifdef USEBASLERUSBCAMERA
+    QMetaObject::invokeMethod(camera, "setTriggerDelayMicroseconds", Qt::QueuedConnection, Q_ARG(int, curDelay));
+#endif
+    // GRAB framesAvg FRAMES AT THIS DELAY (means accumulate via onMeanPixel,
+    // finalised on the emitBuffer -> onTriggerGrabComplete that follows).
+    emit emitGrab(triggerBuffer);
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::onTriggerGrabComplete(LAUMemoryObject buffer)
+{
+    Q_UNUSED(buffer);
+    if (!triggerSweeping) {
+        return;
+    }
+    // AVERAGE THE PER-FRAME MEANS AT THIS DELAY -> ONE PLOT POINT.
+    double sum = 0.0;
+    for (int n = 0; n < curDelayMeans.count(); n++) {
+        sum += curDelayMeans.at(n);
+    }
+    double mean = curDelayMeans.isEmpty() ? 0.0 : sum / (double)curDelayMeans.count();
+    delayPlot->appendPoint((double)curDelay, mean);
+    trigStatusLabel->setText(QString("delay %1 us -> mean %2  (%3 pts)").arg(curDelay).arg(mean, 0, 'f', 1).arg(delayPlot->count()));
+
+    curDelay += trigDelayStep;
+    stepTriggerDelay();
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::onStopTriggerSweep()
+{
+    triggerSweeping = false;
+    rampWindow->onSetFlashing(false);
+    trigRunButton->setEnabled(true);
+    trigStopButton->setEnabled(false);
+    trigStatusLabel->setText(QString("stopped (%1 points)").arg(delayPlot->count()));
+}
+
+/****************************************************************************/
+void LAUSLICalibrationDialog::onExportTriggerData()
+{
+    if (delayPlot->count() == 0) {
+        QMessageBox::information(this, windowTitle(), QString("No sweep data to export yet."));
+        return;
+    }
+    delayPlot->exportCsv();
 }

@@ -16,7 +16,8 @@ use IEEE.NUMERIC_STD.ALL;      -- Required for unsigned arithmetic
 entity Au2_SLI is
     Port ( 
         clk100    : in STD_LOGIC;
-        usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port), TX only (EDID dump)
+        usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
+        usb_rx    : in    STD_LOGIC;  -- FT2232H ch.B (COM port) RX: 0xA5 host control protocol (P15)
         -- HDMI-OUT DDC/HPD (Hd V2 port 1, bank 35) for TX-side EDID reading
         hdmi_tx_scl : inout STD_LOGIC;  -- C7 (header A72)
         hdmi_tx_sda : inout STD_LOGIC;  -- C6 (header A70)
@@ -268,6 +269,32 @@ architecture Behavioral of Au2_SLI is
                led_out    : out STD_LOGIC_VECTOR(7 downto 0) );
     end component;
 
+    -- Bidirectional USB-serial subsystem: status telemetry (as edid_reader) PLUS the
+    -- 0xA5 host control protocol on usb_rx. Stage-2 taps (sli_ctrl / table read ports)
+    -- are defaulted so they may be left open until the pixel datapath is wired up.
+    component usb_link is
+        Port ( clk100 : in  STD_LOGIC;
+               led    : in  STD_LOGIC_VECTOR(7 downto 0);
+               dbg    : in  STD_LOGIC_VECTOR(7 downto 0);
+               mrg    : in  STD_LOGIC_VECTOR(7 downto 0);
+               tlp    : in  STD_LOGIC_VECTOR(7 downto 0);
+               tcnt   : in  STD_LOGIC_VECTOR(7 downto 0);
+               olp    : in  STD_LOGIC_VECTOR(7 downto 0);
+               usb_rx : in  STD_LOGIC;
+               usb_tx : out STD_LOGIC;
+               phys_sw : in STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
+               eff_sw  : in STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
+               sli_ctrl    : out STD_LOGIC_VECTOR(7 downto 0);
+               sli_ctrl_en : out STD_LOGIC;
+               lut_loaded  : out STD_LOGIC;
+               corr_addr : in  STD_LOGIC_VECTOR(7 downto 0)  := (others => '0');
+               corr_dout : out STD_LOGIC_VECTOR(7 downto 0);
+               lut_addr  : in  STD_LOGIC_VECTOR(9 downto 0)  := (others => '0');
+               lut_dout  : out STD_LOGIC_VECTOR(7 downto 0);
+               lutv_addr : in  STD_LOGIC_VECTOR(10 downto 0) := (others => '0');
+               lutv_dout : out STD_LOGIC_VECTOR(7 downto 0) );
+    end component;
+
     component edid_merge is
         Port ( clk100       : in    STD_LOGIC;
                rst          : in    STD_LOGIC;
@@ -305,6 +332,14 @@ architecture Behavioral of Au2_SLI is
 
     signal merge_dbg2 : std_logic_vector(15 downto 0);
     signal merge_dbg  : std_logic_vector(7 downto 0);
+
+    -- USB SLI-control override (register 0x13) of the physical newSW switch pins.
+    -- 0x13 = {7:sw_en, 3:R_en, 2:G_en, 1:B_en, 0:orient}; bits [3:0] map 1:1 to
+    -- pixel_pipe's sw / newSW. When sw_en=1 the USB value drives the datapath.
+    signal sli_ctrl_bus  : std_logic_vector(7 downto 0);   -- reg 0x13 (clk100 domain)
+    signal sli_ctrl_en_w : std_logic;                      -- = sli_ctrl_bus(7)
+    signal sli_sw_p0, sli_sw_p1 : std_logic_vector(4 downto 0); -- 2FF sync -> pixel_clk {en,R,G,B,orient}
+    signal effective_sw  : std_logic_vector(3 downto 0);   -- USB override or physical newSW
     signal por        : std_logic := '1';
     signal por_cnt    : integer range 0 to 15 := 0;
 
@@ -380,9 +415,17 @@ begin
     -- led_i bit layout: 7=vsync 6=hsync 5=VPolarity 4=sel 3=mode 2=rdy 1=f_frm 0=trig
     led_i <= vsync & hsync & VPolarity & sel & C1_in(1) & C1_in(0) & f_frm & trig;
     vid_valid <= debug(3) and debug(2);  -- symbol_sync AND pll_locked (passthrough decode valid)
-    i_edid_reader: edid_reader port map (
+    -- usb_link replaces edid_reader: identical status telemetry on usb_tx, plus the
+    -- 0xA5 host control protocol on usb_rx. Stage-2 control/table taps left open for now.
+    i_usb_link: usb_link port map (
         clk100 => clk100, led => led_i, dbg => debug, mrg => merge_dbg,
-        tlp => tlp_val, tcnt => trig_cnt, olp => olp_val, usb_tx => usb_tx );
+        tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
+        usb_rx => usb_rx, usb_tx => usb_tx,
+        phys_sw => newSW, eff_sw => effective_sw,
+        sli_ctrl => sli_ctrl_bus, sli_ctrl_en => sli_ctrl_en_w, lut_loaded => open,
+        corr_addr => "00000000",    corr_dout => open,
+        lut_addr  => "0000000000",  lut_dout  => open,
+        lutv_addr => "00000000000", lutv_dout => open );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -628,12 +671,19 @@ begin
         if (blank = '0') then        -- active video: capture vsync's inactive level
             VPolarity <= vsync;
         end if;
+        -- 2FF sync the quasi-static USB SLI-control bits clk100 -> pixel_clk.
+        -- (clk100<->pixel_clk are async per set_clock_groups, so no extra timing exception.)
+        sli_sw_p0 <= sli_ctrl_en_w & sli_ctrl_bus(3 downto 0);
+        sli_sw_p1 <= sli_sw_p0;
     end if;
 end process;
 
-i_processing: pixel_pipe Port map ( 
+-- USB override (reg 0x13 bit7) selects USB R/G/B/orient over the physical switches.
+effective_sw <= sli_sw_p1(3 downto 0) when sli_sw_p1(4) = '1' else newSW;
+
+i_processing: pixel_pipe Port map (
         clk => pixel_clk, clk10 => clk10,
-        sw =>newSW,
+        sw =>effective_sw,
         trig =>trig, f_frm=> f_frm, 
         mode=>mode_buf, rdy=> rdy_buf ,
         vid_valid => vid_valid,

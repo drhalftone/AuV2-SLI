@@ -260,6 +260,61 @@ bool LAUAuBoard::uploadPatternTable(const QByteArray &data, quint8 target)
 }
 
 /****************************************************************************/
+QByteArray LAUAuBoard::readTable(quint8 target)
+{
+    if (!serial.isOpen()) {
+        errorString = QString("Port not open.");
+        return (QByteArray());
+    }
+
+    // PAYLOAD LENGTH IS IMPLIED BY THE TARGET (same mapping as upload)
+    int expect = (target == LAUAU_TARGET_LUT) ? 720 : (target == LAUAU_TARGET_LUT_V) ? 1280 : (target == LAUAU_TARGET_CORR) ? 256 : 0;
+    if (expect == 0) {
+        errorString = QString("Unknown read-table target 0x%1.").arg(target, 2, 16, QChar('0'));
+        return (QByteArray());
+    }
+
+    // REQUEST: A5 72 TARGET CK   with (0x72 + TARGET + CK) == 0 (mod 256)
+    serial.clear(QSerialPort::Input);
+    quint8 ck = checksumByte(LAUAU_OP_LUT_RD + target);
+    QByteArray frame;
+    frame.append((char)LAUAU_SYNC).append((char)LAUAU_OP_LUT_RD).append((char)target).append((char)ck);
+    if (!writeFrame(frame)) {
+        return (QByteArray());
+    }
+
+    // REPLY: TARGET D[0..expect-1] CK2  with (TARGET + sum(D) + CK2) == 0 (mod 256).
+    // The reply shares the UART with status telemetry, so it may be preceded (or
+    // followed) by a partial status line -- all printable ASCII / CR / LF, never a
+    // TARGET value (0x00/0x01/0x02). Read incrementally and lock onto the first
+    // TARGET byte that begins a checksum-valid frame; return as soon as one is found.
+    const int need = expect + 2;
+    QByteArray buf;
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        if (serial.bytesAvailable() == 0 && !serial.waitForReadyRead(timeoutMs - (int)timer.elapsed())) {
+            break;
+        }
+        buf.append(serial.readAll());
+        for (int i = 0; i + need <= buf.size(); i++) {
+            if ((quint8)buf.at(i) != target) {
+                continue;                       // skip stray / status bytes
+            }
+            int sum = 0;
+            for (int k = 0; k < need; k++) {
+                sum += (quint8)buf.at(i + k);
+            }
+            if ((sum & 0xFF) == 0) {
+                return (buf.mid(i + 1, expect)); // TARGET + N + CK2 all check out
+            }
+        }
+    }
+    errorString = QString("read-table 0x%1 -> no valid %2-byte reply (timeout)").arg(target, 2, 16, QChar('0')).arg(expect);
+    return (QByteArray());
+}
+
+/****************************************************************************/
 bool LAUAuBoard::setSLIControl(bool usbEnable, bool rEnable, bool gEnable, bool bEnable, bool horizontalOrient)
 {
     quint8 v = (quint8)((usbEnable ? 0x80 : 0x00) | (rEnable ? 0x08 : 0x00) | (gEnable ? 0x04 : 0x00) | (bEnable ? 0x02 : 0x00) | (horizontalOrient ? 0x01 : 0x00));

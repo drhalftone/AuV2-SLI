@@ -30,10 +30,14 @@
 #include <QPushButton>
 #include <QProgressBar>
 #include <QPaintEvent>
+#include <QTabWidget>
+#include <QDoubleSpinBox>
+#include <QVector>
 
 #include "laumemoryobject.h"
 #include "lauauboard.h"
 #include "lautonecorrectionwidget.h"
+#include "lauxyplotwidget.h"
 #ifdef USEBASLERUSBCAMERA
 #include "laubaslerusbcamera.h"
 #endif
@@ -47,13 +51,34 @@ class LAURampWindow : public QWidget
     Q_OBJECT
 
 public:
-    explicit LAURampWindow(QWidget *parent = nullptr) : QWidget(parent, Qt::Window | Qt::FramelessWindowHint), level(0) { ; }
+    explicit LAURampWindow(QWidget *parent = nullptr) : QWidget(parent, Qt::Window | Qt::FramelessWindowHint), level(0)
+    {
+        flashTimer = new QTimer(this);
+        connect(flashTimer, &QTimer::timeout, this, [this]() {
+            level = level ? 0 : 255;
+            update();
+        });
+    }
 
 public slots:
     void onSetLevel(int value)
     {
+        flashTimer->stop();
         level = qBound(0, value, 255);
         update();
+    }
+
+    // Flash the full field white/black (the "WBWB" sequence). In HDMI pass-through this
+    // also generates a per-frame top-left-pixel camera trigger. periodMs = half-cycle.
+    void onSetFlashing(bool on, int periodMs = 16)
+    {
+        if (on) {
+            level = 255;
+            update();
+            flashTimer->start(qMax(1, periodMs));
+        } else {
+            flashTimer->stop();
+        }
     }
 
 protected:
@@ -65,6 +90,7 @@ protected:
 
 private:
     int level;
+    QTimer *flashTimer;
 };
 
 /****************************************************************************/
@@ -92,12 +118,21 @@ private slots:
     void onStepSweep();             // show level, schedule a grab
     void onMeanPixel(unsigned int frame, unsigned int mean);
     void onUploadCorrection();
+    void onVerifyCorrection();       // read the correction table back and compare
     void onSaveCurve();
     void onLoadCurve();
+
+    // trigger-delay sweep experiment (projector temporal light profile)
+    void onRunTriggerSweep();
+    void onStopTriggerSweep();
+    void onROIChanged(unsigned int width, unsigned int height);
+    void onTriggerGrabComplete(LAUMemoryObject buffer);
+    void onExportTriggerData();
 
 private:
     void refreshBoardStatus();
     void setBusy(bool busy);
+    void stepTriggerDelay();        // set delay, grab a batch at the current delay
 
     // hardware interfaces
     LAUAuBoard *board;
@@ -118,13 +153,31 @@ private:
     QCheckBox *hdmiTriggerCheck;
     QCheckBox *orientCheck;
     QCheckBox *rCheck, *gCheck, *bCheck;
+    QCheckBox *usbOverrideCheck;     // 0x13 bit7: USB drives R/G/B/orient instead of the PCB switches
     QProgressBar *progress;
     QPushButton *runButton, *uploadButton;
 
-    // sweep state
+    // sweep state (linearization)
     bool sweeping;
     int  sweepLevel;
     LAUMemoryObject grabBuffer;
+    QByteArray lastCorrTable;        // last 256-byte correction sent (for read-back verify)
+
+    // trigger-delay sweep UI
+    LAUXYPlotWidget *delayPlot;
+    QSpinBox *roiDivisorSpin;       // ROI = central 1/N of the FOV area
+    QSpinBox *trigExposureSpin;     // short exposure (us)
+    QSpinBox *delayStartSpin, *delayStopSpin, *delayStepSpin;   // trigger-delay sweep (us)
+    QSpinBox *framesAvgSpin;        // frames averaged per delay
+    QSpinBox *flashPeriodSpin;      // projector flash half-cycle (ms)
+    QPushButton *trigRunButton, *trigStopButton, *trigExportButton;
+    QLabel *trigStatusLabel;
+
+    // trigger-delay sweep state
+    bool triggerSweeping;
+    int  curDelay, trigDelayStop, trigDelayStep;
+    QVector<double> curDelayMeans;  // per-frame means accumulated at the current delay
+    LAUMemoryObject triggerBuffer;  // N-frame grab buffer sized to the ROI
 };
 
 #endif // LAUSLICALIBRATIONDIALOG_H

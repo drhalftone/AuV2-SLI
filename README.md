@@ -117,6 +117,19 @@ alchitry.exe load --bin Bitstream/Au2_SLI_stackB.bin --board AuV2 --ram     # te
 |---|---|
 | `Bitstream/Au2_SLI_stackB.bin` | The full SLI design (Bank-B remap for the LauCameraTrigger stack board; idle LED slider when nothing is connected). |
 
+## Building from source
+
+Non-project Vivado batch build straight from the git sources (Vivado 2025.1), no GUI:
+
+```
+vivado -mode batch -source build.tcl     # -> build_au2/Au2_SLI.{bit,bin} (+ util/timing reports)
+vivado -mode batch -source program.tcl   # volatile JTAG load for bring-up (reverts on power cycle)
+```
+
+`build.tcl` reads the IP (`upgrade_ip` migrates the 2024.1 cores), the HDL, and `Au2.xdc`, then runs
+synth/place/route and writes the bitstream plus a `spix1` / 16 MB `.bin`. The canonical sources are
+`sources_1/` + `constrs_1/`; `Au2_SLI.zip` is only a stale archived GUI project, not the build input.
+
 ## Telemetry
 
 Status is streamed over the FT2232H ch.B UART (**COM6, 115200 8N1**), one line ~twice/second:
@@ -127,6 +140,49 @@ S=sel V=pol T=trig F=frm M=mode R=rdy N=vsync L=hh D=hh G=hh P=hh C=hh O=hh
 
 `S` = pass-through(1)/offline(0) selected, `D` = HDMI-decode debug (symbol-sync / PLL-lock / sel),
 `P` / `O` = recovered vs. pipe-output top-left red (datapath diagnostics), `N` = VSYNC edges per window.
+
+## USB control interface (host ↔ FPGA)
+
+The same FT2232H ch.B UART is **bidirectional**: the host can read/write control registers and
+upload/read back the pattern & correction tables with a small `0xA5`-framed protocol (115200 8N1).
+Implemented by `uart_rx.v` + `uart_ctrl.v`, arbitrated against the telemetry transmitter in
+`usb_link.v` (command replies win; a status line resumes after). The host side is
+[`host/lauauboard.{h,cpp}`](host/lauauboard.cpp); [`host/test_silicon.py`](host/test_silicon.py)
+is the on-board bring-up test and [`host/test_protocol.py`](host/test_protocol.py) an offline
+cross-check.
+
+**Frames** — `SYNC 0xA5` is never part of a checksum; `CK` drives the running payload sum to 0 mod 256:
+
+| Op | Request | Reply |
+|---|---|---|
+| Write reg | `A5 57 ADDR DATA CK` | `K` ok / `N` read-only|undef / `E` bad CK |
+| Read reg | `A5 52 ADDR CK` | `ADDR DATA CK2` |
+| Upload table | `A5 5B TGT D[0..N-1] CK` | `K` / `E` |
+| Read table | `A5 72 TGT CK` | `TGT D[0..N-1] CK2` |
+
+Table targets: `0x00` = 720-byte row LUT, `0x01` = 1280-byte column LUT, `0x02` = 256-byte intensity
+correction.
+
+**Registers**
+
+| Addr | Name | Acc | Meaning |
+|---|---|---|---|
+| 0x00 | ID | R | constant `0x48` ('H') — confirms the control bitstream is loaded |
+| 0x01 | VERSION | R | protocol version (`0x01`) |
+| 0x02 | STATUS | R | live byte `{vsync,hsync,VPol,sel,mode,rdy,f_frm,trig}` (same as the LEDs) |
+| 0x06 | FLAGS | R | `{…, usb_sw_en, lut_loaded}` |
+| 0x10 | PINS | R | `{eff_sw[3:0], phys_sw[3:0]}` — active vs physical R/G/B/orient switch pins |
+| 0x13 | SLICTRL | R/W | `{7:sw_en, 3:R, 2:G, 1:B, 0:orient}` |
+
+**Switch override.** Writing `SLICTRL` (0x13) with bit 7 (`sw_en`) set makes USB drive the
+R/G/B-enable and orientation **instead of the physical `SW[3:0]` pins** —
+`effective_sw = sw_en ? usb_value : SW` — clear it to fall back to the board switches. Reading `PINS`
+(0x10) shows both nibbles so you can confirm the override took (and read live switch state any time).
+
+> **Status (Stage 1).** Register access, the `0x13` switch override (wired into the pixel datapath),
+> and table upload/**readback** are hardware-verified. The uploaded `corr`/`LUT`/`LUT_V` tables are
+> stored in BRAM but **not yet consumed by the pattern generator** — wiring them in (runtime-writable
+> LUT + on-the-fly `out = corr[cos]` linearisation) is the next step.
 
 ## Setting resolution / FPS on the PC
 
@@ -165,6 +221,10 @@ isn't the one you want, set it manually via **Adapter Properties → List All Mo
 | SW[2] | A11 | Enable (1) / Disable (0) the Green channel |
 | SW[1] | A6 | Enable (1) / Disable (0) the Blue channel |
 | SW[0] | A5 | 0 for vertical stripes, 1 for horizontal stripes |
+
+> These four `SW` lines can be **overridden over USB** via the `SLICTRL` (0x13) register — see
+> [USB control interface](#usb-control-interface-host--fpga). Read `PINS` (0x10) to see the physical
+> switch state and what is actually driving the datapath.
 
 ## LED indicators
 | LED (Index) | Indication |
@@ -229,16 +289,19 @@ The newer board folders:
 ├── README.md                        # this file
 ├── ROADMAP.md                       # hardware expansion roadmap (DF40 stacking, Ft+, MIPI)
 ├── MIPI_CSI2_ROADMAP.md             # custom MIPI CSI-2 receiver design plan (Pt V2)
+├── build.tcl                        # non-project Vivado batch build (sources -> bitstream + .bin)
+├── program.tcl                      # volatile JTAG load for bring-up
 ├── Bitstream/                       # prebuilt bitstream (Au2_SLI_stackB.bin)
 ├── sources_1/                       # HDL sources (sources_1/imports/RTL)
 ├── constrs_1/                       # Xilinx design constraints (XDC)
 ├── Matlab/                          # .m scripts + LUT outputs (legacy pattern generation)
 ├── AlchitryFlasher/                 # one-click Windows flasher (GUI + docs)
-├── host/                            # Qt host application (3-D reconstruction + USB control)
+├── host/                            # Qt host app (3-D reconstruction + USB control driver + tests)
 ├── LauCameraTrigger_Alchitry/       # camera-trigger breakout PCB (KiCad) + camera-wiring docs
 ├── LauCameraTrigger_Alchitry_3xJST/ # breakout variant: 3× on-board JST-7 (ordered)
 ├── LauCameraTrigger_Alchitry_Stack/ # DF40 stacking daughter board (mates the Br/Hd stack)
 ├── LauMipiCamera_Alchitry_Stack/    # MIPI CSI-2 camera daughter board (Pt V2, WIP scaffold)
+├── LauPythonCamera_Pt_Stack/        # PYTHON 1300 camera daughter board (Pt V2)
 ├── Au2_SLI.zip                      # archived Vivado project
 └── LICENSE
 ```

@@ -11,7 +11,6 @@
 #include <QObject>
 #include <QMessageBox>
 #include <QApplication>
-#include <QHostAddress>
 
 #include "laumemoryobject.h"
 #if defined(Q_OS_WIN)
@@ -125,6 +124,11 @@ protected:
 
 public slots:
     void onUpdateExposure(int microseconds);
+    // Centre a hardware ROI covering `areaFraction` of the full sensor area
+    // (e.g. 1.0/16.0 -> the central 1/16 of the field of view). Emits emitROIChanged.
+    void setCenterROI(double areaFraction);
+    // Delay the exposure start this many microseconds after the (Line1) trigger edge.
+    void setTriggerDelayMicroseconds(int microseconds);
     void onUpdateBuffer(LAUMemoryObject buffer)
     {
         // CALL COMMANDS TO RECORD VIDEO TO BUFFER
@@ -172,5 +176,6 @@ signals:
     void emitDisplayFrame(unsigned int index);
     void emitBuffer(LAUMemoryObject);
     void emitMeanPixel(unsigned int frm, unsigned int mean);
+    void emitROIChanged(unsigned int width, unsigned int height);
 };
 #endif // LAUBASLERUSBCAMERA_H
