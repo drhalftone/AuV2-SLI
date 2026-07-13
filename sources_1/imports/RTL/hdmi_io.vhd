@@ -99,7 +99,7 @@ architecture Behavioral of hdmi_io is
         clk125   : in  std_logic;      -- Local clock
         clk625   : in  std_logic;      -- Local clock
         clk10   : in  std_logic;      -- Local clock for plug detection
-        data_valid : in std_logic;     -- symbol_sync: gate sel on real TMDS decode (reject ghost clock)
+        data_valid : in std_logic;     -- symbol_sync AND pll_locked: gate sel on a REAL source
         oclk      : out std_logic;
         oclk5      : out std_logic;
         oclk1      : out std_logic;
@@ -359,7 +359,13 @@ i_clk_sel: clk_selector port map(
         hdmi_clk1=> pixel_io_clk_x1,         -- (unused by the mux now; kept wired)
         hdmi_clk5=> pixel_io_clk_x5_raw_i,
         clk125=>clk125, clk625=>clk625, clk10=>clk10,
-        data_valid => data_synced_i,
+        -- Gate sel on symbol_sync AND pll_locked. symbol_sync ALONE is not enough:
+        -- a floating RX input self-oscillates (ghost clock) and the decoder locks
+        -- onto that noise, so symbol_sync goes high with no cable attached while
+        -- pll_locked stays 0. Requiring both is the same honest term the idle-LED
+        -- animation uses (vid_valid = debug(3) and debug(2)), which is why the LED
+        -- slider is steady while sel used to hunt. With a real source both are 1.
+        data_valid => (data_synced_i and clock_locked_i),
         oclk=>oclk, oclk1=>oclk1, oclk5=>oclk5,
         sel => sel_i
 );    

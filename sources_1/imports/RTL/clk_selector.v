@@ -11,10 +11,19 @@
 //   trips it -- and a floating HDMI-RX IBUFDS self-oscillates (the "ghost clock"),
 //   so sel latched high with no real source -> garbage output clock.
 //
-//   FIX: also require `data_valid` (hdmi_input symbol_sync = real TMDS symbols are
-//   decoding), debounced into the clk10 domain. sel = (clock present) AND (valid
-//   decode). sel drops promptly when decode is lost; it asserts only after the
-//   decode has been stable (~6.5 ms) -- so the ghost can no longer select passthrough.
+//   FIX 1 (2026-06-08): also require `data_valid`, debounced into the clk10 domain.
+//   sel = (clock present) AND (valid decode). sel drops promptly when decode is lost;
+//   it asserts only after the decode has been stable (~6.5 ms).
+//
+//   FIX 2 (2026-07-13): FIX 1 was NOT sufficient. It passed symbol_sync alone, and
+//   the ghost clock fools symbol_sync too: with the RX cable unplugged the decoder
+//   happily locks onto the self-oscillation, so symbol_sync = 1 while pll_locked = 0.
+//   sel therefore still latched high with no source, the output blanked, decode then
+//   collapsed, sel dropped, the pattern came back -- a ~1-2 s blank/show cycle on the
+//   display. The caller now drives data_valid with symbol_sync AND pll_locked (see
+//   hdmi_io.vhd): pll_locked is the honest "there is a real clock" signal -- the RX
+//   MMCM cannot lock to the ghost. This is the same term the idle-LED animation gates
+//   on, which is why the LED slider stayed rock-steady while sel hunted.
 //////////////////////////////////////////////////////////////////////////////////
 module clk_selector (
     input rx, tmds_clk,
