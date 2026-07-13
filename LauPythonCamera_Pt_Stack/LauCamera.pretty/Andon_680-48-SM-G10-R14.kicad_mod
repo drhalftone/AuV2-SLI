@@ -10,7 +10,7 @@
 	(property "Value" "Andon_680-48-SM-G10-R14" (at 0 9.882 0) (layer "F.Fab") (uuid "9d1b5c0e-1b22-4249-aebb-3758366359d7")
 		(effects (font (size 1 1) (thickness 0.15))))
 	(fp_rect (start -8.382 -8.382) (end 8.382 8.382) (stroke (width 0.1) (type default)) (fill none) (layer "F.Fab") (uuid "2b1a7781-2b21-45bb-8ee4-e4646c8b9985"))
-	(fp_rect (start -8.882 -8.882) (end 8.882 8.882) (stroke (width 0.05) (type default)) (fill none) (layer "F.CrtYd") (uuid "1353e7e6-a688-41f8-8205-a1e953b9c3b5"))
+	(fp_rect (start -11.426 -11.426) (end 11.426 11.426) (stroke (width 0.05) (type default)) (fill none) (layer "F.CrtYd") (uuid "1353e7e6-a688-41f8-8205-a1e953b9c3b5"))
 	(fp_line (start -11.476 -9.476) (end -11.476 -11.476) (stroke (width 0.12) (type solid)) (layer "F.SilkS") (uuid "b6a9ab55-b251-43af-b13c-bfa61059bcd0"))
 	(fp_line (start -9.476 -11.476) (end -11.476 -11.476) (stroke (width 0.12) (type solid)) (layer "F.SilkS") (uuid "621e37bb-eb73-46ed-825e-473bbb6b443a"))
 	(fp_line (start -11.476 9.476) (end -11.476 11.476) (stroke (width 0.12) (type solid)) (layer "F.SilkS") (uuid "97afc60d-d860-41a6-bbd5-3b9ed73ca6d3"))

@@ -61,9 +61,69 @@
 	(constraint track_width (min 0.22mm) (opt 0.24mm) (max 0.26mm)))
 
 # --- Keep P and N tightly coupled: limit uncoupled run length ---
+# --- Uncoupled length.
+#
+#     THIS WAS 1.5 mm AND IT IS NOT ACHIEVABLE ON THIS BOARD. That number was
+#     inherited verbatim from LauMipiCamera_Alchitry_Stack's MipiHS rules and
+#     was never checked against THIS board's two connectors. The pair is forced
+#     apart at BOTH ends, by geometry we do not control:
+#
+#       sensor socket   1.016 mm pad pitch  -> the pair leaves U1 at 1.016 mm
+#       DF40 connector  0.400 mm pad pitch  -> and arrives at J2 at 0.400 mm
+#       layer change    two 0.5 mm vias cannot sit 0.44 mm apart; the pair must
+#                       splay to ~0.68 mm to fit them, then converge back
+#
+#     Neither pitch is 0.44 mm, so a coupled 0.44 mm pair CANNOT reach either
+#     pad without an uncoupled transition. Measured on the routed board the
+#     worst pair totals ~4.8 mm.
+#
+#     Is that acceptable? At 720 Mbps the rise time is ~500 ps, which in FR-4
+#     (~150 mm/ns) is a ~75 mm rise length. 4.8 mm is ~6 % of that -- short
+#     enough that the uncoupled sections do not behave as transmission-line
+#     discontinuities. The limit below is set to 5.5 mm to bound it.
+#
+#     KEEP THE TRANSITIONS SHORT ANYWAY. This is a budget, not a licence:
+#     converge to 0.44 mm as fast as the pads allow.
 (rule "CamLVDS max uncoupled length"
 	(condition "A.NetClass == 'CamLVDS'")
-	(constraint diff_pair_uncoupled (max 1.5mm)))
+	(constraint diff_pair_uncoupled (max 5.5mm)))
+
+# --- lvds_clock_in ONLY. Measured 8.16 mm uncoupled. Here is why, and why it is
+#     scoped to this one pair rather than relaxed for the netclass.
+#
+#     This is the only pair that leaves the sensor's RIGHT edge. Its two pins
+#     (23 = N at y 23.524, 24 = P at y 22.508) are 1.016 mm apart and are
+#     approached from the side, and the pair must splay to 0.8 mm to fit two
+#     0.5 mm vias. Consequently P is longer than N by EXACTLY
+#         (pin offset 1.016) + (2 x via splay 0.800) = 1.816 mm
+#     for ANY via position -- the mirror topology (vias above the pins instead of
+#     below) gives the same magnitude with the sign flipped. It is structural, not
+#     a routing choice. N therefore carries a 0.908 mm out-and-back detour on B.Cu
+#     to cancel it, and a length-matching detour is uncoupled by definition.
+#     Fanout + splay + detour = 8.16 mm, all of it on this one net.
+#
+#     WHY THIS PAIR CAN AFFORD IT, AND THE DATA PAIRS CANNOT:
+#     lvds_clock_in is a 360 MHz point-to-point CLOCK that the FPGA drives INTO
+#     the sensor, far-end terminated at R2. It is not a 720 Mbps data lane being
+#     bit-sliced by an ISERDES. At ~1 ns edges the rise length in FR-4 (~150
+#     mm/ns) is ~150 mm, so 8.16 mm is ~5 % of it -- short enough not to behave
+#     as a transmission-line discontinuity.
+#
+#     THE SIX DATA PAIRS ARE STILL HELD TO 5.5 mm by the rule above. Do NOT
+#     "simplify" this by raising the netclass limit -- that is exactly the silent
+#     global loosening this scoped rule exists to avoid.
+(rule "lvds_clock_in uncoupled - the sensor right-edge fanout is geometrically forced"
+	(condition "A.NetName == 'CAM_LVDSCLK_P' || A.NetName == 'CAM_LVDSCLK_N'")
+	(constraint diff_pair_uncoupled (max 9.0mm)))
+
+# --- The pair is 1.016 mm apart AT THE SENSOR -- that is the socket's pad
+#     pitch, not a routing choice. Relax the gap check inside U1's courtyard
+#     only. (The socket footprint's courtyard was corrected to enclose its pads;
+#     it previously covered only the body, which is why this could not be
+#     scoped before.)
+(rule "Sensor socket fanout - 1.016mm pad pitch forces the pair apart"
+	(condition "A.NetClass == 'CamLVDS' && A.intersectsCourtyard('U1')")
+	(constraint diff_pair_gap (min 0.15mm) (max 1.10mm)))
 
 # --- Intra-pair (P vs N) skew, PER PAIR. Inter-lane matching is intentionally
 #     NOT constrained: the PYTHON LVDS link is source-synchronous and sends
