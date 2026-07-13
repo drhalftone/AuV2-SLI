@@ -1,5 +1,28 @@
 # LauPythonCamera_Pt_Stack — Design Blueprint
 
+> # ⚠️ THE POWER SECTION OF THIS DOCUMENT IS OBSOLETE AND WRONG.
+>
+> **See [`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md). The schematic now matches that
+> document, not this one.**
+>
+> Everything in §6.2 / §6.5 below (the "3.3 V tap through ferrites + load switch" tree) was built
+> on the premise that the Pt's `+3.3V` rail is 3.300 V. **It is 3.278 V** — derivable from
+> Alchitry's own feedback divider (R16 = 31.6 kΩ / R15 = 10.2 kΩ into the ADP5052's 0.8 V
+> reference), with ±1.5 % tolerance giving **3.229 – 3.327 V**. Consequences:
+>
+> - **`vdd_pix` (3.25–3.35 V) is out of spec** at the rail's low corner, by 21 mV.
+> - **`vdd_33` had ~7 mV** of worst-case margin after ferrite and connector IR drop.
+> - **The tap made correct power-up sequencing impossible.** `vdd_33` tapped from `+3V3` rises the
+>   instant the Pt's rail does, but 1.8 V can only be made by LDO'ing *down from that same rail* —
+>   so `vdd_18` always came up **after** `vdd_33`, the forbidden order, on every power-up. That
+>   risks latch-up and a dead sensor.
+>
+> The board now uses **boost → LDO**: `+3V3` → TPS61023 boost to 4.46 V → two TPS7A2033 LDOs for
+> `vdd_33` and `vdd_pix`, with `vdd_18` from a TPS7A2018 off `+3V3` directly, and **two TLV803S
+> supervisors** enforcing the datasheet's power-up and power-down ordering.
+>
+> §§1–5 and 7–13 (sensor, pin plan, mechanical, stackup, socket, validation) remain valid.
+
 Custom Alchitry **element board** carrying an onsemi **PYTHON 1300** global-shutter image
 sensor in a **socketed 48-pin LCC**, for the AuV2-SLI structured-light system.
 
@@ -399,17 +422,34 @@ that matters. **The external resistors are the only guarantee.**
 
 ### 6.5 The power tree
 
+> ### ⚠️ OBSOLETE — this tree is not what is on the board.
+> The tap-through-ferrites design below **does not meet `vdd_pix` and cannot sequence correctly.**
+> The schematic implements the tree shown here instead. Full rationale and BOM:
+> **[`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md)**.
+
 ```
-  +3.3V (DF40 control header)
+  +3V3_SYS  (J3 pins 1,3,5,7,9,11,13,15 — 3.229 to 3.327 V, noisy)
      |
-     +--> U2  LDO 1.8 V ----------------------------------> +1V8_CAM   vdd_18   80 mA
-     |                                                       (comes up FIRST)
-     +--> U3  load switch --+-- FB1 (LOW DCR) ------------> +3V3_CAM   vdd_33  140 mA
-           Rds <= 50 mOhm   |
-                            +-- FB2 ---------------------- > +3V3_PIX   vdd_pix   5 mA
+     +--> U3  TPS61023 boost ---> +4V5 (4.46 V) --+--> U4 TPS7A2033 --> +3V3_CAM  vdd_33  140 mA
+     |    L1 2.2uH, R8/R9 649k/100k               |
+     |                                            +--> U5 TPS7A2033 --> +3V3_PIX  vdd_pix   5 mA
+     |
+     +--> U2  TPS7A2018 -----------------------------------> +1V8_CAM  vdd_18   80 mA
+     |
+     +--> U6  TLV803S (2.93 V) --> EN_PIX   (pull-up to +3V3_CAM = the interlock)
+     +--> U7  TLV803S (2.93 V) --> EN_BOOST (via R17 1k / C41 220n = 493 us shutdown skew)
 ```
 
-One LDO, one switch, two beads.
+One boost, three LDOs, two supervisors. The boost exists **only** to give the LDOs headroom —
+you cannot LDO 3.278 V down to an accurate 3.300 V. All accuracy and all noise rejection
+(75–95 dB PSRR) happen in the LDOs.
+
+**Power-up:** `vdd_18` → `vdd_33` → `vdd_pix`.  **Power-down:** `vdd_pix` → `vdd_33` → `vdd_18`.
+Both enforced structurally, not by matched time constants.
+
+> **`+3V3_PIX` must keep ≤ ~1.5 µF total** (C8–C11 are **100n**, not 1µ; there is deliberately
+> **no bulk cap** on this rail). Power-down depends on U5's 150 Ω internal auto-discharge
+> collapsing `vdd_pix` first. Adding a 10 µF bulk cap here silently breaks the shutdown ordering.
 
 #### `U3` is a SWITCH, not a regulator — and that is not a compromise
 
