@@ -160,8 +160,55 @@ bank-35 pins.
 - **No pin collision** with Hd, Ft+, or the Pt base.
 
 **NOT checked:**
-- The Hd / Ft+ / Sp **pass-throughs** are assumed straight-through. Believed true, not confirmed
-  from their schematics. **Meter this before first power-up** — it is 30 seconds and the sensor is
-  the expensive part.
+- The Hd / Ft+ / Sp **pass-throughs** are assumed straight-through (their sheets do wire the bus
+  between top and bottom connectors). **Meter this before first power-up** — see §7.
 - `B36` = Alchitry `Fn` fan pin is taken from Alchitry's element convention, not verified from the
   Pt schematic. It is simply left unused, so nothing depends on it.
+
+---
+
+## 7. ⚠️ Connector pin numbering — RESOLVED. Do not re-open this.
+
+**Every element pin number in §3 and §4 depends on this. Read it before you "fix" any of them.**
+
+Alchitry's schematics show their **bottom plugs** (DF40C-*DP) carrying element-bus net `n` on pin
+**`n XOR 1`** — odd/even rows swapped — while every **top receptacle** (DF40C-*DS) carries net `n`
+on pin `n`. Consistent across the Pt, Hd and Ft+ (**0/186** identity on the plugs, **184/184** on
+the receptacles). It looks exactly like our plug pin numbers (B40, B42, A3, A5 …) are all off by
+one.
+
+**They are not. That comparison is invalid.**
+
+A schematic pin number is meaningless alone. The chain that matters is:
+
+```
+  schematic pin number  ->  FOOTPRINT pad  ->  physical contact
+```
+
+Alchitry's plug pin numbers pair with **their own Altium footprint**, whose pad numbering mirrors
+the KiCad/Hirose one for the plug. Comparing their plug pin numbers to ours compares two different
+footprint libraries and proves nothing.
+
+> ### The empirical proof: `LauCameraTrigger_Alchitry_Stack`
+>
+> **Fabbed, and works on the Pt.** It puts **`+3V3` on schematic pin 1** of a **DF40C-50DP** plug
+> using the **KiCad `Hirose_DF40C-50DP` footprint**. So with that footprint, **plug pin N mates the
+> top receptacle's pin N — identity, no swap.**
+>
+> **This board uses the identical footprints**, extracted straight out of that PCB into
+> `LauCamera.pretty`. Same footprint, same pad numbering, same convention.
+
+**So the element pins in §3 and §4 are correct as written** — B40/B42 for `clock_out±`, A3/A5 for
+`mosi`/`sck`, and so on, matched against the Pt's **top-receptacle** numbering.
+
+**The rule:** only the **net names** (`A1..A80`, `B1..B80`, `C1..C50`) carry over from Alchitry's
+drawings. **Never transfer their plug pin numbers.**
+
+> **What can never reveal this bug:** GND sits on pins 1,2 / 7,8 / 13,14 … — pairs that map to
+> *themselves* under an odd/even swap. Ground looks correct either way. Only power and signal pins
+> can expose it.
+
+**The 30-second confirmation.** Power the Pt with Hd + Ft+ stacked and meter the Ft+'s exposed top
+connector: the **odd** control-header pins 1–15 must read **3.3 V** (not the even ones, which are
+`VCC` at 5 V+). That validates the pass-through *and* the pin mapping at once — against a sensor
+whose absolute maximum is **4.3 V**.

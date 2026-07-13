@@ -145,11 +145,56 @@ power-up.
 | 43, 45, 47, 49 | `TDI`, `TDO`, `TMS`, `TCK` | JTAG |
 | 42, 44, 46, 48, 50 | `A1V8`, `AVP`, `AVN`, `AVREF`, `AGND` | Not used (§2.3) |
 
-> **Verify with a meter before first power-up.** This mapping is the Pt's *own* top connector. It
-> reaches us through the **Hd and Ft+ pass-throughs**, which are believed to be straight
-> pass-throughs but have not been independently confirmed. Thirty seconds with a multimeter
-> between the Ft+'s top connector and a known `+3V3` point is cheap insurance against a dead
-> sensor.
+### 2.5.3 ⚠️ Connector pin numbering — RESOLVED. Do not re-open this.
+
+**This trap cost real time. Read it before you "fix" any connector pin number.**
+
+Alchitry's schematics show their **bottom plugs** (DF40C-*DP) carrying element-bus net `n` on pin
+**`n XOR 1`** — the odd/even rows swapped — while every **top receptacle** (DF40C-*DS) carries net
+`n` on pin `n`. This is consistent across the Pt, the Hd and the Ft+ (0/186 identity on the plugs,
+184/184 on the receptacles). It looks exactly like our board's plug pin numbers are all off by one.
+
+**They are not. That comparison is invalid.**
+
+A schematic pin number means nothing on its own — the chain that matters is:
+
+```
+  schematic pin number  ->  FOOTPRINT pad  ->  physical contact
+```
+
+Alchitry's plug pin numbers are paired with **their own Altium footprint**, whose pad numbering
+mirrors the KiCad/Hirose one for the plug. Comparing their plug pin numbers against ours compares
+two different footprint libraries. It proves nothing.
+
+> ### The empirical proof: `LauCameraTrigger_Alchitry_Stack`
+>
+> That board was **fabbed and works on the Pt**. It puts **`+3V3` on schematic pin 1** of a
+> **DF40C-50DP** plug, using the **KiCad `Hirose_DF40C-50DP` footprint**. Therefore, with that
+> footprint, **plug pin N mates the Pt's top-receptacle pin N — identity, no swap.**
+>
+> **This board uses the identical footprints** — they were extracted directly out of that PCB into
+> `LauCamera.pretty`. Same footprint, same pad numbering, same convention.
+
+**So the mapping in §2.5.1 is correct as written**: `+3V3` on J3 pins 1, 3, 5 … 15.
+
+**The rule:** only the **net names** (`A1..A80`, `B1..B80`, `C1..C50`) carry over from Alchitry's
+drawings. **Never transfer their plug pin numbers.** Match our plug pins to the *receptacle*
+numbering, which is what §2.5.1 does.
+
+> **Note the one thing that can never reveal this bug:** GND sits on pins 1,2 / 7,8 / 13,14 … —
+> pairs that map to *themselves* under an odd/even swap. Ground will look correct either way. Only
+> the power and signal pins can expose it.
+
+### 2.5.4 Still worth 30 seconds with a meter
+
+The **Hd and Ft+ pass-throughs** are taken as straight-through (they are — their sheets show the
+bus wired between top and bottom connectors), but that is the one link in the chain not proven by
+a working board *in this configuration*.
+
+**Before the sensor ever goes in the socket:** power the Pt with the Hd + Ft+ stacked, and meter
+the Ft+'s exposed top connector. Confirm the **odd** control-header pins 1–15 read **3.3 V** (not
+the even ones, which are `VCC` at 5 V+). That single measurement validates the pass-through *and*
+the pin mapping at once — against a sensor whose absolute maximum is **4.3 V**.
 
 ### 2.5.2 Thermal note — why "top" is also the right answer for image quality
 
