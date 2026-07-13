@@ -18,15 +18,32 @@
 //      1  640x480@120   55  7  15   3   52.38
 //      2  1024x768@75   59  5  15   3   78.67   <- fastest (MMCM power-up = this)
 //      3  800x600@75    52  7  15   3   49.52
-//      4  640x480@75    11  1  35   7   31.43
+//      4  640x480@75    63  5  40   8   31.50   <- exact (see note below)
 //      5  1024x768@70   15  2  10   2   75.00
 //      6  800x600@72    10  1  20   4   50.00
-//      7  640x480@72    11  1  35   7   31.43
+//      7  640x480@72    63  5  40   8   31.50   <- exact (see note below)
 //      8  1280x720@60   52  7  10   2   74.29
 //      9  1280x800@60   32  3  15   3   71.11
 //     10  1024x768@60   13  2  10   2   65.00
 //     11  800x600@60     6  1  15   3   40.00
 //     12  640x480@60    34  3  45   9   25.19  (failsafe)
+//
+//   Pixel clock accuracy. Reachable set is 20*M/(O2*D) with integer M/D/O and
+//   O0 = 5*O2 (the serializer needs an exactly-5x clock), so most targets are only
+//   approachable, not hittable. Pick the HIGHEST VCO among near-exact candidates:
+//   MMCM jitter falls as VCO rises (UG472: run the VCO as fast as possible).
+//
+//   idx4/idx7 (31.5 MHz) used to be M=11 D=1 O0=35 -> 31.43 MHz (-0.227%) at
+//   VCO 1100. M=63 D=5 O0=40 is EXACT and runs VCO at 1260 -- more accurate AND
+//   lower jitter, so it is a strict win with no trade-off.
+//
+//   idx2 (78.75 MHz) is DELIBERATELY LEFT INEXACT. The only exact solution is
+//   M=63 D=8 O0=10, which drops VCO from 1180 -> 787.5 MHz (-33%) and so raises
+//   jitter, on the fastest link we drive (x5 = 394 MHz, where the OSERDES
+//   parallel-load margin already blacked the output once -- see clk_selector.v).
+//   M=59 D=5 (78.667 MHz, -0.106%) keeps the VCO high and is the right trade:
+//   nothing observes the 0.1% (the FPGA clocks both the pattern and the camera
+//   trigger, so they stay coherent regardless). DO NOT "fix" idx2 to 78.75.
 //
 //   Reconfig: present MODE_IDX, pulse SEN for 1 SCLK; SRDY strobes when re-locked.
 //==============================================================================
@@ -87,18 +104,18 @@ module drp_recfg (
         4'd3:  begin selCLKFB=mmcm_count_calc(8'd52,0,50000); selDIVCLK=mmcm_count_calc(8'd7,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd15,0,50000); selCLKOUT2=mmcm_count_calc(8'd3,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd52); selFILT=mmcm_filter_lookup(8'd52,"OPTIMIZED"); end
-        4'd4:  begin selCLKFB=mmcm_count_calc(8'd11,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
-                     selCLKOUT0=mmcm_count_calc(8'd35,0,50000); selCLKOUT2=mmcm_count_calc(8'd7,0,50000);
-                     selLOCK=mmcm_lock_lookup(8'd11); selFILT=mmcm_filter_lookup(8'd11,"OPTIMIZED"); end
+        4'd4:  begin selCLKFB=mmcm_count_calc(8'd63,0,50000); selDIVCLK=mmcm_count_calc(8'd5,0,50000);
+                     selCLKOUT0=mmcm_count_calc(8'd40,0,50000); selCLKOUT2=mmcm_count_calc(8'd8,0,50000);
+                     selLOCK=mmcm_lock_lookup(8'd63); selFILT=mmcm_filter_lookup(8'd63,"OPTIMIZED"); end
         4'd5:  begin selCLKFB=mmcm_count_calc(8'd15,0,50000); selDIVCLK=mmcm_count_calc(8'd2,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd10,0,50000); selCLKOUT2=mmcm_count_calc(8'd2,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd15); selFILT=mmcm_filter_lookup(8'd15,"OPTIMIZED"); end
         4'd6:  begin selCLKFB=mmcm_count_calc(8'd10,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd20,0,50000); selCLKOUT2=mmcm_count_calc(8'd4,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd10); selFILT=mmcm_filter_lookup(8'd10,"OPTIMIZED"); end
-        4'd7:  begin selCLKFB=mmcm_count_calc(8'd11,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
-                     selCLKOUT0=mmcm_count_calc(8'd35,0,50000); selCLKOUT2=mmcm_count_calc(8'd7,0,50000);
-                     selLOCK=mmcm_lock_lookup(8'd11); selFILT=mmcm_filter_lookup(8'd11,"OPTIMIZED"); end
+        4'd7:  begin selCLKFB=mmcm_count_calc(8'd63,0,50000); selDIVCLK=mmcm_count_calc(8'd5,0,50000);
+                     selCLKOUT0=mmcm_count_calc(8'd40,0,50000); selCLKOUT2=mmcm_count_calc(8'd8,0,50000);
+                     selLOCK=mmcm_lock_lookup(8'd63); selFILT=mmcm_filter_lookup(8'd63,"OPTIMIZED"); end
         4'd8:  begin selCLKFB=mmcm_count_calc(8'd52,0,50000); selDIVCLK=mmcm_count_calc(8'd7,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd10,0,50000); selCLKOUT2=mmcm_count_calc(8'd2,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd52); selFILT=mmcm_filter_lookup(8'd52,"OPTIMIZED"); end
