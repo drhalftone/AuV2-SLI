@@ -30,6 +30,16 @@
 //   0x01 VERSION = 0x01          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
 //   0x10 PINS    = {eff_sw[3:0], phys_sw[3:0]}  (RO -- active vs physical R/G/B/orient)
 //   0x13 SLICTRL = {7:sw_en,3:R,2:G,1:B,0:orient}  (R/W -- the one writable register)
+//
+//   Offline-mode decision (RO) -- what mode_select picked from the display's EDID,
+//   and what it had to pick from. Without these the choice is unobservable: you can
+//   only infer it by decoding the EDID by hand and measuring the frame rate.
+//   0x20 MODE    = {7:valid, 6:edid_ok, 3..0:mode_idx}   curated-table index in use
+//   0x21 REFR    = refresh in Hz
+//   0x22 / 0x23  = h_active  lo / hi (12-bit)
+//   0x24 / 0x25  = v_active  lo / hi (12-bit)
+//   0x26 / 0x27 / 0x28 = pixel clock in kHz, lo / mid / hi (17-bit)
+//   0x29 / 0x2A  = supported-mode mask, lo / hi (13-bit; bit i = table index i)
 //==============================================================================
 module uart_ctrl #(
     parameter [7:0] ID_MAGIC = 8'h48,    // 'H'
@@ -68,7 +78,20 @@ module uart_ctrl #(
     // address outward and the data comes back registered one clock later --
     // the same latency as the local RAMs, so S_RTAB needs no special-casing.
     output wire [7:0]  edid_rd_addr,
-    input  wire [7:0]  edid_rd_data
+    input  wire [7:0]  edid_rd_data,
+
+    // ---- offline mode decision (regs 0x20..0x2A, read-only) ----
+    // What mode_select chose from the display's EDID, and what it had to choose
+    // from. Quasi-static: only changes when a new EDID is parsed. Caller supplies
+    // these already in this clock domain.
+    input  wire [3:0]  mode_idx_i,      // applied curated-table index
+    input  wire        mode_valid_i,    // a mode has been picked
+    input  wire        mode_edid_ok_i,  // display EDID block-0 checksum good
+    input  wire [7:0]  mode_refr_i,     // refresh (Hz)
+    input  wire [11:0] mode_hact_i,     // active pixels
+    input  wire [11:0] mode_vact_i,     // active lines
+    input  wire [16:0] mode_pclk_i,     // pixel clock (kHz)
+    input  wire [12:0] mode_supp_i      // 13-bit supported-mode mask
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
@@ -105,6 +128,18 @@ module uart_ctrl #(
             8'h06:   regread = {6'b0, sli_ctrl[7], (corr_ld | lut_ld | lutv_ld)};
             8'h10:   regread = pins;
             8'h13:   regread = sli_ctrl;
+            // ---- offline mode decision (read-only) ----
+            8'h20:   regread = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
+            8'h21:   regread = mode_refr_i;
+            8'h22:   regread = mode_hact_i[7:0];
+            8'h23:   regread = {4'b0, mode_hact_i[11:8]};
+            8'h24:   regread = mode_vact_i[7:0];
+            8'h25:   regread = {4'b0, mode_vact_i[11:8]};
+            8'h26:   regread = mode_pclk_i[7:0];
+            8'h27:   regread = mode_pclk_i[15:8];
+            8'h28:   regread = {7'b0, mode_pclk_i[16]};
+            8'h29:   regread = mode_supp_i[7:0];
+            8'h2A:   regread = {3'b0, mode_supp_i[12:8]};
             default: regread = 8'h00;
         endcase
     endfunction

@@ -295,7 +295,16 @@ architecture Behavioral of Au2_SLI is
                lutv_dout : out STD_LOGIC_VECTOR(7 downto 0);
                -- captured-EDID read port -> edid_merge's 3rd port (rdtbl TGT_EDID)
                edid_rd_addr : out STD_LOGIC_VECTOR(7 downto 0);
-               edid_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0') );
+               edid_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               -- offline mode decision (regs 0x20..0x2A), already in clk100
+               mode_idx_i     : in STD_LOGIC_VECTOR(3 downto 0)  := (others => '0');
+               mode_valid_i   : in STD_LOGIC                     := '0';
+               mode_edid_ok_i : in STD_LOGIC                     := '0';
+               mode_refr_i    : in STD_LOGIC_VECTOR(7 downto 0)  := (others => '0');
+               mode_hact_i    : in STD_LOGIC_VECTOR(11 downto 0) := (others => '0');
+               mode_vact_i    : in STD_LOGIC_VECTOR(11 downto 0) := (others => '0');
+               mode_pclk_i    : in STD_LOGIC_VECTOR(16 downto 0) := (others => '0');
+               mode_supp_i    : in STD_LOGIC_VECTOR(12 downto 0) := (others => '0') );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -380,7 +389,8 @@ architecture Behavioral of Au2_SLI is
                v_bp     : out std_logic_vector(11 downto 0);
                h_pol    : out std_logic;
                v_pol    : out std_logic;
-               pclk_khz : out std_logic_vector(16 downto 0) );
+               pclk_khz : out std_logic_vector(16 downto 0);
+               refr     : out std_logic_vector(7 downto 0) );
     end component;
 
     signal offline_pix, offline_pix_x1, offline_pix_x5 : std_logic;
@@ -408,6 +418,14 @@ architecture Behavioral of Au2_SLI is
     signal mt_vact, mt_vfp, mt_vs, mt_vbp : std_logic_vector(11 downto 0);
     signal mt_hpol, mt_vpol : std_logic;
     signal mt_pclk : std_logic_vector(16 downto 0);
+    signal mt_refr : std_logic_vector(7 downto 0);
+
+    -- Mode decision exposed to the host (uart_ctrl regs 0x20..0x2A). mode_select runs
+    -- on clk10, so its supported mask / valid flag are 2FF-synced into clk100 here.
+    -- Quasi-static: they only change when a new EDID is parsed (~0.1 s cadence), so a
+    -- torn sample is not a concern for a diagnostic read.
+    signal ms_supported : std_logic_vector(12 downto 0);
+    signal mode_bus_s0, mode_bus_s1 : std_logic_vector(14 downto 0) := (others => '0');
     signal vg_hStart, vg_hEnd, vg_hMax : std_logic_vector(11 downto 0);
     signal vg_vStart, vg_vEnd, vg_vMax : std_logic_vector(11 downto 0);
 begin
@@ -435,7 +453,18 @@ begin
         corr_addr => "00000000",    corr_dout => open,
         lut_addr  => "0000000000",  lut_dout  => open,
         lutv_addr => "00000000000", lutv_dout => open,
-        edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data );
+        edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data,
+        -- offline mode decision. clkgen_mode_idx is the APPLIED index (already the
+        -- clk100-synced one that drives the clock + timing), so the host reads the
+        -- mode actually in use, not a candidate mode_select may not have applied yet.
+        mode_idx_i     => clkgen_mode_idx,
+        mode_valid_i   => mode_bus_s1(14),
+        mode_edid_ok_i => mode_bus_s1(13),
+        mode_refr_i    => mt_refr,
+        mode_hact_i    => mt_hact,
+        mode_vact_i    => mt_vact,
+        mode_pclk_i    => mt_pclk,
+        mode_supp_i    => mode_bus_s1(12 downto 0) );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -584,7 +613,15 @@ i_mode_select : mode_select generic map ( CEIL_KHZ => 85000 )
         mode_valid => ms_valid, mode_idx => ms_idx,
         o_hact=>open, o_vact=>open, o_hfp=>open, o_hsync=>open, o_hbp=>open,
         o_vfp=>open, o_vsync=>open, o_vbp=>open, o_hpol=>open, o_vpol=>open,
-        o_refr=>open, o_pclk_khz=>open, o_supported=>open );
+        o_refr=>open, o_pclk_khz=>open, o_supported=>ms_supported );
+
+    -- 2FF sync the quasi-static mode decision clk10 -> clk100 for the host registers.
+    process(clk100) begin
+        if rising_edge(clk100) then
+            mode_bus_s0 <= ms_valid & edid_ok & ms_supported;
+            mode_bus_s1 <= mode_bus_s0;
+        end if;
+    end process;
 
     -- EDID picker controller (clk10): periodically re-parse the projector EDID; when a
     -- NEW valid mode is picked (and the block-0 checksum is good), latch it and arm an
@@ -626,7 +663,7 @@ i_mode_timing : mode_timing_rom port map (
         mode_idx => clkgen_mode_idx,
         h_active => mt_hact, h_fp => mt_hfp, h_sync => mt_hs, h_bp => mt_hbp,
         v_active => mt_vact, v_fp => mt_vfp, v_sync => mt_vs, v_bp => mt_vbp,
-        h_pol => mt_hpol, v_pol => mt_vpol, pclk_khz => mt_pclk );
+        h_pol => mt_hpol, v_pol => mt_vpol, pclk_khz => mt_pclk, refr => mt_refr );
 
     vg_hStart <= mt_hact + mt_hfp;
     vg_hEnd   <= mt_hact + mt_hfp + mt_hs;

@@ -6,12 +6,14 @@ loader for you first. It is a friendly front-end around Alchitry's own
 command-line loader; you click through four numbered steps instead of typing
 commands.
 
-> ### 📌 Why this lives in the MimasA7_SLI repo
-> This folder is a **reference model** for an end-user bitstream installer. The
-> goal is to build the equivalent one-click flasher for the **Numato Mimas A7**
-> (`../Bitstream/MimasA7_SLI.bin`) so a non-developer can program the board
-> without Vivado or the command line. The whole framework here carries over —
-> only the *loader backend* changes. See
+> ### 📌 What this flashes
+> This is the end-user installer for **this** repo's bitstream,
+> [`../Bitstream/Au2_SLI.bin`](../Bitstream) — so a non-developer can program an
+> Alchitry Au V2 without Vivado or the command line.
+>
+> It also serves as the **reference model** for a future one-click flasher for the
+> **Numato Mimas A7**: the whole framework carries over and only the *loader
+> backend* changes. See
 > **[Adapting this to the Mimas A7](#adapting-this-to-the-mimas-a7)** at the bottom.
 
 ---
@@ -60,15 +62,20 @@ the **[drhalftone/AuV2-SLI](https://github.com/drhalftone/AuV2-SLI)** repository
 setup. An Alchitry Au V2 (Artix-7 FPGA) drives a DLP projector and synchronizes it
 with camera modules so that patterned light can be projected and captured frame by
 frame. The phase images the cameras capture are sent to a host PC for 3-D
-reconstruction. The system scans **1280×720 at 120 FPS**. In brief, the FPGA can:
+reconstruction. In brief, the FPGA can:
 
 - Pass HDMI video from a host PC through to a projector, emitting an edge-paced camera
-  trigger (one trigger per camera FrameTriggerWait rising edge — see
-  [`../GPIO_TIMING.md`](../GPIO_TIMING.md)).
+  trigger (one trigger per camera FrameTriggerWait rising edge).
 - Replace the incoming video with **locally generated SLI patterns** that vary in
   spatial and temporal frequency (driven by lookup tables on the FPGA).
-- Fall back to an **offline mode** using the board's local oscillator when no HDMI
-  input is present, generating patterns at a fixed 1280×720 @ 120 Hz.
+- Fall back to an **offline mode** using the board's own oscillator when no HDMI input
+  is present. The output timing is **EDID-driven**: the FPGA reads the connected
+  display's EDID, picks the best mode it can generate (highest refresh, then highest
+  pixel count), and retunes its pixel clock over DRP to match. The offline path is
+  capped by what the output TMDS serializer can drive (~85 MHz pixel clock), so the
+  top offline mode is **1024×768@75**, with **640×480@60** as the failsafe.
+- Report status over its USB serial port (COM), and answer host commands — including
+  reading back the connected display's **raw EDID** and **which mode it chose** from it.
 - Talk to the cameras over GPIO using the Vimba trigger/ready protocol (trigger out,
   start/stop in, FrameTriggerWait in; + a debug first-frame marker).
 
@@ -84,7 +91,7 @@ Each `.bin` is checked against a known **SHA-256** hash after download. A mismat
 **aborts the flash**, so a corrupted or tampered file never reaches the board:
 
 ```
-Au2_SLI.bin  A2A90F542AB8EB2BEB96F9CE9CCDAC7E5A7E7DD0CC9C0D230B8F76A0E72BBA60
+Au2_SLI.bin  526A7888222090B10F25C3208F3788D5F73110DDF038216F4A00604151470DE2
 ```
 
 ---
@@ -244,7 +251,7 @@ gets installed) and **Step 4** (the command that programs the board).
 
 | Piece | Alchitry Au (this tool) | Mimas A7 (to build) |
 |-------|-------------------------|---------------------|
-| Bitstream source | `qishi-hu/AuV2-SLI` raw `.bin` | `drhalftone/MimasA7_SLI` → `Bitstream/MimasA7_SLI.bin` |
+| Bitstream source | `drhalftone/AuV2-SLI` raw `.bin` | `drhalftone/MimasA7_SLI` → `Bitstream/MimasA7_SLI.bin` |
 | Bitstream SHA-256 | hard-coded in `$BinChoices` | recompute for `MimasA7_SLI.bin` |
 | Loader tool | `Alchitry.exe` (Alchitry Labs V2) | **see options below** |
 | Programming command | `load --bin <f> --board AuV2 --flash` | depends on the chosen loader |

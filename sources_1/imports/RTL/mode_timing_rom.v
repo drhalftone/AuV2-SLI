@@ -23,7 +23,8 @@ module mode_timing_rom (
     output reg  [11:0] v_bp,
     output reg         h_pol,
     output reg         v_pol,
-    output reg  [16:0] pclk_khz       // pixel clock for this mode (debug / cross-check)
+    output reg  [16:0] pclk_khz,      // pixel clock for this mode (debug / cross-check)
+    output reg  [7:0]  refr           // refresh rate in Hz (host readback, reg 0x21)
 );
     // Table storage (mode_table.vh's MROW macro writes every one of these).
     reg [11:0] T_HACT [0:12], T_VACT [0:12];
@@ -49,5 +50,6 @@ module mode_timing_rom (
         h_pol    = T_HPOL [mode_idx];
         v_pol    = T_VPOL [mode_idx];
         pclk_khz = T_PCLK [mode_idx];
+        refr     = T_REFR [mode_idx];
     end
 endmodule

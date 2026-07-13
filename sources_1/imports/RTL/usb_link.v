@@ -43,7 +43,18 @@ module usb_link #(
 
     // ---- captured-EDID read port (rdtbl TGT_EDID) -> edid_merge's 3rd port ----
     output wire [7:0]  edid_rd_addr,
-    input  wire [7:0]  edid_rd_data
+    input  wire [7:0]  edid_rd_data,
+
+    // ---- offline mode decision (regs 0x20..0x2A). Caller supplies these already
+    // synced into clk100; they are quasi-static (change only on a new EDID parse).
+    input  wire [3:0]  mode_idx_i,
+    input  wire        mode_valid_i,
+    input  wire        mode_edid_ok_i,
+    input  wire [7:0]  mode_refr_i,
+    input  wire [11:0] mode_hact_i,
+    input  wire [11:0] mode_vact_i,
+    input  wire [16:0] mode_pclk_i,
+    input  wire [12:0] mode_supp_i
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -117,7 +128,11 @@ module usb_link #(
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
         .lutv_addr(lutv_addr), .lutv_dout(lutv_dout),
-        .edid_rd_addr(edid_rd_addr), .edid_rd_data(edid_rd_data)
+        .edid_rd_addr(edid_rd_addr), .edid_rd_data(edid_rd_data),
+        .mode_idx_i(mode_idx_i), .mode_valid_i(mode_valid_i),
+        .mode_edid_ok_i(mode_edid_ok_i), .mode_refr_i(mode_refr_i),
+        .mode_hact_i(mode_hact_i), .mode_vact_i(mode_vact_i),
+        .mode_pclk_i(mode_pclk_i), .mode_supp_i(mode_supp_i)
     );
 
     // ---- shared transmitter ----
