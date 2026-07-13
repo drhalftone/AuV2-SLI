@@ -1813,7 +1813,7 @@
 			(effects (font (size 1.27 1.27)) (justify left) ))
 		(property "Footprint" "LauCamera:Andon_680-48-SM-G10-R14" (at 170.0 120.0 0)
 			(effects (font (size 1.27 1.27)) (hide yes)))
-		(property "MPN" "680-48-SM-G10-R14" (at 170.0 120.0 0)
+		(property "MPN" "680-48-SM-G10-R14-1" (at 170.0 120.0 0)
 			(effects (font (size 1.27 1.27)) (hide yes)))
 		(property "LCSC" "" (at 170.0 120.0 0)
 			(effects (font (size 1.27 1.27)) (hide yes)))

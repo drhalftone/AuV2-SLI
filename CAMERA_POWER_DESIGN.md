@@ -529,7 +529,37 @@ JLCPCB's format. **Every part except the socket is sourced and assembled by JLCP
 
 | Ref | Part | Note |
 |---|---|---|
-| **U1** | Andon **680-48-SM-G10-R14** — 48-pin LCC socket | **Blank LCSC. DNP for PCBA; hand-solder.** The sensor itself is inserted into the socket and is never assembled. |
+| **U1** | Andon **680-48-SM-G10-R14-1** — 48-pin CLCC socket | **Blank LCSC. DNP for PCBA; hand-solder.** The sensor is inserted into the socket and is never assembled. |
+
+> ### ✅ Socket part number CONFIRMED against onsemi's own reference design.
+>
+> onsemi's **Python 48 headboard BOM** (`31000040 REV4`, from the
+> `NOIP-48PIN-HEAD-BD-A-GEVK` schematic) lists, against the NOIP1SN1300A:
+>
+> ```
+> MFG Part#:  680-48-SM-G10-R14-1
+> MFG:        ANDON SOCKET
+> Count: 1    Ref: U6
+> ```
+>
+> **Note the `-1` suffix** — it is part of the correct part number. This board originally
+> specified `680-48-SM-G10-R14` (no suffix).
+>
+> **It is open-top**, which the lens requires: the same schematic notes *"U6A Socket Cap is NOT
+> USED for 48 Pin Socket Assembly"* — the cap/spacer belongs only to the 84-pin PYTHON 5MP socket
+> (`686-84A-SM-G10-L14-1`).
+>
+> **Sourcing:** Andon direct, or brokers (Perfect Parts, GlobalTek — both RFQ, ~70 units visible
+> across all sources). **No distributor stocks it off the shelf. Buy spares.**
+
+> ### onsemi's own headboard independently validates this power architecture.
+>
+> Their reference design powers the same sensor with a **CS51414 buck** feeding **three NCP3335
+> LDOs** — `-330` (3.3 V), `-180` (1.8 V) and **`-ADJ` (adjustable)**. A switcher making an
+> intermediate rail, then LDOs, with a **separate, trimmable regulator for the pixel supply.**
+>
+> That is structurally what §3 arrives at from first principles — and it is nothing like the
+> ferrite tap the old design used.
 
 > ### ⚠️ Lock the LDOs against JLCPCB "equivalent part" substitution.
 > The common jellybeans (RT9080, ME6211, XC6206, AP7343, TCR2EF33) are **±2 % or worse and fail
