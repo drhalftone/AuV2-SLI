@@ -333,17 +333,18 @@ Bank 13's VCCO is selected by two strap pins on the **50-pin control header (C c
 **This board must strap `VBSEL A` = `VBSEL B` = HIGH.** No other board in the stack may
 drive them. (low = 0-0.9 V, high = 1.1-3.3 V.)
 
-### 6.2 Local regulation — the element connectors have no 2.5 V and no 1.8 V
+### 6.2 There is no 5 V. Everything comes from `+3.3V`.
 
-The element connectors expose **only `+3.3V` and `VDD`**. There is **no 2.5 V and no 1.8 V** on
-any element connector — the Pt's internal 2.5 V rail is bank 13's VCCO and is not brought out.
-**This board generates every sensor rail locally.**
+The Alchitry Pt V2 is a **3.3 V board**. The element connectors expose `+3.3V` on the control
+header (pins 1–15 odd, 4 A available) and nothing else usable.
 
-> **`VDD` is 5 V.** The Pt is powered over **USB-C**. Alchitry spec `VDD` as "5–12 V board
-> power," but this design targets **5 V and only 5 V**. That is a deliberate commitment, and it
-> is what makes the power tree in §6.5 possible: at 5 V in, LDOs are cheap, and `vdd_33` can
-> have real PSRR. **If you ever power the Pt from 12 V, this board's regulators are out of
-> spec.**
+> **The `VDD` pins (control header, 2–16 even) are DELIBERATELY LEFT UNCONNECTED.** Alchitry's
+> pinout page describes `VDD` as "5–12 V board power," but there is no 5 V on this board. Do
+> not design against it, and do not "helpfully" wire it up.
+
+**This board generates every sensor rail from `+3.3V`.** That single constraint shapes the
+whole of §6.5 — most importantly, it means `vdd_33` and `vdd_pix` **cannot be regulated**,
+because you cannot LDO 3.3 V down to 3.3 V.
 
 | Rail | Sensor pins | Spec | Current |
 |---|---|---|---|
@@ -399,99 +400,97 @@ that matters. **The external resistors are the only guarantee.**
 ### 6.5 The power tree
 
 ```
-  VDD (5 V, USB-C) --+--> U2  LDO 1.8 V              --------------> +1V8_CAM   vdd_18   80 mA
-                     |
-                     +--> U3  LDO 3.3 V, LOW-NOISE --+-- C31 ------> +3V3_CAM   vdd_33  140 mA
-                                                     |   10u
-                                                     +-- FB1 ------> +3V3_PIX   vdd_pix   5 mA
-                                                        BLM18
+  +3.3V (DF40 control header)
+     |
+     +--> U2  LDO 1.8 V ----------------------------------> +1V8_CAM   vdd_18   80 mA
+     |                                                       (comes up FIRST)
+     +--> U3  load switch --+-- FB1 (LOW DCR) ------------> +3V3_CAM   vdd_33  140 mA
+           Rds <= 50 mOhm   |
+                            +-- FB2 ---------------------- > +3V3_PIX   vdd_pix   5 mA
 ```
 
-Two LDOs. That is the whole thing.
+One LDO, one switch, two beads.
 
-#### Why `vdd_pix` is not its own rail — and why that is the important part
+#### `U3` is a SWITCH, not a regulator — and that is not a compromise
 
-`vdd_pix` and `vdd_33` are **both 3.3 V**. `vdd_33`'s window is 3.2–3.4 V; `vdd_pix`'s is
-3.25–3.35 V. **A single LDO holding the tighter window satisfies both.** So `vdd_pix` is simply
-`vdd_33` through a ferrite, the bead giving the pixel array its HF isolation.
+**You cannot LDO 3.3 V down to 3.3 V.** There is no headroom. So `vdd_33` and `vdd_pix` are
+*taps* on the Pt's 3.3 V rail, filtered. There is no other option on a 3.3 V board.
 
-**The consequence is the whole point: `vdd_pix` cannot outlive `vdd_33`.**
+**The switch exists to SEQUENCE.** The datasheet needs `vdd_18` up **before** `vdd_33`. But
+`vdd_18` is LDO'd *from* `+3.3V` — so a bare tap on `+3.3V` for `vdd_33` would come up whenever
+the Pt does, i.e. **before** `vdd_18`. Wrong order. Something has to gate `vdd_33`, and a load
+switch is the cheapest thing that can.
 
-The datasheet (p.18) requires power-down in the order `vdd_pix → vdd_33 → vdd_18` and warns that
-*"Any other sequence can cause high peak currents."* An earlier revision fed `vdd_pix` from an
-**independent rail**, which meant it sat at 3.3 V into a dead core for ~9 ms on **every**
-power-down. That took a PMOS clamp, a series resistor and a diode to *mitigate* — and even then
-it was a race.
+#### `FB1`/`FB2` are what give the sensor supply rejection — and a filter beats an LDO here
 
-**Sharing the rail removes the failure mode by construction.** No clamp, no diode, no
-supervisor, no supply monitor. On power-down `vdd_pix` drains back through `FB1`'s 0.38 Ω DCR:
-τ ≈ 5 µs.
+An audit correctly flagged that a **bare** load switch has **no PSRR**: it passes the Pt's 4 A
+buck ripple, and every FPGA and DDR3 transient, straight into the sensor's analog 3.3 V domain.
 
-> This is the topology of **[ruffner/lupa300](https://github.com/ruffner/lupa300)** — a *fabbed*
-> board with the same class of sensor: **one clean LDO, split to the sensitive rails by
-> ferrites, with the LDO's output capacitor before the beads.** Reading their schematic is what
-> exposed this.
+**The fix is a filter, not an LDO.** A ferrite + capacitor rolls off at **−40 dB/decade**,
+while **an LDO's PSRR *degrades* above ~100 kHz** — which is exactly where FPGA and DDR3
+transients live. For the noise that actually threatens this sensor, the passive filter is the
+*better* tool, not the cheaper one.
 
-#### `vdd_33` must be REGULATED, not switched
+> **`FB1` must be LOW-DCR (≤ 50 mΩ). This is a hard spec, not a preference.**
+> It carries **140 mA**. A garden-variety 0.3 Ω bead drops **42 mV** and eats the entire DC
+> budget, pushing `vdd_33` under its 3.2 V floor. A 0.05 Ω bead drops 7 mV and doesn't.
+> `FB2` carries 5 mA — its DCR is irrelevant.
 
-An earlier revision took `vdd_33` through a **load switch** off the Pt's `+3V3_SYS`. That was
-architecturally wrong, in two independent ways:
+#### `vdd_pix` shares the switched node — which kills the power-down bug
 
-- **`+3V3_SYS` is a 4 A ADP5052 buck feeding an XC7A100T and DDR3L.** A load switch has **no
-  PSRR**. Every FPGA and DDR3 transient landed directly on the sensor's **analog** 3.3 V domain.
-  Meanwhile the 5 mA `vdd_pix` got the low-noise LDO. **Backwards.**
-- **The DC budget did not close.** At ±2% on the Pt's rail there were **34 mV** of total IR
-  budget for connector + trace + switch — and **at ±3%, no R<sub>DS(on)</sub> works at all. Out
-  of spec at zero ohms.**
+`vdd_pix` hangs off the **same** switched node as `vdd_33`, through its own bead. So it
+**cannot outlive `vdd_33`**.
 
-Regulating `vdd_33` from `VDD` fixes the PSRR *and* the tolerance with one part.
+The datasheet (p.18) requires power-down as `vdd_pix → vdd_33 → vdd_18` and warns that *"Any
+other sequence can cause high peak currents."* An earlier revision fed `vdd_pix` from an
+**independent** rail, so it sat at 3.3 V into a dead core for ~9 ms on **every** power-down —
+and it took a PMOS clamp, a series resistor and a diode to merely *mitigate*.
 
-#### `U3` — requirements, not yet a part number
+**Sharing the node removes the failure mode by construction.** No clamp, no diode, no
+supervisor. (This is the [ruffner/lupa300](https://github.com/ruffner/lupa300) pattern: one
+source, split to the sensitive rails by ferrites.)
 
-**This is the one part on the board where a substitution silently breaks it.**
+#### ⚠️ THE HONEST COST — `vdd_pix` accuracy is the Pt's accuracy
+
+`vdd_pix`'s window is **3.25–3.35 V (±1.52%)**, and **we cannot regulate 3.3 V → 3.3 V.** So:
+
+> **`vdd_pix`'s tolerance IS the Pt's `+3.3V` tolerance — which Alchitry does not publish.**
+
+If that rail is ±2%, `vdd_pix` sits at 3.234–3.366 V: **marginally outside the window at both
+extremes**, by ~16 mV.
+
+**This is a *Recommended Operating Condition*, not an absolute maximum** (that is 4.3 V). The
+consequence is **pixel performance** — FPN, full-well — **not damage**. It is a real cost and it
+is accepted knowingly, because the alternative (a 5 V rail) **does not exist on this board.**
+
+**Action: measure the Pt's 3.3 V rail the day the board arrives.** If it sits near 3.30 V, this
+is a non-issue. If it is badly off, the fallback is to bring 5 V onto the camera board from its
+own connector — your other stacked boards already carry JSTs, so there is precedent.
+
+#### Part requirements — do not let a BOM optimiser touch these
 
 | | |
 |---|---|
-| Output | 3.3 V |
-| **Total error** | **≤ ±1.5% OVER TEMPERATURE** |
-| Noise / PSRR | low-noise, high-PSRR (it feeds the pixel array) |
-| Current | ≥ 200 mA |
-| **EN V<sub>IH</sub>** | **≤ 1.2 V** — its enable is driven from the **1.8 V** rail |
-| Package | SOT-23-5 / TSOT-23-5 |
+| **`U2`** | LDO 3.3 → 1.8 V, ≥150 mA, EN pin. e.g. `AP2112K-1.8` (SOT-23-5). |
+| **`U3`** | Load switch. **Active-HIGH** enable, **reverse-blocking**, slew-controlled (≥100 µs), **R<sub>DS(on)</sub> ≤ 50 mΩ**, and **EN V<sub>IH</sub> ≤ 1.2 V**. |
+| **`FB1`** | Ferrite, **DCR ≤ 50 mΩ** (carries 140 mA). |
+| **`FB2`** | Ferrite, DCR irrelevant (5 mA). |
 
-Candidate: **`ADP7118ARDZ-3.3`** (TSOT-23-5, V<sub>in</sub> 2.7–20 V, 200 mA, 15 µV RMS,
-PSRR 88 dB). **Verify its over-temperature accuracy against the window before ordering.**
-
-> **"±1%" is not the same as "±1.5% over temperature."** The `vdd_pix` window is **±1.52%**, and
-> a part *sold* as ±1% is typically ±1% at 25 °C and **±2% over temperature** — 3.234–3.366 V,
-> **outside at both ends.** An earlier revision of this README specified "±1% or better," which
-> was itself inadequate. Read the temperature column, not the headline number.
-
-> **Do NOT use the `ADP7158`.** An earlier revision named it. It is wrong three times over: its
-> **abs-max V<sub>IN</sub> is 7 V**; it is a **2 A** part (the load is 5 mA); and it is a 10-lead
-> LFCSP / 8-lead SOIC, **never a SOT-23-5**.
-
-#### `C31` sits at `U3`'s VOUT pin, BEFORE the bead
-
-An LDO's output capacitor is part of its **compensation loop** and must be at the pin. An
-earlier revision put *every* `vdd_pix` capacitor behind `FB1`, leaving the LDO output with
-**zero** capacitance — the bead's impedance then swamps the cap's at loop crossover and the
-regulator can peak or oscillate. Size `C31` from the chosen part's datasheet (typically ≥10 µF)
-and **derate for DC bias**: a 2.2 µF X5R 0402 at 3.3 V is only ~1.2 µF effective.
+> **`U3`'s EN V<sub>IH</sub> ≤ 1.2 V is load-bearing.** Its enable is driven from the **1.8 V**
+> rail — that is what guarantees the power-up order. A switch with a **ratiometric** threshold
+> (0.7 × V<sub>IN</sub> = 2.3 V) **never turns on**, and the sensor comes up half-powered with
+> no obvious symptom. Also check **body-diode orientation**: if it doesn't block VIN→VOUT when
+> off, `vdd_33` comes up regardless of the enable and the sequencing is defeated entirely.
 
 #### Sequencing
 
-*Power-up* is an RC cascade: `R8`/`C29` enables `U2` from `VDD`; `R9`/`C30` enables `U3` from
-**`+1V8_CAM`**. Deriving the second enable from the *first rail* means the order is guaranteed
-**by construction**, not by matched time constants: **`vdd_18` → `vdd_33`** (and `vdd_pix` with
-it, through `FB1`). ~0.6–1.5 ms per stage against a 10 µs minimum.
+*Power-up*: `R8`/`C29` enables `U2` from `+3.3V`; `R9`/`C30` enables `U3` from **`+1V8_CAM`**.
+Deriving the second enable from the *first rail* guarantees the order **by construction**, not
+by matched time constants: **`vdd_18` → `vdd_33`** (and `vdd_pix` with it). ~0.6–1.5 ms per
+stage against a 10 µs minimum.
 
-**That is why `U3`'s EN V<sub>IH</sub> must be ≤ 1.2 V** — its enable asymptote is 1.8 V, not
-3.3 V. A part with a 1.5 V threshold has only 0.3 V of margin; one spec'd **ratiometrically**
-(e.g. 0.7 × V<sub>IN</sub> = 3.5 V) **never turns on at all**, and the sensor comes up
-half-powered.
-
-*Power-down* needs nothing, because `vdd_pix` shares `vdd_33`'s rail. See above.
+*Power-down*: needs nothing. `vdd_pix` shares `vdd_33`'s node, and `vdd_18` outlives both (its
+LDO holds up until `+3.3V` drops below dropout). Order preserved.
 
 #### Decoupling
 
@@ -499,31 +498,34 @@ half-powered.
 |---|---|
 | 11 × **1 µF** | one per supply pin — primary |
 | 11 × **10 nF** | one per supply pin — **HF** |
-| 3 × 10 µF + 3 × 100 nF | per rail |
-| `C31` / `C32` / `C33` | `U3` output; `VDD` input bulk + HF |
+| 10 µF + 100 nF per rail | |
+| `C31`/`C32` on `+3V3_SW`; `C33`/`C34` at `U2`/`U3` VIN | |
 
 **The 10 nF bank is not optional.** There was originally **no capacitor anywhere on this board
 below 100 nF** — while the sensor's **LVDS drivers run off `vdd_18` and toggle at 360 MHz**. A
 1 µF X7R 0402 self-resonates at 3–6 MHz and is *inductive* above that. Compounding it: **both
-inner layers are ground (§11.2) — there is no power plane**, so the rails are `F.Cu` traces; and
-the sensor is **socketed**, adding ~1–3 nH per contact. **The HF PDN was the weakest part of
-this design.**
+inner layers are ground (§11.2) — there is no power plane**; and the sensor is **socketed**,
+adding ~1–3 nH per contact.
 
 #### VBSEL — verified, and clean
 
-`R10`/`R11` (1 k to `+3V3_SYS`) strap `VBSEL_A`/`VBSEL_B` HIGH → **bank 13 VCCO = 2.5 V**.
-Not optional (§3).
+`R10`/`R11` (1 k to `+3V3_SYS`) strap `VBSEL_A`/`VBSEL_B` HIGH → **bank 13 VCCO = 2.5 V**. Not
+optional (§3).
 
 They land on **TPS2116 `PR1` pins** — analog comparator inputs with a ~1.0 V internal reference,
 which is why Alchitry spec a *band* ("low = 0–0.9 V, high = 1.1–3.3 V") rather than a CMOS
-level. The Pt already loads them with **10 kΩ**, so our 1 kΩ gives **3.3 × 10/11 = 3.0 V** —
-comfortably inside the high band, at 0.3 mA.
+level. The Pt already loads them with **10 kΩ**, so our 1 kΩ gives **3.0 V** — comfortably
+inside the high band.
 
 **Nothing else in the stack drives them.** The **Hd**, **Ft+** and **Br** control headers are
-**pure pass-throughs with zero components on any control pin** — verified from their schematics.
-The only unverified link is the **`Sp` spacer**, which has no published schematic. Almost
-certainly a bare pass-through, but **worth 30 seconds with a multimeter** (C38→GND, C40→GND on a
-bare `Sp`) before trusting it.
+pure pass-throughs with **zero components on any control pin** — verified from their schematics.
+The only unverified link is the **`Sp` spacer** (no published schematic). Almost certainly a bare
+pass-through, but **worth 30 seconds with a multimeter** before trusting it.
+
+> Note the Pt V2 being a "3.3 V board" refers to its **power input and default I/O**. Its **32
+> triple-voltage pins (bank 13)** genuinely do support 2.5 V — that is what VBSEL selects, and
+> Vivado independently places `LVDS_25` + `DIFF_TERM` there with VCCO = 2.50 V (§13). The LVDS
+> plan is unaffected by any of this.
 
 ### 6.6 Connectors
 
@@ -1101,7 +1103,7 @@ Be clear about the boundary. Vivado has validated the **FPGA side**. It knows no
 |---|---|---|---|
 | **1** | **🔴 ORDER THE SENSOR AND SOCKET.** `NOIP1SN1300A-QDI` had **49 in stock at DigiKey and a 27-week factory lead**. If that stock goes, the board arrives and sits on a bench for six months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. | Nothing — do it now | **You** |
 | 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. | Item 1 | Andon (one email), or default to `-0` |
-| 3 | **`U3` has requirements, not yet a part number.** 3.3 V, **total error ≤ ±1.5% OVER TEMPERATURE**, low-noise, high-PSRR, ≥200 mA, **EN V<sub>IH</sub> ≤ 1.2 V** (its enable comes from the 1.8 V rail). Candidate `ADP7118ARDZ-3.3` — **verify its over-temp accuracy against the window.** Note "±1%" on a datasheet front page usually means ±2% over temperature, which is **outside** the window. **The BOM is not orderable until this is settled.** | Correct `vdd_pix`, and the sensor coming up at all | Purchasing |
+| 3 | **`U3` (load switch) and `FB1` (ferrite) have hard specs, not yet part numbers.** `U3`: active-high EN, **EN V<sub>IH</sub> ≤ 1.2 V** (driven from the 1.8 V rail — a ratiometric-threshold part **never turns on**), reverse-blocking, slew-controlled, **R<sub>DS(on)</sub> ≤ 50 mΩ**. `FB1`: **DCR ≤ 50 mΩ** — it carries 140 mA, and a 0.3 Ω bead drops 42 mV and pushes `vdd_33` under its floor. **The BOM is not orderable until both are settled.** | `vdd_33` in spec, and the sensor powering up at all | Purchasing |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
 | 5 | Neck-down at the 0.4 mm DF40 pads violates `track_width (min 0.22mm)` — needs an **area-scoped DRC exception**, not a lower global minimum. | Clean DRC | Add once the board exists |
 | 6 | **Impedance geometry is an IPC-2141 approximation (±10%)**, not a field solver. Confirm in KiCad's stackup calculator and **tick "impedance controlled" when ordering** so JLC verifies it. | Signal integrity | At layout |
