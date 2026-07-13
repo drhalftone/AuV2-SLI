@@ -473,12 +473,26 @@ JLCPCB's format. **Every part except the socket is sourced and assembled by JLCP
 | **U4, U5** | LDO 3.3 V (`vdd_33`, `vdd_pix`) | TPS7A2033PDBVR | **C2862740** | SOT-23-5 | Extended |
 | **U2** | LDO 1.8 V (`vdd_18`) | TPS7A2018PDBVR | **C963430** | SOT-23-5 | Extended |
 | **U6, U7** | Supervisor 2.93 V, open-drain (**two — §6**) | TLV803SDBZT | **C702125** | SOT-23-3 | Extended |
-| **L1** | 2.2 µH, Isat ≥1.2 A, DCR ≤98 mΩ | SWPA3012S2R2MT | **C36402** | 3×3×1.2 mm | Extended |
+| **L1** | 2.2 µH, **Isat 3.4 A**, DCR 46 mΩ, shielded, 4×4×2 mm | SMNR4020-2.2UH | **C135262** | 4×4 mm | Extended |
 
-> ⚠️ **L1 stock is thin (~1,330 units at time of writing).** Check it before committing to a
-> build, and have a backup ready — any 2.2 µH ±20 %, Isat ≥ 1.0 A part in a ≤3×3 mm footprint
-> will do. Its footprint (`LauCamera:L_Sunlord_SWPA3012S_3.0x3.0mm`) is project-local, so a
-> substitute may need its own land pattern.
+> ### ⚠️ L1 IS SIZED FOR THE STARTUP INRUSH, NOT THE STEADY-STATE CURRENT.
+>
+> **LTspice, using TI's own TPS61023 model, measured a 1.496 A peak inductor current at
+> start-up** — the boost charging its output caps against its 3.7 A internal current limit. That
+> is **~3× the 0.54 A steady-state peak.** It is not a numerical spike: the current sits above
+> 1.2 A for **15 µs** and above 1.4 A for **6 µs**, on every single power-up.
+>
+> | Part | Isat | vs 1.496 A |
+> |---|---|---|
+> | Sunlord SWPA3012 | 1.2 A | **0.80× — saturates every startup** ✗ |
+> | CENKER CKCS3015 | 1.6 A | **1.07× — no margin** ✗ |
+> | **SXN SMNR4020** | **3.4 A** | **2.27×** ✓ |
+>
+> Both 3×3 mm parts I originally chose were sized on steady-state current and **would saturate**.
+> Reducing the boost output cap does **not** fix it (22 µF → 12 µF only moved the peak
+> 1.496 → 1.454 A) — the inrush is set by the converter's own soft-start, not by the caps.
+>
+> **Do not "optimise" L1 back to a 3×3 part.** Stock is 107,410, so there is no sourcing reason to.
 
 ### Connectors
 
@@ -533,6 +547,73 @@ Dark current roughly doubles every 7 °C — keep heat away from the sensor.
 
 **Place U3, U4 and U2 away from the sensor.** U3 additionally because a 1 MHz switching node next
 to an image sensor is an EMI problem — keep its SW node small and ground-shielded.
+
+---
+
+## 7.5 SPICE verification — real manufacturer models
+
+Simulated in **LTspice** (ngspice could not converge TI's models — see §7.6) using **TI's actual
+PSpice models**: TPS7A20 (SBVM961) ×3, TLV803S (SBVM034) ×2, TPS61023 (SLVMD68). The sensor has
+**no public SPICE model** (confirmed with onsemi) — it is modelled as its datasheet loads plus the
+board's real decoupling.
+
+### Sequencing — PASSES in both directions
+
+| Power-up (need 18 → 33 → pix) | at | gap |
+|---|---|---|
+| `vdd_18` | 0.99 ms | — |
+| `vdd_33` | 211.65 ms | +210.7 ms |
+| `vdd_pix` | 212.26 ms | **+601 µs** |
+
+| Power-down (need pix → 33 → 18) | at | gap |
+|---|---|---|
+| `vdd_pix` | 261.29 ms — **first** ✓ | — |
+| `vdd_33` | 262.07 ms | **+777 µs** |
+| `vdd_18` | 265.77 ms — **last** ✓ | +3.70 ms |
+
+Every gap is **60–380× the required 10 µs**. Both orders correct.
+
+### Steady-state rails — all in spec
+
+| Rail | Simulated | Window | |
+|---|---|---|---|
+| `vdd_18` | 1.7945 V | 1.70 – 1.90 V | ✓ |
+| `vdd_33` | 3.2901 V | 3.20 – 3.40 V | ✓ |
+| `vdd_pix` | **3.2998 V** | **3.25 – 3.35 V** | ✓ dead centre |
+
+### Inrush — no startup lockup, but it resized the inductor
+
+With a pessimistic 50 mΩ source impedance (DF40 + traces + Pt buck), the boost's start-up pulls
+**1.49 A** from `+3V3` and droops it to **3.203 V** — still **273 mV above** the supervisors'
+2.93 V trip. So there is **no power-on oscillation** (the rail does not false-trip U6/U7 and
+restart the boost in a loop). That risk was checked and cleared.
+
+But the same run measured a **1.496 A peak inductor current**, which invalidated both inductors
+originally chosen. See the L1 note in §7.
+
+### ⚠️ What SPICE did NOT and CANNOT confirm
+
+- **The ±1.5 % tolerance windows.** TI's models are typical-value only, with no tolerance data —
+  no Monte Carlo is possible. `vdd_pix`'s accuracy rests on the **datasheet guarantee**, not on
+  this simulation.
+- **What the sensor does if sequencing is violated.** No model exists, and no public data on the
+  internal ESD/level-shift structures. This is *why* the ordering is enforced structurally.
+- **The Pt's actual rail voltage.** 3.278 V is computed from Alchitry's divider. Only a meter
+  confirms it.
+- **Thermal.**
+
+## 7.6 Simulator notes (hard-won — do not repeat this)
+
+- **ngspice cannot run these models.** The TPS61023 will not converge (parameter-less diodes, 100 GΩ
+  `VSWITCH`es, an ideal-diode bridge driven by a **10 A** source). TI's own profile relies on
+  PSpice's `ADVCONV`, which ngspice lacks. The TPS7A20 additionally fails on any VIN ramp slower
+  than ~100 µs — and our boost soft-starts over 700 µs. **LTspice runs all of them unmodified.**
+- **`method=gear` silently breaks TI's LDO model.** Use the default trapezoidal integration.
+- **TI's TPS7A20 model omits the 150 Ω auto-discharge** the datasheet specifies when EN is low.
+  Our power-down ordering *depends* on it, so it must be added externally (a switched 150 Ω), or
+  the simulation will falsely report a slow `vdd_pix` collapse.
+- TI ships `V_out` as a **global** param — make it per-instance or all three LDOs share one output
+  voltage.
 
 ---
 
