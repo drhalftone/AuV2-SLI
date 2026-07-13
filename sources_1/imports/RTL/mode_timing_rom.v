@@ -37,12 +37,12 @@ module mode_timing_rom (
     output reg  [7:0]  refr           // refresh rate in Hz (host readback, reg 0x21)
 );
     // Table storage (mode_table.vh's MROW macro writes every one of these).
-    reg [11:0] T_HACT [0:12], T_VACT [0:12];
-    reg [11:0] T_HFP  [0:12], T_HSYNC[0:12], T_HBP[0:12];
-    reg [11:0] T_VFP  [0:12], T_VSYNC[0:12], T_VBP[0:12];
-    reg [7:0]  T_REFR [0:12];
-    reg [16:0] T_PCLK [0:12];
-    reg        T_HPOL [0:12], T_VPOL[0:12];
+    reg [11:0] T_HACT [0:13], T_VACT [0:13];
+    reg [11:0] T_HFP  [0:13], T_HSYNC[0:13], T_HBP[0:13];
+    reg [11:0] T_VFP  [0:13], T_VSYNC[0:13], T_VBP[0:13];
+    reg [7:0]  T_REFR [0:13];
+    reg [16:0] T_PCLK [0:13];
+    reg        T_HPOL [0:13], T_VPOL[0:13];
 
     initial begin
         `include "mode_table.vh"

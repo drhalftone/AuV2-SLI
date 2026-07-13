@@ -54,13 +54,16 @@ module usb_link #(
     input  wire [11:0] mode_hact_i,
     input  wire [11:0] mode_vact_i,
     input  wire [16:0] mode_pclk_i,
-    input  wire [12:0] mode_supp_i,
+    input  wire [13:0] mode_supp_i,
 
     // ---- radiometric transfer LUT into the pixel datapath (combinational) ----
     // pattern_gen presents the raw cosine on corr_pat_addr and consumes the corrected
     // value on corr_pat_dout in the SAME pipeline stage, so this path is async by design.
     input  wire [7:0]  corr_pat_addr,
-    output wire [7:0]  corr_pat_dout
+    output wire [7:0]  corr_pat_dout,
+
+    // ---- MODEFORCE (reg 0x14): {7:force_en, 3..0:idx} ----
+    output wire [7:0]  mode_force
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -139,7 +142,8 @@ module usb_link #(
         .mode_edid_ok_i(mode_edid_ok_i), .mode_refr_i(mode_refr_i),
         .mode_hact_i(mode_hact_i), .mode_vact_i(mode_vact_i),
         .mode_pclk_i(mode_pclk_i), .mode_supp_i(mode_supp_i),
-        .corr_pat_addr(corr_pat_addr), .corr_pat_dout(corr_pat_dout)
+        .corr_pat_addr(corr_pat_addr), .corr_pat_dout(corr_pat_dout),
+        .mode_force(mode_force)
     );
 
     // ---- shared transmitter ----

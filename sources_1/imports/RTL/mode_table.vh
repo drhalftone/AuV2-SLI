@@ -29,4 +29,19 @@
 `MROW(11,  800, 600,  60, 40000,  40, 128,  88,   1,  4, 23,  1, 1)  // 800x600@60   DMT
 `MROW(12,  640, 480,  60, 25175,  16,  96,  48,  10,  2, 33,  0, 0)  // 640x480@60   DMT (FAILSAFE / VIC 1)
 
+// ---------------------------------------------------------------------------
+// idx 13 -- ABOVE the old 85 MHz ceiling. UNDER TEST on the Au V2.
+//
+// 1280x1024@60 DMT: 108.000 MHz pixel -> serializer x5 = 540 MHz. The 85 MHz ceiling
+// was inherited verbatim from the Mimas A7 (a -1 50T part); the Au V2 is a -2 grade
+// with a higher OSERDES/BUFG ceiling (~600 MHz on the x5 clock, i.e. ~120 MHz pixel),
+// so this should fit -- with only ~10% margin. If the output blacks out at 108 MHz,
+// THIS is the mode to drop and the ceiling to put back.
+//
+// It is EXACTLY generatable: M=54 D=5 O0=10 O2=2 -> VCO 1080, pixel 108.000 MHz.
+// (1680x1050@60RB, 119 MHz, has NO integer M/D/O solution under O0 = 5*O2 -- do not
+// bother adding it.)
+// ---------------------------------------------------------------------------
+`MROW(13, 1280,1024,  60,108000,  48, 112, 248,   1,  3, 38,  1, 1)  // 1280x1024@60 DMT (108 MHz)
+
 `undef MROW

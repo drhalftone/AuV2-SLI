@@ -3,8 +3,8 @@
 // drp_clkgen13 - full 13-mode DRP pixel clock generator (Phase D2).
 //   Wraps drp_recfg (13-mode controller) + MMCME2_ADV. Present MODE_IDX (0..12,
 //   mode_table.vh order), pulse SEN; the MMCM retargets pixel/x1/x5 to that mode.
-//   MMCM power-up params = idx 2 (1024x768@75, the FASTEST mode) so Vivado STA
-//   analyses the worst-case clock frequencies.
+//   MMCM power-up params = idx 13 (1280x1024@60, 108 MHz -- the FASTEST mode) so
+//   Vivado STA analyses the worst-case clock frequencies (x5 = 540 MHz).
 //==============================================================================
 module drp_clkgen13 (
     input  wire clk100,
@@ -27,15 +27,22 @@ module drp_clkgen13 (
         .DWE(dwe), .DEN(den), .DADDR(daddr), .DI(di), .DCLK(dclk), .RST_MMCM(rst_mmcm)
     );
 
-    // power-up = idx 2 (1024x768@75): M=59 D=5 O0=15 O1=15 O2=3 -> VCO 1180, pix 78.67, x5 393
+    // Power-up = idx 13 (1280x1024@60): M=54 D=5 O0=10 O1=10 O2=2 -> VCO 1080,
+    // pix 108.000, x5 = 540 MHz.
+    //
+    // These parameters are what Vivado's STA analyses. They MUST track the FASTEST mode
+    // the DRP can retune to, not the power-on-convenient one: if they said 78.67 MHz
+    // (idx2, x5 = 393 MHz) while the design can be reconfigured to 108 MHz (x5 = 540 MHz),
+    // timing would be signed off against a clock the hardware never actually runs at, and
+    // the serializer paths would be unvalidated at their real worst case.
     MMCME2_ADV #(
         .BANDWIDTH("OPTIMIZED"), .CLKOUT4_CASCADE("FALSE"), .COMPENSATION("ZHOLD"),
-        .STARTUP_WAIT("FALSE"), .DIVCLK_DIVIDE(5), .CLKFBOUT_MULT_F(59.000),
+        .STARTUP_WAIT("FALSE"), .DIVCLK_DIVIDE(5), .CLKFBOUT_MULT_F(54.000),
         .CLKFBOUT_PHASE(0.000), .CLKFBOUT_USE_FINE_PS("FALSE"),
-        .CLKOUT0_DIVIDE_F(15.000), .CLKOUT0_PHASE(0.000), .CLKOUT0_DUTY_CYCLE(0.500),
+        .CLKOUT0_DIVIDE_F(10.000), .CLKOUT0_PHASE(0.000), .CLKOUT0_DUTY_CYCLE(0.500),
         .CLKOUT0_USE_FINE_PS("FALSE"),
-        .CLKOUT1_DIVIDE(15), .CLKOUT1_PHASE(0.000), .CLKOUT1_DUTY_CYCLE(0.500),
-        .CLKOUT2_DIVIDE(3),  .CLKOUT2_PHASE(0.000), .CLKOUT2_DUTY_CYCLE(0.500),
+        .CLKOUT1_DIVIDE(10), .CLKOUT1_PHASE(0.000), .CLKOUT1_DUTY_CYCLE(0.500),
+        .CLKOUT2_DIVIDE(2),  .CLKOUT2_PHASE(0.000), .CLKOUT2_DUTY_CYCLE(0.500),
         .CLKIN1_PERIOD(10.000), .REF_JITTER1(0.010)
     ) i_mmcm (
         .CLKFBOUT(clkfb), .CLKFBOUTB(),

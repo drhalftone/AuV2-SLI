@@ -5,7 +5,7 @@
 //   Reads the connected display's EDID (via i2c_master_edid's rd_addr/rd_data
 //   read-back port, or a TB RAM), determines which curated table modes it
 //   supports, and picks the best by HIGHEST REFRESH -> HIGHEST PIXEL COUNT under
-//   the 85 MHz ceiling.
+//   the pixel-clock ceiling (CEIL_KHZ).
 //
 //   The pick walks the PRIO[] list (see below), NOT the raw table index: mode_idx
 //   is a shared key into mode_table.vh AND drp_recfg's per-mode MMCM settings, so
@@ -26,14 +26,18 @@
 //   Empty intersection -> 640x480@60 failsafe (table index 12).
 //==============================================================================
 module mode_select #(
-    // Pixel-clock ceiling. This is a BACKSTOP, not the real gate: every mode in the
-    // curated table already fits (the table maxes out at 78.75 MHz, idx2), so today
-    // it never rejects anything. It reflects what the output TMDS serializer can
-    // drive -- the OSERDES needs a 5x clock, and 78.67 MHz (x5 = 393 MHz) already
-    // blacked the output once on a skew regression (see clk_selector.v). The ceiling
-    // is what kept faster modes OUT of the table in the first place; keep it in the
-    // pick so a future table entry cannot silently exceed the serializer.
-    parameter integer CEIL_KHZ = 85000
+    // Pixel-clock ceiling -- what the output TMDS serializer can drive. The OSERDES
+    // needs a 5x clock, so this caps x5 too.
+    //
+    // Was 85 MHz, a figure inherited verbatim from the Mimas A7 (a -1 50T part). The
+    // Au V2 is a -2 grade with a higher OSERDES/BUFG ceiling (~600 MHz on x5, i.e.
+    // ~120 MHz pixel), so it was leaving headroom on the table. Raised to 110 MHz to
+    // admit idx13 (1280x1024@60, 108 MHz, x5 = 540 MHz) -- UNDER TEST on this board.
+    //
+    // If 108 MHz blacks the output, put this back to 85000 and drop idx13. Note
+    // 78.67 MHz (x5 = 393 MHz) already blacked the output once on a clock-skew
+    // regression (see clk_selector.v), so the margin here is real, not theoretical.
+    parameter integer CEIL_KHZ = 110000
 )(
     input  wire        clk,
     input  wire        rst,
@@ -50,9 +54,9 @@ module mode_select #(
     output reg         o_hpol, o_vpol,
     output reg  [7:0]  o_refr,        // selected refresh rate (Hz)
     output reg  [16:0] o_pclk_khz,
-    output reg  [12:0] o_supported    // debug: the supported mask
+    output reg  [13:0] o_supported    // debug: the supported mask (bit i = table index i)
 );
-    localparam integer NMODE = 13;
+    localparam integer NMODE = 14;
     localparam [3:0]   FAILSAFE = 4'd12;
 
     // ---- selection priority: HIGHEST REFRESH -> HIGHEST PIXEL COUNT ----
@@ -78,11 +82,12 @@ module mode_select #(
         PRIO[5]  = 4'd6;    // 800x600@72    480,000   (72 Hz now beats 70 Hz)
         PRIO[6]  = 4'd7;    // 640x480@72    307,200
         PRIO[7]  = 4'd5;    // 1024x768@70   786,432
-        PRIO[8]  = 4'd9;    // 1280x800@60 1,024,000   (more pixels wins the 60 Hz tie)
-        PRIO[9]  = 4'd8;    // 1280x720@60   921,600
-        PRIO[10] = 4'd10;   // 1024x768@60   786,432
-        PRIO[11] = 4'd11;   // 800x600@60    480,000
-        PRIO[12] = 4'd12;   // 640x480@60    307,200  (failsafe)
+        PRIO[8]  = 4'd13;   // 1280x1024@60 1,310,720  (most pixels at 60 Hz)
+        PRIO[9]  = 4'd9;    // 1280x800@60  1,024,000
+        PRIO[10] = 4'd8;    // 1280x720@60    921,600
+        PRIO[11] = 4'd10;   // 1024x768@60    786,432
+        PRIO[12] = 4'd11;   // 800x600@60     480,000
+        PRIO[13] = 4'd12;   // 640x480@60     307,200  (failsafe)
     end
 
     // ---- curated table (indexed by mode_idx; NOT in priority order -- see PRIO) ----
@@ -106,7 +111,7 @@ module mode_select #(
     localparam integer A_LO = 35, A_HI = 125;
     reg [7:0] edb [0:A_HI-A_LO];        // 91 bytes
 
-    reg [12:0] supported;
+    reg [13:0] supported;
     integer i;
 
     // ---- FSM ----
@@ -124,10 +129,14 @@ module mode_select #(
     wire [1:0]  s_aspect = sb1[7:6];
     wire [7:0]  s_refr   = {2'd0, sb1[5:0]} + 8'd60;
     wire [19:0] s_h20    = {8'd0, s_hact};
+    // 5:4 (2'b10) used to return 12'hFFF ("not in table") -- that is why a display
+    // advertising 1280x1024 as a Standard Timing could never match. idx13 is 5:4, so
+    // decode it: Vactive = Hactive * 4/5 (1280 -> 1024). Constant divide; this runs on
+    // the slow clk10, which is why mode_select is on clk10 in the first place.
     wire [11:0] s_vact   = (s_aspect==2'b00) ? ((s_h20*20'd5) >> 3) :  // 16:10
                            (s_aspect==2'b01) ? ((s_h20*20'd3) >> 2) :  // 4:3
                            (s_aspect==2'b11) ? ((s_h20*20'd9) >> 4) :  // 16:9
-                                                12'hFFF;               // 5:4 (not in table)
+                                               ((s_h20*20'd4) / 20'd5); // 5:4
     wire        s_valid  = ~((sb0==8'h01)&&(sb1==8'h01)) && (sb0!=8'h00);
 
     // ------- combinational decode of the current DTD d (=k) ---------------------
@@ -159,11 +168,11 @@ module mode_select #(
 
     always @(posedge clk) begin
         if (rst) begin
-            st <= S_IDLE; mode_valid <= 1'b0; supported <= 13'd0;
+            st <= S_IDLE; mode_valid <= 1'b0; supported <= 14'd0;
         end else case (st)
         // ----------------------------------------------------------------
         S_IDLE: if (start) begin
-                    supported <= 13'd0; saddr <= A_LO[7:0]; sub <= 2'd0;
+                    supported <= 14'd0; saddr <= A_LO[7:0]; sub <= 2'd0;
                     mode_valid <= 1'b0; st <= S_SWEEP;
                 end
         // ---- copy EDID bytes 35..125 into edb (3 cycles/byte: addr/wait/capture)

@@ -303,7 +303,8 @@ architecture Behavioral of Au2_SLI is
                mode_hact_i    : in STD_LOGIC_VECTOR(11 downto 0) := (others => '0');
                mode_vact_i    : in STD_LOGIC_VECTOR(11 downto 0) := (others => '0');
                mode_pclk_i    : in STD_LOGIC_VECTOR(16 downto 0) := (others => '0');
-               mode_supp_i    : in STD_LOGIC_VECTOR(12 downto 0) := (others => '0') );
+               mode_supp_i    : in STD_LOGIC_VECTOR(13 downto 0) := (others => '0');
+               mode_force     : out STD_LOGIC_VECTOR(7 downto 0) );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -344,7 +345,7 @@ architecture Behavioral of Au2_SLI is
                o_hpol : out std_logic; o_vpol : out std_logic;
                o_refr : out std_logic_vector(7 downto 0);
                o_pclk_khz : out std_logic_vector(16 downto 0);
-               o_supported: out std_logic_vector(12 downto 0) );
+               o_supported: out std_logic_vector(13 downto 0) );   -- 14 modes as of idx13
     end component;
 
     signal merge_dbg2 : std_logic_vector(15 downto 0);
@@ -424,8 +425,13 @@ architecture Behavioral of Au2_SLI is
     -- on clk10, so its supported mask / valid flag are 2FF-synced into clk100 here.
     -- Quasi-static: they only change when a new EDID is parsed (~0.1 s cadence), so a
     -- torn sample is not a concern for a diagnostic read.
-    signal ms_supported : std_logic_vector(12 downto 0);
-    signal mode_bus_s0, mode_bus_s1 : std_logic_vector(14 downto 0) := (others => '0');
+    signal ms_supported : std_logic_vector(13 downto 0);
+    signal mode_bus_s0, mode_bus_s1 : std_logic_vector(15 downto 0) := (others => '0');
+
+    -- MODEFORCE (reg 0x14): {7:force_en, 3..0:idx}. Pins the offline mode, overriding the
+    -- EDID pick -- the only way to reach a mode the EDID would never steer to.
+    signal mode_force_bus : std_logic_vector(7 downto 0);
+    signal mode_idx_f, mode_idx_f_q : std_logic_vector(3 downto 0) := "0010";
     signal vg_hStart, vg_hEnd, vg_hMax : std_logic_vector(11 downto 0);
     signal vg_vStart, vg_vEnd, vg_vMax : std_logic_vector(11 downto 0);
 begin
@@ -464,13 +470,14 @@ begin
         -- clk100-synced one that drives the clock + timing), so the host reads the
         -- mode actually in use, not a candidate mode_select may not have applied yet.
         mode_idx_i     => clkgen_mode_idx,
-        mode_valid_i   => mode_bus_s1(14),
-        mode_edid_ok_i => mode_bus_s1(13),
+        mode_valid_i   => mode_bus_s1(15),
+        mode_edid_ok_i => mode_bus_s1(14),
         mode_refr_i    => mt_refr,
         mode_hact_i    => mt_hact,
         mode_vact_i    => mt_vact,
         mode_pclk_i    => mt_pclk,
-        mode_supp_i    => mode_bus_s1(12 downto 0) );
+        mode_supp_i    => mode_bus_s1(13 downto 0),
+        mode_force     => mode_force_bus );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -600,7 +607,7 @@ ref_clk_pll : ref_clk
     clk125 <= offline_pix;        -- offline pixel + word clock (clk_selector I0)
     clk625 <= offline_pix_x5;     -- offline 5x serializer clock (clk_selector I0)
 
-    clkgen_mode_idx <= idx_s1;   -- synced picked index drives both clock and timing
+    clkgen_mode_idx <= mode_idx_f;   -- EDID pick or MODEFORCE override; drives clock + timing ROM
 
 i_drp_clkgen13 : drp_clkgen13 port map (
         clk100   => clk100,
@@ -652,12 +659,29 @@ i_mode_select : mode_select generic map ( CEIL_KHZ => 85000 )
         end if;
     end process;
 
-    -- CDC into the clk100 / DRP domain: quasi-static index (2FF) + apply edge (3FF -> pulse).
+    -- CDC into the clk100 / DRP domain: quasi-static index (2FF), then the MODEFORCE
+    -- override, then a SEN pulse on ANY change of the resulting index.
+    --
+    -- SEN used to be derived from sen_tgl (an edge raised by the clk10 EDID-apply logic).
+    -- That only fires for the EDID path, so a host-forced index would have retargeted the
+    -- timing ROM while leaving the MMCM on the OLD pixel clock -- 1280x1024 geometry
+    -- clocked at 78 MHz. Trigger the retune off the applied index itself instead, so both
+    -- sources reconfigure the clock. (sen_tgl is now unused.)
     process(clk100) begin
         if rising_edge(clk100) then
             idx_s0 <= applied_idx; idx_s1 <= idx_s0;
-            sen_s  <= sen_s(1 downto 0) & sen_tgl;
-            clkgen_sen <= sen_s(2) xor sen_s(1);                -- 1-clk100 SEN pulse per apply
+
+            if mode_force_bus(7) = '1' then                     -- 0x14 force_en
+                mode_idx_f <= mode_force_bus(3 downto 0);
+            else
+                mode_idx_f <= idx_s1;                           -- EDID pick
+            end if;
+            mode_idx_f_q <= mode_idx_f;
+
+            -- 1-clk100 SEN pulse, raised the cycle AFTER the index settles.
+            if mode_idx_f /= mode_idx_f_q then clkgen_sen <= '1';
+            else                               clkgen_sen <= '0';
+            end if;
         end if;
     end process;
 

@@ -12,11 +12,12 @@
 //   per mode). CLKOUT0=CLKOUT1=pixel(=x1), CLKOUT2=x5(=5*pixel); CLKOUT3..6 unused.
 //
 //   Per-mode integer M(mult) / D(divclk) / O0(pixel divide) / O2(x5 divide), in the
-//   SAME index order as mode_table.vh (0=highest priority ... 12=640x480@60 failsafe):
+//   SAME index order as mode_table.vh. NOTE: index != priority (mode_select walks an
+//   explicit PRIO[] list); 12 is the failsafe. drp_recfg is 14-mode as of idx13.
 //     idx mode          M   D  O0  O2     pixel
 //      0  800x600@120   11  1  15   3   73.33 MHz
 //      1  640x480@120   55  7  15   3   52.38
-//      2  1024x768@75   59  5  15   3   78.67   <- fastest (MMCM power-up = this)
+//      2  1024x768@75   59  5  15   3   78.67
 //      3  800x600@75    52  7  15   3   49.52
 //      4  640x480@75    63  5  40   8   31.50   <- exact (see note below)
 //      5  1024x768@70   15  2  10   2   75.00
@@ -27,6 +28,7 @@
 //     10  1024x768@60   13  2  10   2   65.00
 //     11  800x600@60     6  1  15   3   40.00
 //     12  640x480@60    34  3  45   9   25.19  (failsafe)
+//     13  1280x1024@60  54  5  10   2  108.00   <- FASTEST (x5=540MHz; MMCM power-up = this)
 //
 //   Pixel clock accuracy. Reachable set is 20*M/(O2*D) with integer M/D/O and
 //   O0 = 5*O2 (the serializer needs an exactly-5x clock), so most targets are only
@@ -76,7 +78,8 @@ module drp_recfg (
     localparam [37:0] CNT1 = mmcm_count_calc(8'd1, 0, 50000);   // unused CLKOUT3..6 = /1
 
     // ---- declarations (all module-level state up front) ----
-    reg [3:0]  sel = 4'd2;                 // selected mode; power-up = fastest (idx2)
+    reg [3:0]  sel = 4'd13;                // selected mode; power-up = FASTEST (idx13, 108 MHz)
+                                           // must match drp_clkgen13's MMCME2_ADV power-up params
     reg [37:0] selCLKOUT0, selCLKOUT2, selCLKFB, selDIVCLK;
     reg [39:0] selLOCK;
     reg [9:0]  selFILT;
@@ -128,6 +131,16 @@ module drp_recfg (
         4'd11: begin selCLKFB=mmcm_count_calc(8'd6,0,50000);  selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd15,0,50000); selCLKOUT2=mmcm_count_calc(8'd3,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd6);  selFILT=mmcm_filter_lookup(8'd6,"OPTIMIZED"); end
+        // idx13: 1280x1024@60, 108.000 MHz EXACT (M=54 D=5 O0=10 O2=2 -> VCO 1080).
+        // x5 = 540 MHz: the FASTEST clock this design generates. drp_clkgen13's MMCM
+        // power-up parameters are set to this mode so Vivado's STA analyses the
+        // worst-case (fastest) clock -- if they lagged behind, timing would be signed
+        // off against a clock the design never actually runs at.
+        // MUST come before `default` -- idx13 would otherwise fall through to the
+        // 640x480 failsafe and clock 1280x1024 geometry at 25 MHz.
+        4'd13: begin selCLKFB=mmcm_count_calc(8'd54,0,50000); selDIVCLK=mmcm_count_calc(8'd5,0,50000);
+                     selCLKOUT0=mmcm_count_calc(8'd10,0,50000); selCLKOUT2=mmcm_count_calc(8'd2,0,50000);
+                     selLOCK=mmcm_lock_lookup(8'd54); selFILT=mmcm_filter_lookup(8'd54,"OPTIMIZED"); end
         default: begin // idx 12 failsafe 640x480@60
                      selCLKFB=mmcm_count_calc(8'd34,0,50000); selDIVCLK=mmcm_count_calc(8'd3,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd45,0,50000); selCLKOUT2=mmcm_count_calc(8'd9,0,50000);

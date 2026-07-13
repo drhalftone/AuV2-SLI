@@ -29,6 +29,10 @@
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
 //   0x01 VERSION = 0x01          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
 //   0x10 PINS    = {eff_sw[3:0], phys_sw[3:0]}  (RO -- active vs physical R/G/B/orient)
+//   0x14 MODEFORCE = {7:force_en, 3..0:idx}  (R/W -- pin the offline mode to idx,
+//        overriding mode_select's EDID pick. For bringing up a new high-clock mode on a
+//        display whose EDID would otherwise always steer to a lower-clock, higher-refresh
+//        mode. force_en=0 hands control back to the EDID.)
 //   0x13 SLICTRL = {7:sw_en, 6:mode_en, 5:mode_val, 3:R,2:G,1:B,0:orient}  (R/W)
 //        sw_en   : USB drives R/G/B/orient instead of the physical SW[3:0] pins.
 //        mode_en : USB drives the SLI pattern enable instead of the camera "mode" GPIO
@@ -99,7 +103,7 @@ module uart_ctrl #(
     input  wire [11:0] mode_hact_i,     // active pixels
     input  wire [11:0] mode_vact_i,     // active lines
     input  wire [16:0] mode_pclk_i,     // pixel clock (kHz)
-    input  wire [12:0] mode_supp_i,     // 13-bit supported-mode mask
+    input  wire [13:0] mode_supp_i,     // 14-bit supported-mode mask
 
     // ---- radiometric transfer LUT, live in the PIXEL datapath ----
     // pattern_gen's LUT seam: it presents the raw cosine value and consumes the
@@ -112,7 +116,15 @@ module uart_ctrl #(
     // pixel_clk. No handshake -- a table upload takes a few ms and tears the curve for
     // that window (a few pixels get a mix of old/new). Upload while not scanning.
     input  wire [7:0]  corr_pat_addr,
-    output wire [7:0]  corr_pat_dout
+    output wire [7:0]  corr_pat_dout,
+
+    // ---- MODEFORCE (reg 0x14, R/W) -- bring-up / bring-down of new modes ----
+    // {7:force_en, 3..0:idx}. When force_en=1 the host pins the offline mode to idx
+    // instead of whatever mode_select picked from the EDID. Needed because the pick is
+    // refresh-first: a display that supports BOTH 1024x768@75 and 1280x1024@60 will
+    // always choose the 75 Hz mode, so a new high-pixel-clock mode can never be reached
+    // -- and therefore never tested -- on such a display without forcing it.
+    output reg  [7:0]  mode_force
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
@@ -158,6 +170,7 @@ module uart_ctrl #(
             8'h06:   regread = {6'b0, sli_ctrl[7], (corr_ld | lut_ld | lutv_ld)};
             8'h10:   regread = pins;
             8'h13:   regread = sli_ctrl;
+            8'h14:   regread = mode_force;
             // ---- offline mode decision (read-only) ----
             8'h20:   regread = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   regread = mode_refr_i;
@@ -169,7 +182,7 @@ module uart_ctrl #(
             8'h27:   regread = mode_pclk_i[15:8];
             8'h28:   regread = {7'b0, mode_pclk_i[16]};
             8'h29:   regread = mode_supp_i[7:0];
-            8'h2A:   regread = {3'b0, mode_supp_i[12:8]};
+            8'h2A:   regread = {2'b0, mode_supp_i[13:8]};
             default: regread = 8'h00;
         endcase
     endfunction
@@ -227,6 +240,7 @@ module uart_ctrl #(
         if (rst) begin
             state <= S_SYNC; tx_send <= 1'b0; sli_ctrl <= 8'h00;
             corr_ld <= 1'b0; lut_ld <= 1'b0; lutv_ld <= 1'b0;
+            mode_force <= 8'h00;       // force_en=0 -> EDID pick is in charge
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
         end else begin
@@ -253,8 +267,10 @@ module uart_ctrl #(
                 S_WCK:   if (rx_valid) begin
                     if (w_sum != 8'h00) begin            // bad checksum
                         resp[0] <= ACK_E; resp_len <= 2'd1;
-                    end else if (addr == 8'h13) begin    // the writable register
+                    end else if (addr == 8'h13) begin    // SLI control / overrides
                         sli_ctrl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h14) begin    // MODEFORCE (bring-up / test)
+                        mode_force <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else begin                       // RO / undefined
                         resp[0] <= ACK_N; resp_len <= 2'd1;
                     end
