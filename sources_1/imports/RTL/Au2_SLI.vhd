@@ -292,8 +292,15 @@ architecture Behavioral of Au2_SLI is
                lut_addr  : in  STD_LOGIC_VECTOR(9 downto 0)  := (others => '0');
                lut_dout  : out STD_LOGIC_VECTOR(7 downto 0);
                lutv_addr : in  STD_LOGIC_VECTOR(10 downto 0) := (others => '0');
-               lutv_dout : out STD_LOGIC_VECTOR(7 downto 0) );
+               lutv_dout : out STD_LOGIC_VECTOR(7 downto 0);
+               -- captured-EDID read port -> edid_merge's 3rd port (rdtbl TGT_EDID)
+               edid_rd_addr : out STD_LOGIC_VECTOR(7 downto 0);
+               edid_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0') );
     end component;
+
+    -- host EDID dump: usb_link drives the address, edid_merge returns the byte
+    signal edid_host_addr : std_logic_vector(7 downto 0);
+    signal edid_host_data : std_logic_vector(7 downto 0);
 
     component edid_merge is
         Port ( clk100       : in    STD_LOGIC;
@@ -308,6 +315,8 @@ architecture Behavioral of Au2_SLI is
                dbg2         : out   STD_LOGIC_VECTOR(15 downto 0);
                mode_rd_addr : in    STD_LOGIC_VECTOR(7 downto 0);
                mode_rd_data : out   STD_LOGIC_VECTOR(7 downto 0);
+               host_rd_addr : in    STD_LOGIC_VECTOR(7 downto 0);
+               host_rd_data : out   STD_LOGIC_VECTOR(7 downto 0);
                edid_ok      : out   STD_LOGIC );
     end component;
 
@@ -425,7 +434,8 @@ begin
         sli_ctrl => sli_ctrl_bus, sli_ctrl_en => sli_ctrl_en_w, lut_loaded => open,
         corr_addr => "00000000",    corr_dout => open,
         lut_addr  => "0000000000",  lut_dout  => open,
-        lutv_addr => "00000000000", lutv_dout => open );
+        lutv_addr => "00000000000", lutv_dout => open,
+        edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -443,6 +453,8 @@ begin
         dbg2         => merge_dbg2,
         mode_rd_addr => mode_rd_addr,
         mode_rd_data => mode_rd_data,
+        host_rd_addr => edid_host_addr,
+        host_rd_data => edid_host_data,
         edid_ok      => edid_ok );
     merge_dbg <= merge_dbg2(7 downto 0);
     -- LED bus: normal status byte (led_i) when video is live, else the idle

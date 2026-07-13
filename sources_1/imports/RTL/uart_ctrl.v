@@ -20,6 +20,10 @@
 //   rdtbl  : A5 72 TGT CK               CK: (0x72+TGT+CK)            == 0 mod256
 //            -> TGT D[0..N-1] CK2  with (TGT+sum(D)+CK2)==0 ; or 'E' on bad CK|target
 //            (same N per TGT as upload; lets the host verify an uploaded table)
+//            TGT 0x03 = EDID: 256 B of the display's captured EDID (READ-ONLY --
+//            it is not an upload target; A5 5B 03 is rejected with 'E'). Always
+//            256 B; if the display has no extension block, bytes 128..255 are
+//            stale RAM -- byte 0x7E of block 0 is the authoritative ext count.
 //
 // Registers (read any address -> data, undefined reads return 0x00):
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
@@ -57,13 +61,21 @@ module uart_ctrl #(
     // Defaulted in the VHDL component decl so the top can leave them open for now.
     input  wire [7:0]  corr_addr,  output reg [7:0] corr_dout,   // 256-entry correction
     input  wire [9:0]  lut_addr,   output reg [7:0] lut_dout,    // 720-entry row cosine
-    input  wire [10:0] lutv_addr,  output reg [7:0] lutv_dout    // 1280-entry col cosine
+    input  wire [10:0] lutv_addr,  output reg [7:0] lutv_dout,   // 1280-entry col cosine
+
+    // ---- captured-EDID read port (TGT_EDID) ----
+    // Unlike the tables above, this RAM lives in edid_merge, so we DRIVE the
+    // address outward and the data comes back registered one clock later --
+    // the same latency as the local RAMs, so S_RTAB needs no special-casing.
+    output wire [7:0]  edid_rd_addr,
+    input  wire [7:0]  edid_rd_data
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
     localparam [7:0] OP_W = 8'h57, OP_R = 8'h52, OP_L = 8'h5B, OP_LR = 8'h72;  // W R upload read-table('r')
     localparam [7:0] ACK_K = 8'h4B, ACK_E = 8'h45, ACK_N = 8'h4E;
     localparam [7:0] TGT_LUT = 8'h00, TGT_LUTV = 8'h01, TGT_CORR = 8'h02;
+    localparam [7:0] TGT_EDID = 8'h03;   // read-only: the display's captured EDID
 
     // ---- table RAMs (write-through during upload; read ports for Stage 2) ----
     reg [7:0] corr [0:255];
@@ -109,10 +121,16 @@ module uart_ctrl #(
     reg [3:0]  state = S_SYNC;
     reg [7:0]  addr, dbyte, sum8;
     reg [11:0] cnt, len;             // up to 1280
-    reg [1:0]  tgt;                  // 0=lut 1=lutv 2=corr
+    reg [1:0]  tgt;                  // 0=lut 1=lutv 2=corr 3=edid
 
     // readback byte source (selected by target)
-    wire [7:0] rb_dout = (tgt == 2'd2) ? corr_dout : (tgt == 2'd1) ? lutv_dout : lut_dout;
+    wire [7:0] rb_dout = (tgt == 2'd3) ? edid_rd_data :
+                         (tgt == 2'd2) ? corr_dout    :
+                         (tgt == 2'd1) ? lutv_dout    : lut_dout;
+
+    // EDID RAM address (external, in edid_merge). Only sampled while we are
+    // streaming TGT_EDID; harmless otherwise -- it is a pure read port.
+    assign edid_rd_addr = rd_idx[7:0];
 
     // response buffer (1 or 3 bytes)
     reg [7:0]  resp [0:2];
@@ -235,6 +253,7 @@ module uart_ctrl #(
                         TGT_LUT:  begin tgt <= 2'd0; len <= 12'd720;  end
                         TGT_LUTV: begin tgt <= 2'd1; len <= 12'd1280; end
                         TGT_CORR: begin tgt <= 2'd2; len <= 12'd256;  end
+                        TGT_EDID: begin tgt <= 2'd3; len <= 12'd256;  end  // read-only
                         default:  begin tgt <= 2'd0; len <= 12'd0;    end  // unknown -> rejected
                     endcase
                     state <= S_RTCK;

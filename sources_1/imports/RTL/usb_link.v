@@ -39,7 +39,11 @@ module usb_link #(
     output wire        lut_loaded,
     input  wire [7:0]  corr_addr,  output wire [7:0] corr_dout,
     input  wire [9:0]  lut_addr,   output wire [7:0] lut_dout,
-    input  wire [10:0] lutv_addr,  output wire [7:0] lutv_dout
+    input  wire [10:0] lutv_addr,  output wire [7:0] lutv_dout,
+
+    // ---- captured-EDID read port (rdtbl TGT_EDID) -> edid_merge's 3rd port ----
+    output wire [7:0]  edid_rd_addr,
+    input  wire [7:0]  edid_rd_data
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -112,7 +116,8 @@ module usb_link #(
         .sli_ctrl(sli_ctrl), .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
-        .lutv_addr(lutv_addr), .lutv_dout(lutv_dout)
+        .lutv_addr(lutv_addr), .lutv_dout(lutv_dout),
+        .edid_rd_addr(edid_rd_addr), .edid_rd_data(edid_rd_data)
     );
 
     // ---- shared transmitter ----

@@ -33,6 +33,9 @@ module edid_merge (
     // 2nd read port into the captured display EDID (for the offline mode picker)
     input  wire [7:0] mode_rd_addr,
     output wire [7:0] mode_rd_data,
+    // 3rd read port into the captured display EDID (host dump over USB)
+    input  wire [7:0] host_rd_addr,
+    output wire [7:0] host_rd_data,
     output wire       edid_ok        // display EDID block-0 checksum good
 );
     //--------------------------------------------------------------------------
@@ -72,7 +75,8 @@ module edid_merge (
         .busy(i2c_busy), .done(i2c_done), .nack_err(nack_err),
         .edid_len(edid_len), .chk0_ok(chk0_ok),
         .rd_addr(bld_rd_addr), .rd_data(mem_rd_data),
-        .rd_addr2(mode_rd_addr), .rd_data2(mode_rd_data));
+        .rd_addr2(mode_rd_addr), .rd_data2(mode_rd_data),
+        .rd_addr3(host_rd_addr), .rd_data3(host_rd_data));
 
     assign edid_ok = chk0_ok;   // expose EDID-valid to the offline mode picker
 
