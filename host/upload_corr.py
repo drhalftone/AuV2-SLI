@@ -147,6 +147,26 @@ def selftest(ser):
             print("    *** LUT is NOT reaching the pixels ***"); ok = False
         print()
 
+    # ---- the LUT must NOT touch passthrough video ----------------------------
+    # The correction curve is a property of the INTERNALLY generated SLI patterns.
+    # Host video passed through the FPGA must reach the projector untouched. In
+    # pattern_gen this is structural (show = enable & ...; out = show ? pat_out : r_d,
+    # so with enable=0 the raw pixels bypass the LUT entirely) -- assert it anyway.
+    print("Checking the LUT does NOT affect PASSTHROUGH video...")
+    set_sli_pattern(ser, False)             # enable = 0 -> passthrough
+    _, base = sample_pixels(ser, 3.0)
+    upload(ser, curve("const:80"))          # a curve that would be glaring if applied
+    _, after = sample_pixels(ser, 3.0)
+    print(f"    passthrough O= before : {hist(base)}")
+    print(f"    passthrough O= after  : {hist(after)}   (corr = 0x80 everywhere)")
+    if after and 0x80 in set(after) and set(after) == {0x80}:
+        print("    *** LUT LEAKED into passthrough -- host video is being altered ***")
+        ok = False
+    elif set(base) == set(after):
+        print("    -> unchanged. Passthrough video is untouched by the LUT.\n")
+    else:
+        print("    -> output moved, but not to the curve; passthrough not LUT-driven.\n")
+
     print("Restoring identity (no correction) and releasing the pattern override.")
     upload(ser, curve("identity"))
     rb = readback(ser)
