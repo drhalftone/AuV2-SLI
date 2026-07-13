@@ -591,6 +591,44 @@ restart the boost in a loop). That risk was checked and cleared.
 But the same run measured a **1.496 A peak inductor current**, which invalidated both inductors
 originally chosen. See the L1 note in §7.
 
+### Brownout / dip recovery — PASSES
+
+A dip below the supervisors' 2.93 V trip, then recovery.
+
+| Deep dip (`+3V3` → 2.50 V for 5.5 ms) | | |
+|---|---|---|
+| `vdd_pix` collapses | 300.24 ms | **first** ✓ |
+| `vdd_33` collapses | 301.03 ms | second ✓ — **791 µs** gap |
+| `vdd_18` minimum | **1.7944 V — never dropped** | ✓ correct: it must be last |
+| Recovery: `vdd_33` → `vdd_pix` | 515.75 → 516.35 ms | **602 µs** gap ✓ |
+
+Ordering is correct **in both directions through the brownout**, all rails return to spec, no
+supervisor chatter, no lockup. The 200 ms reset delay correctly re-arms after the rail recovers.
+
+| Shallow dip (`+3V3` → 3.05 V, *above* the trip) | |
+|---|---|
+| `vdd_pix` | **3.2998 V — completely unmoved** ✓ |
+| `vdd_18` | 1.7945 V — unmoved ✓ |
+
+**No false trip with 120 mV of margin.** The supervisor does not chatter on a sag that doesn't
+warrant a shutdown.
+
+### Load transient — PASSES, and `vdd_pix` is fully isolated
+
+Sensor current stepped `vdd_33` 100→140 mA and `vdd_18` 50→80 mA with 1 µs edges.
+
+| Rail | Excursion | Window | Margin to edge |
+|---|---|---|---|
+| `vdd_33` | **5.8 mVpp** | 3.20 – 3.40 V | 89 mV |
+| `vdd_18` | **4.5 mVpp** | 1.70 – 1.90 V | 93 mV |
+| `vdd_pix` | **0.0 mVpp** | 3.25 – 3.35 V | 50 mV |
+
+> **`vdd_pix` does not move at all.** A 40 mA step on `vdd_33` has *zero* effect on the pixel
+> supply, because it sits behind its own LDO. In the old design both rails hung off one switched
+> node through ferrites, so **every `vdd_33` load step would have modulated `vdd_pix` directly** —
+> exactly the rail that cannot tolerate it. This isolation is a free consequence of giving
+> `vdd_pix` its own regulator.
+
 ### PSRR — the architecture's core claim, now measured
 
 This was the one claim that, if false, would have made the whole redesign pointless: that a
