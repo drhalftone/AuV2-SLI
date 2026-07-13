@@ -216,15 +216,15 @@ Artix die is actually on.
 ```
   +3V3  (3.229 – 3.327 V; noisy)
     |
-    +--> [U1] BOOST 4.46 V  ---+--> [U2] LDO 3.30 V --> vdd_33   140 mA
+    +--> [U3] BOOST 4.46 V  ---+--> [U4] LDO 3.30 V --> vdd_33   140 mA
     |    TPS61023              |    TPS7A2033
-    |                          +--> [U3] LDO 3.30 V --> vdd_pix    5 mA
+    |                          +--> [U5] LDO 3.30 V --> vdd_pix    5 mA
     |                               TPS7A2033
     |
-    +--> [U4] LDO 1.80 V ---------------------------> vdd_18    80 mA
+    +--> [U2] LDO 1.80 V ---------------------------> vdd_18    80 mA
     |    TPS7A2018
     |
-    +--> [U5] SUPERVISOR 2.93 V  (TLV803S) --> sequencing (§6)
+    +--> [U6] SUPERVISOR 2.93 V  (TLV803S) --> sequencing (§6)
 ```
 
 **The boost is not the regulator.** It manufactures headroom, because an LDO regulates only
@@ -244,7 +244,7 @@ it saturates at ~100 % duty and passes the input through. And even a buck-boost 
 
 ---
 
-## 4. Boost stage — U1, TPS61023
+## 4. Boost stage — U3, TPS61023
 
 SOT-563 (1.2 × 1.6 mm), synchronous. Datasheet SLVSF14B.
 
@@ -264,17 +264,22 @@ SOT-563 (1.2 × 1.6 mm), synchronous. Datasheet SLVSF14B.
 
 ### Output voltage
 
-**R1 = 649 kΩ 1 %** (VOUT→FB), **R2 = 100 kΩ 1 %** (FB→GND):
+**R8 = 330 kΩ 1 %** (VOUT→FB), **R9 = 51 kΩ 1 %** (FB→GND):
 
 ```
-V_OUT = 0.595 × (1 + 649/100) = 4.457 V        range over V_REF tol: 4.34 … 4.57 V
+V_OUT = 0.595 × (1 + 330/51) = 4.445 V        range over V_REF tol: 4.33 … 4.56 V
 ```
 
-**Why 4.46 V and not lower?** The TPS7A20's PSRR is specified at V_IN = V_OUT + 1.0 V. Even at the
-*low* corner, 4.34 − 3.3 = **1.04 V**, so we keep full specified PSRR under all conditions.
+**Why 4.45 V and not lower?** The TPS7A20's PSRR is specified at V_IN = V_OUT + 1.0 V. Even at the
+*low* corner, 4.33 − 3.3 = **1.03 V**, so we keep full specified PSRR under all conditions.
 Dropping to 4.0 V would save ~60 mW of LDO heat but forfeit that.
 
-R2 = 100 kΩ satisfies TI's R2 < 300 kΩ rule (divider current ≥100× the 20 nA FB leakage).
+R9 = 51 kΩ satisfies TI's R9 < 300 kΩ rule (divider current 11.7 µA, ≫100× the 20 nA FB leakage).
+
+> **Why these odd values?** 330 k and 51 k are both **JLCPCB Basic** parts. The neater-looking
+> 649 k / 100 k gives 4.457 V — a 12 mV difference, irrelevant — but **649 kΩ is an Extended
+> part**, and paying a feeder fee for one resistor is silly. The Basic pair hits the same target
+> and keeps the entire BOM (bar the hand-soldered socket) sourceable by JLCPCB.
 
 ### The numbers close
 
@@ -303,7 +308,7 @@ Deliberate and harmless: nothing but LDO inputs touches this node, and they reje
 
 ---
 
-## 5. LDO stage — U2, U3, U4
+## 5. LDO stage — U4, U5, U2
 
 All three are **TPS7A20** family, SOT-23-5 (DBV). Pinout: **1 = IN, 2 = GND, 3 = EN, 4 = NC,
 5 = OUT.** Datasheet SBVS338H.
@@ -315,7 +320,7 @@ All three are **TPS7A20** family, SOT-23-5 (DBV). Pinout: **1 = IN, 2 = GND, 3 =
 Each LDO needs **C_IN = 1 µF, C_OUT = 1 µF** minimum (stable with 1 µF ceramic; no noise-bypass
 cap required).
 
-### U2 — `vdd_33` (TPS7A2033, 3.3 V, 140 mA)
+### U4 — `vdd_33` (TPS7A2033, 3.3 V, 140 mA)
 
 | Check | Value | Window | Verdict |
 |---|---|---|---|
@@ -323,7 +328,7 @@ cap required).
 | Headroom | V_IN 4.34 V min − 3.3 V = **1.04 V** | dropout ≤140 mV @300 mA | ✓ |
 | Dissipation | (4.457 − 3.3) × 0.140 = **162 mW** | ×187.1 °C/W | **+30 °C rise** |
 
-### U3 — `vdd_pix` (TPS7A2033, 3.3 V, 5 mA) — *same part number as U2*
+### U5 — `vdd_pix` (TPS7A2033, 3.3 V, 5 mA) — *same part number as U4*
 
 | Check | Value | Window | Verdict |
 |---|---|---|---|
@@ -334,18 +339,18 @@ cap required).
 >
 > **1. Kelvin routing is mandatory.** The ±1.5 % LDO consumes the *entire* ±1.5 % window with
 > 0.5 mV to spare. At 5 mA, even 100 mΩ of copper spends the whole low-side budget. Route short
-> and wide from U3's output capacitor **straight to sensor pins 31/33/38/40**. Never daisy-chain
+> and wide from U5's output capacitor **straight to sensor pins 31/33/38/40**. Never daisy-chain
 > off `vdd_33`. There is no tighter part available — this is as good as it gets.
 >
-> **2. Keep total `vdd_pix` capacitance ≤ ~1.5 µF.** Power-down depends on U3's 150 Ω internal
+> **2. Keep total `vdd_pix` capacitance ≤ ~1.5 µF.** Power-down depends on U5's 150 Ω internal
 > pulldown collapsing this rail *first* (§6). Budget: 1 µF (LDO C_OUT) + 4 × 100 nF (per sensor
 > pin) = 1.4 µF → τ = 150 Ω × 1.4 µF = **210 µs**. **Do NOT add bulk capacitance to `vdd_pix`.**
 > A 10 µF bulk cap here would break the shutdown ordering.
 
-U2 and U3 are the same MPN — one reel, one JLCPCB line item — but they **must be separate
+U4 and U5 are the same MPN — one reel, one JLCPCB line item — but they **must be separate
 devices**, because `vdd_pix` has to rise after `vdd_33` and collapse before it.
 
-### U4 — `vdd_18` (TPS7A2018, 1.8 V, 80 mA) — fed from `+3V3`, not the boost
+### U2 — `vdd_18` (TPS7A2018, 1.8 V, 80 mA) — fed from `+3V3`, not the boost
 
 | Check | Value | Window | Verdict |
 |---|---|---|---|
@@ -371,14 +376,14 @@ The extra 10 nF on `vdd_18` is because the sensor's **LVDS drivers run off `vdd_
 
 ---
 
-## 6. Sequencing — U5, TLV803S
+## 6. Sequencing — U6 and U7, TLV803S
 
-**U5 = TLV803S**, 3-pin SOT-23, **active-low open-drain** reset, threshold **V_IT = 2.93 V**
+**U6 and U7 = TLV803S**, 3-pin SOT-23, **active-low open-drain** reset, threshold **V_IT = 2.93 V**
 (2.99 V max), 200 ms power-up delay, built-in fast-transient rejection. Needs a 0.1 µF bypass.
 
 **Why 2.93 V is the right threshold:**
 - **Never false-trips:** `+3V3` minimum is 3.229 V → **239 mV** above the worst-case 2.99 V trip.
-- **Always fires in time:** far above the boost's 1.8 V UVLO and U4's ~1.95 V dropout.
+- **Always fires in time:** far above the boost's 1.8 V UVLO and U2's ~1.95 V dropout.
 
 The boost's own EN thresholds (V_IH 1.2 V / V_IL 0.35 V) are far too wide to use a simple divider
 on `+3V3` for this — the turn-off point would land somewhere near 0.9 V, uselessly late. A
@@ -408,12 +413,12 @@ independent. Cost: $0.09.
 
 | Node | Circuit |
 |---|---|
-| **U4.EN** (`vdd_18`) | tied directly to `+3V3` — comes up with the rail |
-| **U1.EN** (boost) | **U7** RESET → **1 kΩ series** → EN node; **220 nF** to GND; U7's RESET has its own **100 kΩ pull-up to `+3V3`** |
-| **U2.EN** (`vdd_33`) | tied directly to `vdd_18` |
-| **U3.EN** (`vdd_pix`) | **U6** RESET directly; **100 kΩ pull-up to `vdd_33`**; **10 nF** to GND |
+| **U2.EN** (`vdd_18`) | tied directly to `+3V3` — comes up with the rail |
+| **U3.EN** (boost) | **U7** RESET → **1 kΩ series** → EN node; **220 nF** to GND; U7's RESET has its own **100 kΩ pull-up to `+3V3`** |
+| **U4.EN** (`vdd_33`) | tied directly to `vdd_18` |
+| **U5.EN** (`vdd_pix`) | **U6** RESET directly; **100 kΩ pull-up to `vdd_33`**; **10 nF** to GND |
 
-**The interlock is U3.EN's pull-up going to `vdd_33`, not to `+3V3`.** Before `vdd_33` exists that
+**The interlock is U5.EN's pull-up going to `vdd_33`, not to `+3V3`.** Before `vdd_33` exists that
 pull-up sits at 0 V, so `vdd_pix` *physically cannot* enable early — the ordering is structural,
 not a race between time constants.
 
@@ -422,13 +427,13 @@ established long before the boost is ever permitted to start.
 
 ### Power-up — `vdd_18` → `vdd_33` → `vdd_pix` ✓
 
-1. `+3V3` rises. **U4.EN** is tied to it → **`vdd_18` up at t ≈ 1 ms.**
+1. `+3V3` rises. **U2.EN** is tied to it → **`vdd_18` up at t ≈ 1 ms.**
 2. At **t ≈ 200 ms** both supervisors release (their reset delay).
-3. **U1.EN** (boost) charges through 100 kΩ + 1 kΩ into 220 nF (τ = 22 ms), crossing the boost's
+3. **U3.EN** (boost) charges through 100 kΩ + 1 kΩ into 220 nF (τ = 22 ms), crossing the boost's
    1.2 V V_IH at **t ≈ 210 ms**. Boost runs → 4.46 V in ~700 µs.
-4. **U2.EN** is already high (`vdd_18`, since 1 ms). U2 begins regulating once the boost's output
+4. **U4.EN** is already high (`vdd_18`, since 1 ms). U4 begins regulating once the boost's output
    passes its 1.35 V UVLO → **`vdd_33` up at t ≈ 212 ms.**
-5. **U3.EN** was held at 0 V — *its pull-up goes to `vdd_33`, which did not exist until now.* It
+5. **U5.EN** was held at 0 V — *its pull-up goes to `vdd_33`, which did not exist until now.* It
    now charges through 100 kΩ ∥ 500 kΩ (internal) × 10 nF (τ = 833 µs), crossing 0.9 V V_IH
    **330 µs after `vdd_33` appears** → **`vdd_pix` up at t ≈ 213.5 ms.**
 
@@ -438,12 +443,12 @@ Separations are **ms**, against a **10 µs** requirement.
 
 1. `+3V3` falls below 2.93 V → **both** supervisors assert `RESET` **low immediately** (the 200 ms
    delay applies only to *release*, not assert).
-2. **U3.EN → low** (U6, direct). TPS7A20's **150 Ω auto-discharge** pulls `vdd_pix` down:
+2. **U5.EN → low** (U6, direct). TPS7A20's **150 Ω auto-discharge** pulls `vdd_pix` down:
    τ = 150 Ω × 1.44 µF = **216 µs**. → **`vdd_pix` collapses FIRST.** ✓
-3. **U1.EN decays** through U7's 1 kΩ into the 220 nF cap: τ = **220 µs**, crossing the boost's
+3. **U3.EN decays** through U7's 1 kΩ into the 220 nF cap: τ = **220 µs**, crossing the boost's
    0.35 V V_IL at **t ≈ 493 µs**. Boost shuts off (**true disconnect**) → the 4.46 V node collapses
    under the 140 mA load → **`vdd_33` falls SECOND.** ✓
-4. **U4 keeps regulating** `vdd_18` from `+3V3` until `+3V3` < 1.8 V + dropout ≈ **1.95 V**.
+4. **U2 keeps regulating** `vdd_18` from `+3V3` until `+3V3` < 1.8 V + dropout ≈ **1.95 V**.
    → **`vdd_18` dies LAST.** ✓
 
 Skew between `vdd_pix` and `vdd_33` ≈ **493 µs**, against the required 10 µs. ✓
@@ -451,50 +456,68 @@ Skew between `vdd_pix` and `vdd_33` ≈ **493 µs**, against the required 10 µs
 > **This is the problem the boost created and the supervisor solves.** Once started, the TPS61023
 > runs with V_IN as low as **0.5 V** — left alone it would hold 4.46 V while `+3V3` collapsed,
 > making `vdd_33` outlive `vdd_18`: the exact inverse of the required order. The supervisor
-> yanking U1.EN low at 2.93 V is what prevents that.
+> yanking U3.EN low at 2.93 V is what prevents that.
 
 ---
 
 ## 7. Bill of materials
 
-### Verified on LCSC / JLCPCB
+**22 line items, 68 placements.** Generated to `LauPythonCamera_Pt_Stack/production/bom.csv` in
+JLCPCB's format. **Every part except the socket is sourced and assembled by JLCPCB.**
 
-| Ref | Function | MPN | **LCSC** | Package | Stock | Price | JLC |
-|---|---|---|---|---|---|---|---|
-| U1 | Boost 3.3 → 4.46 V | **TPS61023DRLR** | **C919459** | SOT-563 | 18,195 | $0.267 | Extended |
-| U2, U3 | LDO 3.3 V (`vdd_33`, `vdd_pix`) | **TPS7A2033PDBVR** | **C2862740** | SOT-23-5 | 59,955 | $0.110 | Extended |
-| U4 | LDO 1.8 V (`vdd_18`) | **TPS7A2018PDBVR** | **C963430** | SOT-23-5 | 27,085 | $0.133 | Extended |
-| U6, U7 | Supervisor, 2.93 V, open-drain (**two required — §6**) | **TLV803SDBZT** | **C702125** | SOT-23-3 | in stock | $0.089 | Extended |
-| L1 | 2.2 µH ±20 %, Isat ≥1.2 A, DCR ≤98 mΩ | **SWPA3012S2R2MT** | **C36402** | 3×3×1.2 mm | 1,330 ⚠ | $0.042 | Extended |
-| C1–C3 | 10 µF 25 V X5R (boost C_IN + 2× C_OUT) | **CL21A106KAYNNNE** | **C15850** | 0805 | in stock | $0.021 | **Basic** |
-| R2, R5 | 100 kΩ 1 % | 0402WGF1003TCE | **C25741** | 0402 | in stock | ~$0.01 | **Basic** |
+### Actives
 
-⚠ **L1 stock is thin (1,330).** Find a backup before committing to a build — any 2.2 µH ±20 %,
-Isat ≥ 1.0 A part in a ≤3×3 mm footprint will do.
+| Ref | Function | MPN | **LCSC** | Package | JLC |
+|---|---|---|---|---|---|
+| **U3** | Boost, 3.3 → 4.45 V | TPS61023DRLR | **C919459** | SOT-563 | Extended |
+| **U4, U5** | LDO 3.3 V (`vdd_33`, `vdd_pix`) | TPS7A2033PDBVR | **C2862740** | SOT-23-5 | Extended |
+| **U2** | LDO 1.8 V (`vdd_18`) | TPS7A2018PDBVR | **C963430** | SOT-23-5 | Extended |
+| **U6, U7** | Supervisor 2.93 V, open-drain (**two — §6**) | TLV803SDBZT | **C702125** | SOT-23-3 | Extended |
+| **L1** | 2.2 µH, Isat ≥1.2 A, DCR ≤98 mΩ | SWPA3012S2R2MT | **C36402** | 3×3×1.2 mm | Extended |
 
-### Standard values — LCSC codes to resolve at order time
+> ⚠️ **L1 stock is thin (~1,330 units at time of writing).** Check it before committing to a
+> build, and have a backup ready — any 2.2 µH ±20 %, Isat ≥ 1.0 A part in a ≤3×3 mm footprint
+> will do. Its footprint (`LauCamera:L_Sunlord_SWPA3012S_3.0x3.0mm`) is project-local, so a
+> substitute may need its own land pattern.
 
-These are all commodity JLCPCB **Basic** parts. I have deliberately **not** guessed their C-codes.
+### Connectors
 
-| Ref | Value | Qty | Purpose |
+| Ref | Function | MPN | **LCSC** |
 |---|---|---|---|
-| R1 | 649 kΩ 1 % 0402 | 1 | Boost FB divider, top. MPN **UNI-ROYAL 0402WGF6493TCE** |
-| R3 | 100 kΩ 1 % 0402 | 1 | U7 RESET pull-up to `+3V3` — **reuse C25741** |
-| R4 | 1 kΩ 1 % 0402 | 1 | U7 RESET → U1.EN series (sets the 493 µs shutdown skew) |
-| R5 | 100 kΩ 1 % 0402 | 1 | U3.EN pull-up to **`vdd_33`** (the interlock) — **reuse C25741** |
-| R6 | 47 kΩ 1 % 0402 | 1 | `ibias_master` → `gnd_33`. **Mandatory** |
-| R7 | 1 kΩ 1 % 0402 | 1 | `VBSEL_A` → `+3V3` (straps bank 13 to 2.5 V) |
-| C4 | 220 nF 0402 | 1 | U1.EN shutdown delay |
-| C5 | 10 nF 0402 | 1 | U3.EN turn-on delay |
-| — | 1 µF X7R 0603 | 6 | LDO C_IN / C_OUT (2 each × 3 LDOs) |
-| — | 10 µF | 2 | Bulk on `vdd_33` and `vdd_18` — **reuse C15850**. **NOT on `vdd_pix`** |
-| — | 100 nF 0402 | 13 | 11 × sensor supply pins + 2 × supervisor bypass |
-| — | 10 nF 0402 | 3 | `vdd_18` HF decoupling (360 MHz LVDS drivers) |
-| — | pull resistors | 8 | Sensor CMOS inputs — see §9.4 |
+| **J1, J2** | Element bus, Bank A / Bank B | DF40C-80DP-0.4V(51) | **C294544** |
+| **J3** | Control header | DF40C-50DP-0.4V(51) | **C424645** |
 
-> **Lock the LDOs against JLCPCB "equivalent part" substitution.** The common jellybeans
-> (RT9080, ME6211, XC6206, AP7343, TCR2EF33) are **±2 % or worse and fail the `vdd_pix` window on
-> their own**. They are not valid substitutes at any price.
+> Both connector part numbers are taken from the **fabbed** `LauCameraTrigger_Alchitry_Stack`
+> BOM — proven to source and assemble.
+
+### Passives — all JLCPCB **Basic**
+
+| Ref | Value | Qty | LCSC | Purpose |
+|---|---|---|---|---|
+| R3–R7, R12–R14 | 10 kΩ 0402 | 8 | **C25744** | Pulls on the 8 sensor CMOS inputs |
+| R10, R11, R17 | 1 kΩ 0402 | 3 | **C11702** | VBSEL_A/B straps; U7 RESET → U3.EN |
+| R15, R16 | 100 kΩ 0402 | 2 | **C25741** | U5.EN interlock pull-up; U7 RESET pull-up |
+| R8 | 330 kΩ 0402 | 1 | **C25778** | Boost FB, top |
+| R9 | 51 kΩ 0402 | 1 | **C25794** | Boost FB, bottom |
+| R1 | 47 kΩ 0402 | 1 | **C25792** | `ibias_master` → `gnd_33`. **Mandatory** |
+| R2 | 100 Ω 0402 | 1 | **C25076** | 100 Ω diff term on `lvds_clock_in` (FPGA→sensor) |
+| C12–C22, C39 | 10 nF 0402 | 12 | **C15195** | HF decoupling; U5.EN delay |
+| C8–C11, C26–C28, C38, C40 | 100 nF 0402 | 9 | **C1525** | Sensor pins; supervisor bypass |
+| C1–C7 | 1 µF 0402 | 7 | **C52923** | Sensor per-pin decoupling |
+| C29, C30, C34–C37 | 1 µF **0603** | 6 | **C15849** | **LDO stability caps — 0603, not 0402 (DC-bias derating)** |
+| C23, C24, C31–C33 | 10 µF 0805 | 5 | **C15850** | Boost C_IN/C_OUT; `vdd_33` + `vdd_18` bulk |
+| C41 | 220 nF 0402 | 1 | **C16772** | U3.EN shutdown delay |
+
+### Hand-soldered — NOT assembled by JLCPCB
+
+| Ref | Part | Note |
+|---|---|---|
+| **U1** | Andon **680-48-SM-G10-R14** — 48-pin LCC socket | **Blank LCSC. DNP for PCBA; hand-solder.** The sensor itself is inserted into the socket and is never assembled. |
+
+> ### ⚠️ Lock the LDOs against JLCPCB "equivalent part" substitution.
+> The common jellybeans (RT9080, ME6211, XC6206, AP7343, TCR2EF33) are **±2 % or worse and fail
+> the `vdd_pix` window on their own** (§5). They are **not** valid substitutes at any price. If
+> JLC proposes an alternative for **C2862740**, refuse it.
 
 ### Thermal budget
 
@@ -502,13 +525,13 @@ Dark current roughly doubles every 7 °C — keep heat away from the sensor.
 
 | Source | Dissipation |
 |---|---|
-| U2 (`vdd_33` LDO) | **162 mW** (+30 °C junction rise) |
-| U4 (`vdd_18` LDO) | **118 mW** (+22 °C) |
-| U1 (boost, ~10 % loss) | ~72 mW |
-| U3 (`vdd_pix` LDO) | ~6 mW |
+| U4 (`vdd_33` LDO) | **162 mW** (+30 °C junction rise) |
+| U2 (`vdd_18` LDO) | **118 mW** (+22 °C) |
+| U3 (boost, ~10 % loss) | ~72 mW |
+| U5 (`vdd_pix` LDO) | ~6 mW |
 | **Board total** | **~358 mW** (plus the sensor's own 620 mW) |
 
-**Place U1, U2 and U4 away from the sensor.** U1 additionally because a 1 MHz switching node next
+**Place U3, U4 and U2 away from the sensor.** U3 additionally because a 1 MHz switching node next
 to an image sensor is an EMI problem — keep its SW node small and ground-shielded.
 
 ---
@@ -543,9 +566,9 @@ filtered tap could ever be accurate or quiet enough.
    map is the Pt's own top connector; it reaches us through two intermediate boards.
 
 2. **Layout is now load-bearing, not cosmetic:**
-   - `vdd_pix` **Kelvin route** from U3's output cap to sensor pins 31/33/38/40 (§5, rule 1).
+   - `vdd_pix` **Kelvin route** from U5's output cap to sensor pins 31/33/38/40 (§5, rule 1).
    - `vdd_pix` **total capacitance ≤ 1.5 µF** (§5, rule 2).
-   - U1/U2/U4 **away from the sensor** (heat + EMI).
+   - U3/U4/U2 **away from the sensor** (heat + EMI).
    - Boost SW node small and ground-shielded.
 
 3. **Resolve the standard-value LCSC codes** (§7) and find a **backup inductor** for L1.
