@@ -3,10 +3,20 @@
 // mode_timing_rom - per-mode video geometry lookup (Phase D2).
 //
 //   Combinational ROM over the SAME curated table as mode_select (mode_table.vh),
-//   indexed by mode_idx (0..12, priority order). Emits the geometry that feeds
-//   video_timing_gen_rt, so the generated timing always matches the mode whose
-//   pixel clock drp_clkgen13 produces for the same index. Single source of truth:
-//   both this and mode_select include mode_table.vh.
+//   indexed by mode_idx (0..12). Emits the geometry that feeds the offline timing
+//   generator, so the generated timing always matches the mode whose pixel clock
+//   drp_clkgen13 produces for the same index. Single source of truth: both this and
+//   mode_select include mode_table.vh.
+//
+//   NOTE: mode_idx is the TABLE index, not the priority order -- mode_select walks
+//   an explicit PRIO[] list. It is also the shared key into drp_recfg's per-mode MMCM
+//   settings, which is why the table must never be re-sorted.
+//
+//   The consumer is vga.vhd (i_DVID_input in the top), NOT video_timing_gen_rt.v --
+//   that module is written but never instantiated. See its header: it gates the
+//   counters on `enable` (meant for mmcm_locked) so the first frame after a DRP
+//   re-lock starts at the top-left. vga has no such input and free-runs, so a mode
+//   change can leave it mid-frame. Wiring _rt in is unfinished Phase-D2 work.
 //
 //   The initial-block array init is the same pattern mode_select.v uses (HW-proven
 //   in Phase C); Vivado infers it as a distributed ROM.

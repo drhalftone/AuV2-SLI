@@ -26,6 +26,13 @@
 //   Empty intersection -> 640x480@60 failsafe (table index 12).
 //==============================================================================
 module mode_select #(
+    // Pixel-clock ceiling. This is a BACKSTOP, not the real gate: every mode in the
+    // curated table already fits (the table maxes out at 78.75 MHz, idx2), so today
+    // it never rejects anything. It reflects what the output TMDS serializer can
+    // drive -- the OSERDES needs a 5x clock, and 78.67 MHz (x5 = 393 MHz) already
+    // blacked the output once on a skew regression (see clk_selector.v). The ceiling
+    // is what kept faster modes OUT of the table in the first place; keep it in the
+    // pick so a future table entry cannot silently exceed the serializer.
     parameter integer CEIL_KHZ = 85000
 )(
     input  wire        clk,

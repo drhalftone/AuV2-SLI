@@ -4,7 +4,24 @@
 //   S=x V=x T=x F=x M=x R=x N=hhhh L=hh D=hh G=hh P=hh C=hh<CR><LF>
 // led_s : [7]vsync [6]hsync [5]VPol [4]sel [3]mode [2]rdy [1]f_frm [0]trig
 // dbg_s : hdmi_io debug [3]symbol_sync [2]pll_locked [1]sel [0]heartbeat
-// mrg   : edid_merge dbg2[7:0] ([7]built_valid [4]chk0_ok [2]monitor_present [1:0]cstate)
+//         NB: symbol_sync alone does NOT mean a source is attached -- a floating RX
+//         input self-oscillates (ghost clock) and the decoder locks onto the noise,
+//         so symbol_sync reads 1 with no cable. pll_locked is the honest signal:
+//         the RX MMCM cannot lock to the ghost. "Real source" = symbol_sync AND
+//         pll_locked (this is what gates sel and the idle-LED animation).
+// mrg   : edid_merge dbg2[7:0] -- the FULL byte:
+//         [7] built_valid      merged EDID built and being served to the host
+//         [6] bld_busy         builder running
+//         [5] i2c_busy         DDC read in progress
+//         [4] chk0_ok          display EDID block-0 checksum valid
+//         [3] nack_err         DDC read was NACKed -- nothing answered on the bus.
+//                              This is what separates "no display" (nack_err=1) from
+//                              "display present but its EDID is unreadable" (=0 with
+//                              monitor_present=1). Easy to miss; it was undocumented.
+//         [2] monitor_present  display's HPD asserted on the HDMI OUTPUT
+//         [1:0] cstate         controller state (0=IDLE 1=RD 2=BUILD)
+//         Typical: 0x08 = nothing plugged in; 0x94 = display present, EDID read OK.
+//         (edid_len[8:2] and hdmi_rx_hpa live in dbg2[15:8] and are NOT in this byte.)
 // tlp   : last sampled top-left red value (diagnostic)
 // tcnt  : free-running trigger-pulse count (diagnostic; watch the delta for rate)
 // vs_lat: vsync edges in the last status window

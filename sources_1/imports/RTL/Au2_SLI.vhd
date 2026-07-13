@@ -248,17 +248,6 @@ architecture Behavioral of Au2_SLI is
     signal olp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe OUTPUT (diagnostic)
     signal trig_cnt  : std_logic_vector(7 downto 0);  -- trigger pulse count (diagnostic)
 
-    component edid_reader is
-        Port ( clk100 : in  STD_LOGIC;
-               led    : in  STD_LOGIC_VECTOR(7 downto 0);
-               dbg    : in  STD_LOGIC_VECTOR(7 downto 0);
-               mrg    : in  STD_LOGIC_VECTOR(7 downto 0);
-               tlp    : in  STD_LOGIC_VECTOR(7 downto 0);
-               tcnt   : in  STD_LOGIC_VECTOR(7 downto 0);
-               olp    : in  STD_LOGIC_VECTOR(7 downto 0);
-               usb_tx : out STD_LOGIC );
-    end component;
-
     -- "Sign of life" idle animation: slides one LED when no frames are running.
     signal led_out   : std_logic_vector(7 downto 0);  -- final LED bus (status or idle slider)
     signal connected : std_logic;  -- 1 = real HDMI input decoding OR output monitor present

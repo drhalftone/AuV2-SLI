@@ -69,7 +69,9 @@ Based on a file-level inventory of the Au design.
 - `video_timing_gen_rt.v`, `mode_timing_rom.v`, `mode_table.vh` — runtime video timing
 - EDID build/parse/serve (`edid_builder.v`, `edid_merge.v`, `edid_serve.vhd`,
   `i2c_master_edid.v`) — generic I²C/DDC logic
-- UART telemetry (`uart_tx.v`, `usb_status.v`, `status_line.v`, `edid_hex_dumper.v`)
+- USB serial link (`usb_link.v` = `status_line.v` telemetry + `uart_tx.v`/`uart_rx.v` +
+  `uart_ctrl.v`, the 0xA5 control protocol -- registers, LUT upload/readback, and the
+  display's captured EDID via rdtbl target 0x03)
 
 All vendor-neutral Verilog/VHDL — recompiles in Libero with format tweaks.
 
@@ -196,7 +198,7 @@ biggest unknown (on-chip phase math) to the end, after the I/O is proven.
   (loopback). Prove 4K60 in → out on real hardware.
 - Re-insert the **EDID serve** path so the source negotiates the mode we want.
 - Re-insert **top-left-pixel detection** and **UART telemetry** on the passthrough
-  pixel stream (reuse `pixel_pipe` TLP logic + `usb_status`).
+  pixel stream (reuse `pixel_pipe` TLP logic + `usb_link`).
 - **Exit criterion:** PC → FPGA → projector at 4K60, with TLP-change events and
   telemetry visible over UART. (This already replaces the Au's core passthrough
   function at 4× the resolution.)
@@ -703,7 +705,7 @@ Prior-art confidence: ✅ direct reference design exists · 🟡 assemble from d
 | ID | Type | Test / proves | Reuse | Pass criterion | Proven by |
 |---|---|---|---|---|---|
 | **B1** | GW | HDMI TX color bars @4K60, no source — TX PHY + timing + sink EDID read | `video_timing_gen_rt.v` | clean 4K60 bars on projector | ✅ HDMI TX IP UG + UG0682 Pattern Generator IP |
-| **B2** | GW | HDMI RX lock & report — RX PHY + EDID serve | `edid_*`, `usb_status.v` | UART reports incoming 4K timing | ✅ HDMI RX IP UG (UG0863) |
+| **B2** | GW | HDMI RX lock & report — RX PHY + EDID serve | `edid_*`, `usb_link.v` | UART reports incoming 4K timing | ✅ HDMI RX IP UG (UG0863) |
 | **B3** | GW | 4K60 raw passthrough (loopback), no processing | — | PC desktop on projector, transparent | ✅ **AN4768** (HDMI loopback) |
 | **B4 ⭐** | GW | **Passthrough + SLI pixel replacement** + TLP detect + UART | `pixel_pipe.v` (widen to 4 ppc) | SLI pixels in stream @4K60; TLP events over UART | ✅ **DG0849** (edge-detect = read→modify→emit) + AN4768 insertion point |
 

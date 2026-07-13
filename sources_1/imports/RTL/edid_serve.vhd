@@ -1,5 +1,9 @@
 -- edid_serve.vhd - RAM-backed HDMI DDC EDID slave (drop-in for edid_rom.vhd).
 --
+-- NOTE: edid_rom.vhd itself has been REMOVED -- this module fully superseded it and
+-- the ROM was dead code. References to it below are provenance (this FSM is lifted
+-- from it verbatim); find it in git history if you need the original.
+--
 -- Identical I2C-slave protocol to edid_rom.vhd (responds to 0xA0/0xA1 reads and the
 -- 0x60 segment-pointer write), but the served bytes come from a DOUBLE-BUFFERED RAM
 -- instead of the compile-time edid_a/edid_b constants. A builder (edid_builder.v)
