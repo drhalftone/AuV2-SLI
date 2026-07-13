@@ -591,6 +591,51 @@ restart the boost in a loop). That risk was checked and cleared.
 But the same run measured a **1.496 A peak inductor current**, which invalidated both inductors
 originally chosen. See the L1 note in §7.
 
+### PSRR — the architecture's core claim, now measured
+
+This was the one claim that, if false, would have made the whole redesign pointless: that a
+boost+LDO actually rejects the FPGA's noise, and a ferrite tap does not.
+
+**AC sweep, `+3V3` → sensor rail.** Negative dB = attenuation. **Positive dB = amplification.**
+
+| Frequency | OLD: ferrite tap (FB1 → `vdd_33`) | NEW: boost + TPS7A20 |
+|---|---|---|
+| 10 kHz | **+0.5 dB** | −72.0 dB |
+| **39.8 kHz** | **+13.5 dB** ← **worst case** | ~−72 dB |
+| 100 kHz | −13.9 dB | −57.6 dB |
+| 1 MHz | −55.4 dB | −64.5 dB |
+
+> ### ⚠️ The old ferrite filter AMPLIFIES noise by 4.7× at 40 kHz — and its own design rule is why.
+>
+> The old README demanded: *"`FB1` must be LOW-DCR (≤ 50 mΩ). This is a hard spec, not a
+> preference."* That reasoning was **correct on DC** — at 140 mA a 0.3 Ω bead drops 42 mV and
+> pushes `vdd_33` below its 3.2 V floor.
+>
+> **But low DCR is exactly what removes the damping from the LC filter.** With 50 mΩ and 15 µF,
+> Q ≈ 4.7 → an undamped resonance at 40 kHz with **+13.5 dB of gain**. The DC requirement and the
+> AC behaviour are in direct conflict. The spec that saves the DC budget is the spec that wrecks
+> the noise budget, and the old design never noticed.
+
+**What it costs.** Assume 20 mVpp on `+3V3` at 40 kHz (buck ripple + FPGA I/O transients; scales
+linearly). `vdd_33`'s window is ±100 mV:
+
+| | ripple reaching `vdd_33` | |
+|---|---|---|
+| **OLD (ferrite)** | **94 mVpp** | **47 % of the entire spec window** |
+| **NEW (LDO)** | **5 µVpp** | negligible |
+
+**85 dB improvement — ~18,800× less noise on the sensor's analog rail.**
+
+**Every assumption was stacked against the new design and it still wins by 85 dB:**
+- Used TI's model's **pessimistic** PSRR (57.6 dB @100 kHz), not the datasheet's 75 dB.
+- Gave the boost **zero credit** — assumed it passes input ripple 1:1, when its control loop
+  actually rejects low-frequency ripple.
+- Modelled the bead optimistically (standard 1 µH + 600 Ω parallel + DCR first-order model).
+
+> **Note on TI's LDO model:** it implements a *crude* PSRR — flat ~75 dB with a pole at 10 kHz and
+> a zero at 1 MHz (`psrr=178u, pole=10k, zero=1Meg`). It does **not** reproduce the datasheet
+> curve, and is pessimistic at 100 kHz / optimistic at 1 MHz. Do not quote model PSRR as spec.
+
 ### ⚠️ What SPICE did NOT and CANNOT confirm
 
 - **The ±1.5 % tolerance windows.** TI's models are typical-value only, with no tolerance data —
