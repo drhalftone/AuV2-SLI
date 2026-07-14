@@ -51,7 +51,24 @@ entity Au2_SLI is
 --        hdmi_tx_rscl  : inout std_logic;
 --        hdmi_tx_rsda  : inout std_logic;
         hdmi_tx_p     : out   std_logic_vector(2 downto 0);
-        hdmi_tx_n     : out   std_logic_vector(2 downto 0)     
+        hdmi_tx_n     : out   std_logic_vector(2 downto 0);
+
+        -- ===== PYTHON 1300 camera element (top of the stack) =====
+        -- CMOS control only -- LVCMOS33, element Bank A low, Au V2 banks 14/35.
+        -- The LVDS pairs are DELIBERATELY ABSENT: on the Au they scatter across banks
+        -- 14/15/34, and dout0 lands on bank 15 (VCCO 1.35 V, NOT 3.3 V tolerant). The
+        -- sensor's LVDS drivers default to powered down (reg 112 = 0), so they never
+        -- drive those pins -- provided nothing writes reg 112 on an Au build.
+        -- See CAMERA_SENSOR_PROTOCOL.md §3.
+        -- elem A5 -> M6 (14) | A3 -> N6 (14) | A10 -> L2 (35) | A4 -> P9 (14)
+        -- elem A9 -> J1 (35) | A11/A12/A15 -> K1/L3/H1 (35) | A16/A17 -> K2/H2 (35)
+        cam_sck     : out   std_logic;                     -- M6  bank 14
+        cam_mosi    : out   std_logic;                     -- N6  bank 14
+        cam_ss_n    : out   std_logic;                     -- L2  bank 35
+        cam_miso    : in    std_logic := '0';              -- P9  bank 14
+        cam_reset_n : out   std_logic;                     -- J1  bank 35
+        cam_trigger : out   std_logic_vector(2 downto 0);  -- K1 / L3 / H1  bank 35
+        cam_monitor : in    std_logic_vector(1 downto 0) := (others => '0')  -- K2 / H2  bank 35
     );
 end Au2_SLI;
 
@@ -304,7 +321,16 @@ architecture Behavioral of Au2_SLI is
                mode_vact_i    : in STD_LOGIC_VECTOR(11 downto 0) := (others => '0');
                mode_pclk_i    : in STD_LOGIC_VECTOR(16 downto 0) := (others => '0');
                mode_supp_i    : in STD_LOGIC_VECTOR(13 downto 0) := (others => '0');
-               mode_force     : out STD_LOGIC_VECTOR(7 downto 0) );
+               mode_force     : out STD_LOGIC_VECTOR(7 downto 0);
+               -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
+               -- usb_link, so these are the sensor's physical pins.
+               cam_sck     : out STD_LOGIC;
+               cam_mosi    : out STD_LOGIC;
+               cam_ss_n    : out STD_LOGIC;
+               cam_miso    : in  STD_LOGIC := '0';
+               cam_reset_n : out STD_LOGIC;
+               cam_trigger : out STD_LOGIC_VECTOR(2 downto 0);
+               cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0') );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -477,7 +503,17 @@ begin
         mode_vact_i    => mt_vact,
         mode_pclk_i    => mt_pclk,
         mode_supp_i    => mode_bus_s1(13 downto 0),
-        mode_force     => mode_force_bus );
+        mode_force     => mode_force_bus,
+        -- PYTHON 1300 camera element (top-side stack board). SPI mailbox on regs
+        -- 0x30..0x36, discrete pins on 0x37/0x38. cam_reset_n comes out of reset LOW,
+        -- so the sensor stays held in reset until the host deliberately releases it.
+        cam_sck     => cam_sck,
+        cam_mosi    => cam_mosi,
+        cam_ss_n    => cam_ss_n,
+        cam_miso    => cam_miso,
+        cam_reset_n => cam_reset_n,
+        cam_trigger => cam_trigger,
+        cam_monitor => cam_monitor );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,

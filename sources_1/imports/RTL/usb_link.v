@@ -63,7 +63,18 @@ module usb_link #(
     output wire [7:0]  corr_pat_dout,
 
     // ---- MODEFORCE (reg 0x14): {7:force_en, 3..0:idx} ----
-    output wire [7:0]  mode_force
+    output wire [7:0]  mode_force,
+
+    // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
+    // The SPI master lives in here, right next to the control plane that drives it,
+    // so the top level only ever sees the sensor's physical pins.
+    output wire        cam_sck,
+    output wire        cam_mosi,
+    output wire        cam_ss_n,
+    input  wire        cam_miso,
+    output wire        cam_reset_n,
+    output wire [2:0]  cam_trigger,
+    input  wire [1:0]  cam_monitor
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -128,6 +139,41 @@ module usb_link #(
     uart_rx #(.CLK_HZ(CLK_HZ), .BAUD(115200)) i_urx (
         .clk(clk100), .rst(rst), .rx(usb_rx), .data(rx_data), .valid(rx_valid)
     );
+    //---------------------------------------------------------------- PYTHON 1300
+    // Declared BEFORE i_ctrl: Verilog would otherwise implicitly declare each of these
+    // as a 1-bit wire at first use in the port map, and the real declaration below
+    // would then collide with it.
+    wire [8:0]  cam_spi_addr;
+    wire        cam_spi_rw;
+    wire [15:0] cam_spi_wdata;
+    wire        cam_spi_start;
+    wire [15:0] cam_spi_rdata;
+    wire        cam_spi_busy, cam_spi_done;
+    wire [7:0]  cam_gpio;
+
+    // monitor pins are asynchronous to clk100 -- 2FF sync before a register read sees them.
+    reg [1:0] mon_d0 = 2'd0, mon_s = 2'd0;
+    always @(posedge clk100) begin mon_d0 <= cam_monitor; mon_s <= mon_d0; end
+    wire [7:0] cam_gpio_in = {6'b0, mon_s};
+
+    // 1 MHz sck. The datasheet allows 10 MHz, but the sensor's max SPI rate scales with
+    // its input clock -- which is NOT running during first bring-up. 1 MHz sidesteps the
+    // question entirely and costs ~30 us per transaction: nothing next to the 115200-baud
+    // UART frame that carries the request.
+    cam_spi_master #(.CLK_HZ(CLK_HZ), .SCK_HZ(1_000_000)) i_cam_spi (
+        .clk(clk100), .rst(rst),
+        .start(cam_spi_start), .rw(cam_spi_rw),
+        .addr(cam_spi_addr),   .wdata(cam_spi_wdata),
+        .rdata(cam_spi_rdata), .busy(cam_spi_busy), .done(cam_spi_done),
+        .sck(cam_sck), .mosi(cam_mosi), .ss_n(cam_ss_n), .miso(cam_miso)
+    );
+
+    // reg 0x37 = {reset_n, 4'b0, trigger[2:0]}. It resets to 0x00, so reset_n = 0 and the
+    // sensor is HELD IN RESET until the host releases it -- matching the board's external
+    // pulldown, which holds the part in reset through the whole FPGA configuration window.
+    assign cam_reset_n = cam_gpio[7];
+    assign cam_trigger = cam_gpio[2:0];
+
     uart_ctrl i_ctrl (
         .clk(clk100), .rst(rst),
         .rx_data(rx_data), .rx_valid(rx_valid),
@@ -143,7 +189,13 @@ module usb_link #(
         .mode_hact_i(mode_hact_i), .mode_vact_i(mode_vact_i),
         .mode_pclk_i(mode_pclk_i), .mode_supp_i(mode_supp_i),
         .corr_pat_addr(corr_pat_addr), .corr_pat_dout(corr_pat_dout),
-        .mode_force(mode_force)
+        .mode_force(mode_force),
+        // ---- PYTHON 1300 mailbox ----
+        .cam_spi_addr(cam_spi_addr), .cam_spi_rw(cam_spi_rw),
+        .cam_spi_wdata(cam_spi_wdata), .cam_spi_start(cam_spi_start),
+        .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
+        .cam_spi_done(cam_spi_done),
+        .cam_gpio(cam_gpio), .cam_gpio_in(cam_gpio_in)
     );
 
     // ---- shared transmitter ----

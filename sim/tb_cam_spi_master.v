@@ -50,95 +50,14 @@ module tb_cam_spi_master;
     //==========================================================================
     // Behavioral PYTHON 1300 SPI slave
     //==========================================================================
-    reg [15:0] regs [0:511];
-    reg [25:0] sh_in;
-    reg [15:0] dout;
-    reg [8:0]  s_addr;
-    reg        s_rw;
-    integer    s_cnt;
-    reg        miso_drv = 1'b0;
-    reg        miso_oe  = 1'b0;
-
-    assign miso = miso_oe ? miso_drv : 1'bz;
+    // The model lives in sim/python1300_spi_model.v -- shared with tb_cam_mailbox so the
+    // two testbenches cannot drift apart. It encodes two subtleties worth reading before
+    // trusting any result here: miso is driven on the RISING edge with D15 landing on
+    // cycle ELEVEN, and the address is sh_in[9:1] not [8:0].
+    python1300_spi_model sensor (
+        .sck(sck), .mosi(mosi), .ss_n(ss_n), .miso(miso)
+    );
     pullup (miso);                             // board fits a pull; miso is Hi-Z outside reads
-
-    integer i;
-    initial begin
-        for (i = 0; i < 512; i = i + 1) regs[i] = 16'h0000;
-        // --- REAL datasheet reset defaults (CAMERA_SENSOR_PROTOCOL.md §2,§3,§4,§5) ---
-        regs[0]   = 16'h50D0;   // chip_id            (READ-ONLY status)
-        regs[1]   = 16'h0001;   // resolution[9:8]=0 => PYTHON1300
-        regs[2]   = 16'h0000;   // color=0 (mono), parallel=0 (LVDS)
-        regs[8]   = 16'h0099;   // soft_reset_pll
-        regs[9]   = 16'h0009;   // soft_reset_cgen
-        regs[10]  = 16'h0999;   // soft_reset_analog
-        regs[16]  = 16'h0004;   // PLL: bypass=1 at reset
-        regs[24]  = 16'h0000;   // pll_lock
-        regs[32]  = 16'h0004;   // clock gen: select_pll=1
-        regs[112] = 16'h0000;   // LVDS power-down: ALL OFF at reset
-        regs[116] = 16'h03A6;   // training pattern
-        regs[117] = 16'h002A;   // frame sync marker
-        regs[118] = 16'h0015;   // BL
-        regs[119] = 16'h0035;   // IMG
-        regs[125] = 16'h0059;   // CRC
-        regs[126] = 16'h03A6;   // TR
-        regs[192] = 16'h0000;   // sequencer
-    end
-
-    // ss_n falling starts a transaction
-    always @(negedge ss_n) begin
-        s_cnt   = 0;
-        sh_in   = 26'd0;
-        miso_oe = 1'b0;
-    end
-    always @(posedge ss_n) miso_oe = 1'b0;     // release miso on deselect
-
-    // The sensor samples mosi on the RISING edge (datasheet L1429-1432), and it
-    // updates miso on the RISING edge too.
-    //
-    // WHY THE RISING EDGE, not the falling: Table 11 gives ts_miso = tsck/2 - 10 ns.
-    // A setup of half a period before the falling edge means miso becomes valid
-    // ~one rising edge earlier. Driving miso on the FALLING edge instead would give
-    // the master a FULL period of setup -- a more forgiving model than the real part,
-    // which would let a master with too much input latency pass here and fail on the
-    // bench. Model the tighter, real behavior.
-    always @(posedge sck) if (!ss_n) begin
-        sh_in = {sh_in[24:0], mosi};
-        s_cnt = s_cnt + 1;
-
-        // Cycle 10's rising edge captures the R/W bit. Per Figure 22, D15 appears on
-        // cycle ELEVEN -- so we load here but do not drive until the NEXT rising edge.
-        // Driving D15 on cycle 10 shifts the whole read left by one bit (0x50D0 -> 0xA1A0).
-        if (s_cnt == 10) begin
-            // sh_in now holds 10 bits: {addr[8:0], rw}. The address is [9:1], NOT [8:0]
-            // -- getting that wrong reads regs[addr<<1], which happens to still work for
-            // address 0 and fails everywhere else.
-            s_addr = sh_in[9:1];
-            s_rw   = sh_in[0];
-            if (!s_rw) begin
-                dout    = regs[s_addr];
-                miso_oe = 1'b1;
-                $display("[slave] READ  reg %0d => 0x%04h", s_addr, regs[s_addr]);
-            end
-        end else if (s_cnt >= 11 && s_cnt <= 26 && miso_oe) begin
-            miso_drv = dout[15];                // D15 on cycle 11 ... D0 on cycle 26
-            dout     = {dout[14:0], 1'b0};
-        end
-
-        if (s_cnt == 26) begin
-            s_addr = sh_in[25:17];
-            s_rw   = sh_in[16];
-            if (s_rw) begin
-                if (s_addr == 9'd0) begin
-                    // chip_id is a read-only Status register -- writes must not land.
-                    $display("[slave] NOTE: write to read-only reg 0 ignored");
-                end else begin
-                    regs[s_addr] = sh_in[15:0];
-                    $display("[slave] WRITE reg %0d <= 0x%04h", s_addr, sh_in[15:0]);
-                end
-            end
-        end
-    end
 
     //==========================================================================
     // Protocol timing checks (Table 11)

@@ -124,7 +124,39 @@ module uart_ctrl #(
     // refresh-first: a display that supports BOTH 1024x768@75 and 1280x1024@60 will
     // always choose the 75 Hz mode, so a new high-pixel-clock mode can never be reached
     // -- and therefore never tested -- on such a display without forcing it.
-    output reg  [7:0]  mode_force
+    output reg  [7:0]  mode_force,
+
+    // ---- PYTHON 1300 SPI mailbox (regs 0x30..0x36) ----
+    // A sensor SPI transaction is 9-bit address + 16-bit data, which does not fit the
+    // 1-byte register model. So the host stages the operands across registers, then fires:
+    //
+    //   0x30 W  addr[7:0]
+    //   0x31 W  {rw, 6'b0, addr[8]}      rw: 1 = write, 0 = read
+    //   0x32 W  wdata[7:0]               (writes only)
+    //   0x33 W  wdata[15:8]              (writes only)
+    //   0x34 W  GO -- any value fires the transaction and clears `done`
+    //   0x34 R  {busy, done, 6'b0}       poll until busy=0, done=1
+    //   0x35 R  rdata[7:0]               (reads only)
+    //   0x36 R  rdata[15:8]
+    //
+    // 0x30..0x33 read back what was staged, so the host can verify before firing.
+    output reg  [8:0]  cam_spi_addr,
+    output reg         cam_spi_rw,
+    output reg  [15:0] cam_spi_wdata,
+    output reg         cam_spi_start,     // 1-clk strobe
+    input  wire [15:0] cam_spi_rdata,
+    input  wire        cam_spi_busy,
+    input  wire        cam_spi_done,      // 1-clk strobe from cam_spi_master
+
+    // ---- PYTHON 1300 discrete pins (regs 0x37/0x38) ----
+    //   0x37 RW {reset_n, 4'b0, trigger[2:0]}
+    //   0x38 R  {6'b0, monitor[1:0]}
+    //
+    // reset_n is bit 7 and RESETS TO 0 -- the sensor stays in reset until the host
+    // explicitly releases it. That matches the board, which pulls reset_n low externally
+    // so the part is held in reset through the entire FPGA configuration window.
+    output reg  [7:0]  cam_gpio,
+    input  wire [7:0]  cam_gpio_in
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
@@ -160,32 +192,12 @@ module uart_ctrl #(
     reg        rb_active = 1'b0;
     reg [1:0]  rb_ph    = 2'd0;   // 0=target prologue, 1=data, 2=checksum
 
-    // ---- register read mux ----
-    function [7:0] regread;
-        input [7:0] a;
-        case (a)
-            8'h00:   regread = ID_MAGIC;
-            8'h01:   regread = VERSION;
-            8'h02:   regread = led;
-            8'h06:   regread = {6'b0, sli_ctrl[7], (corr_ld | lut_ld | lutv_ld)};
-            8'h10:   regread = pins;
-            8'h13:   regread = sli_ctrl;
-            8'h14:   regread = mode_force;
-            // ---- offline mode decision (read-only) ----
-            8'h20:   regread = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
-            8'h21:   regread = mode_refr_i;
-            8'h22:   regread = mode_hact_i[7:0];
-            8'h23:   regread = {4'b0, mode_hact_i[11:8]};
-            8'h24:   regread = mode_vact_i[7:0];
-            8'h25:   regread = {4'b0, mode_vact_i[11:8]};
-            8'h26:   regread = mode_pclk_i[7:0];
-            8'h27:   regread = mode_pclk_i[15:8];
-            8'h28:   regread = {7'b0, mode_pclk_i[16]};
-            8'h29:   regread = mode_supp_i[7:0];
-            8'h2A:   regread = {2'b0, mode_supp_i[13:8]};
-            default: regread = 8'h00;
-        endcase
-    endfunction
+    // ---- camera SPI result latch ----
+    // cam_spi_master's rdata/done are transient; the host polls over a UART that is
+    // ~4 orders of magnitude slower than the transaction. So latch the result and keep
+    // a sticky `done` that a fresh GO clears.
+    reg [15:0] cam_rdata_l = 16'd0;
+    reg        cam_done_l  = 1'b0;
 
     // ---- FSM ----
     localparam [3:0]
@@ -227,13 +239,67 @@ module uart_ctrl #(
         lutv_dout <= lutv[lutv_ra];
     end
 
+    // ---- register read mux ----
+    //
+    // A COMBINATIONAL ALWAYS BLOCK, not a function called from a continuous assign.
+    //
+    // This used to be `wire [7:0] rd_data = regread(addr);`. In xsim that re-evaluates
+    // only when the function's ARGUMENT changes -- every signal the function reads
+    // internally (sli_ctrl, pins, cam_gpio, cam_done_l, ...) is invisible to its
+    // sensitivity list. So a host that writes a register and then reads the SAME address
+    // gets a STALE value back, with a stale-but-self-consistent checksum, so the reply
+    // looks perfectly valid. Polling reg 0x34 for SPI completion does exactly that and
+    // hung forever. `always @*` did not fix it -- xsim does not look inside the function
+    // there either.
+    //
+    // Synthesis inferred the correct mux either way, so hardware was fine and only the
+    // model lied. That is worse than a plain bug: the bench agrees with you while the
+    // silicon does something else. Written out flat, the sensitivity is unambiguous
+    // everywhere.
+    reg [7:0] rd_data;
+    always @* begin
+        rd_data = 8'h00;
+case (addr)
+            8'h00:   rd_data  = ID_MAGIC;
+            8'h01:   rd_data  = VERSION;
+            8'h02:   rd_data  = led;
+            8'h06:   rd_data  = {6'b0, sli_ctrl[7], (corr_ld | lut_ld | lutv_ld)};
+            8'h10:   rd_data  = pins;
+            8'h13:   rd_data  = sli_ctrl;
+            8'h14:   rd_data  = mode_force;
+            // ---- offline mode decision (read-only) ----
+            8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
+            8'h21:   rd_data  = mode_refr_i;
+            8'h22:   rd_data  = mode_hact_i[7:0];
+            8'h23:   rd_data  = {4'b0, mode_hact_i[11:8]};
+            8'h24:   rd_data  = mode_vact_i[7:0];
+            8'h25:   rd_data  = {4'b0, mode_vact_i[11:8]};
+            8'h26:   rd_data  = mode_pclk_i[7:0];
+            8'h27:   rd_data  = mode_pclk_i[15:8];
+            8'h28:   rd_data  = {7'b0, mode_pclk_i[16]};
+            8'h29:   rd_data  = mode_supp_i[7:0];
+            8'h2A:   rd_data  = {2'b0, mode_supp_i[13:8]};
+            // ---- PYTHON 1300 SPI mailbox ----
+            8'h30:   rd_data  = cam_spi_addr[7:0];
+            8'h31:   rd_data  = {cam_spi_rw, 6'b0, cam_spi_addr[8]};
+            8'h32:   rd_data  = cam_spi_wdata[7:0];
+            8'h33:   rd_data  = cam_spi_wdata[15:8];
+            8'h34:   rd_data  = {cam_spi_busy, cam_done_l, 6'b0};
+            8'h35:   rd_data  = cam_rdata_l[7:0];
+            8'h36:   rd_data  = cam_rdata_l[15:8];
+            // ---- PYTHON 1300 discrete pins ----
+            8'h37:   rd_data  = cam_gpio;
+            8'h38:   rd_data  = cam_gpio_in;
+            default: rd_data  = 8'h00;
+        endcase
+    end
+
     // checksum helpers (8-bit wraparound)
     wire [7:0] w_sum  = OP_W  + addr + dbyte + rx_data; // == 0 -> good write CK
     wire [7:0] r_sum  = OP_R  + addr + rx_data;         // == 0 -> good read CK
     wire [7:0] u_sum  = sum8  + rx_data;                // == 0 -> good upload CK
     wire [7:0] rt_sum = OP_LR + dbyte + rx_data;        // == 0 -> good read-table request CK
-    wire [7:0] rd_data = regread(addr);
-    wire [7:0] rd_ck   = (8'h00 - addr - rd_data);      // -(addr+data) mod 256
+    wire [7:0] rd_ck = (8'h00 - addr - rd_data);        // -(addr+data) mod 256
 
     integer i;
     always @(posedge clk) begin
@@ -243,8 +309,22 @@ module uart_ctrl #(
             mode_force <= 8'h00;       // force_en=0 -> EDID pick is in charge
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
+            // camera: reset_n = cam_gpio[7] = 0 -> the sensor stays HELD IN RESET
+            // until the host deliberately releases it.
+            cam_spi_addr <= 9'd0; cam_spi_rw <= 1'b0; cam_spi_wdata <= 16'd0;
+            cam_spi_start <= 1'b0; cam_gpio <= 8'h00;
+            cam_rdata_l <= 16'd0; cam_done_l <= 1'b0;
         end else begin
-            tx_send <= 1'b0;                            // default: no TX strobe
+            tx_send       <= 1'b0;                      // default: no TX strobe
+            cam_spi_start <= 1'b0;                      // default: no SPI strobe
+
+            // Capture the SPI result whenever it lands, regardless of FSM state.
+            // Placed BEFORE the case so that a GO arriving in the same cycle wins and
+            // clears `done` (last non-blocking assignment takes effect).
+            if (cam_spi_done) begin
+                cam_rdata_l <= cam_spi_rdata;
+                cam_done_l  <= 1'b1;
+            end
 
             case (state)
                 // ---- frame sync + opcode dispatch -------------------------
@@ -271,6 +351,29 @@ module uart_ctrl #(
                         sli_ctrl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h14) begin    // MODEFORCE (bring-up / test)
                         mode_force <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    // ---- PYTHON 1300 SPI mailbox ----
+                    end else if (addr == 8'h30) begin    // sensor addr[7:0]
+                        cam_spi_addr[7:0] <= dbyte;      resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h31) begin    // {rw, -, addr[8]}
+                        cam_spi_rw    <= dbyte[7];
+                        cam_spi_addr[8] <= dbyte[0];     resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h32) begin    // wdata[7:0]
+                        cam_spi_wdata[7:0]  <= dbyte;    resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h33) begin    // wdata[15:8]
+                        cam_spi_wdata[15:8] <= dbyte;    resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h34) begin    // GO (any value fires it)
+                        // Drop the GO if a transaction is still running, rather than
+                        // silently corrupting the operands mid-flight. The host polls
+                        // busy anyway; 'N' tells it plainly that the GO did not take.
+                        if (cam_spi_busy) begin
+                            resp[0] <= ACK_N; resp_len <= 2'd1;
+                        end else begin
+                            cam_spi_start <= 1'b1;
+                            cam_done_l    <= 1'b0;       // arm: cleared until this one lands
+                            resp[0] <= ACK_K; resp_len <= 2'd1;
+                        end
+                    end else if (addr == 8'h37) begin    // {reset_n, -, trigger[2:0]}
+                        cam_gpio <= dbyte;               resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else begin                       // RO / undefined
                         resp[0] <= ACK_N; resp_len <= 2'd1;
                     end
