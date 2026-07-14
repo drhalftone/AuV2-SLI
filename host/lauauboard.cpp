@@ -381,3 +381,142 @@ QStringList LAUAuBoard::availablePorts()
     }
     return (ftdi + others);
 }
+
+/****************************************************************************/
+/****************************************************************************/
+/****************************************************************************/
+// PYTHON 1300 camera.
+//
+// A sensor SPI transaction is a 9-bit address + 16-bit data, which does not fit the
+// board's 1-byte register model. So we stage the operands across registers 0x30..0x33,
+// fire it with 0x34, poll 0x34 until done, and collect the result from 0x35/0x36.
+//
+// Every one of these works with NO sensor clock running and no configuration at all --
+// the sensor's SPI is asynchronous to its system clock. That is precisely why the Au V2
+// can talk to the sensor even though it can never receive its LVDS.
+/****************************************************************************/
+
+bool LAUAuBoard::cameraSpiTransact(bool isWrite, quint16 sensorReg, quint16 wdata, quint16 *rdata)
+{
+    if (sensorReg > 0x1FF) {
+        errorString = QString("camera: sensor register %1 exceeds 9 bits").arg(sensorReg);
+        return (false);
+    }
+
+    // STAGE THE OPERANDS
+    if (!writeRegister(LAUAU_REG_CAM_ADDR, (quint8)(sensorReg & 0xFF))) {
+        return (false);
+    }
+    quint8 cmd = (quint8)((isWrite ? 0x80 : 0x00) | ((sensorReg >> 8) & 0x01));
+    if (!writeRegister(LAUAU_REG_CAM_CMD, cmd)) {
+        return (false);
+    }
+    if (isWrite) {
+        if (!writeRegister(LAUAU_REG_CAM_WDATA_L, (quint8)(wdata & 0xFF))) {
+            return (false);
+        }
+        if (!writeRegister(LAUAU_REG_CAM_WDATA_H, (quint8)(wdata >> 8))) {
+            return (false);
+        }
+    }
+
+    // FIRE
+    if (!writeRegister(LAUAU_REG_CAM_GO, 0x01)) {
+        return (false);
+    }
+
+    // POLL. A transaction is ~30 us at 1 MHz sck; a single UART frame is ~400 us, so this
+    // is almost always done on the first read. The loop exists for the pathological case.
+    for (int i = 0; i < 20; i++) {
+        int st = readRegister(LAUAU_REG_CAM_GO);
+        if (st < 0) {
+            return (false);
+        }
+        if (!(st & LAUAU_CAM_GO_BUSY) && (st & LAUAU_CAM_GO_DONE)) {
+            if (rdata) {
+                int lo = readRegister(LAUAU_REG_CAM_RDATA_L);
+                int hi = readRegister(LAUAU_REG_CAM_RDATA_H);
+                if (lo < 0 || hi < 0) {
+                    return (false);
+                }
+                *rdata = (quint16)((hi << 8) | lo);
+            }
+            return (true);
+        }
+    }
+
+    errorString = QString("camera: SPI transaction to sensor reg %1 never completed").arg(sensorReg);
+    return (false);
+}
+
+int LAUAuBoard::cameraSpiRead(quint16 sensorReg)
+{
+    quint16 v = 0;
+    if (!cameraSpiTransact(false, sensorReg, 0, &v)) {
+        return (-1);
+    }
+    return ((int)v);
+}
+
+bool LAUAuBoard::cameraSpiWrite(quint16 sensorReg, quint16 value)
+{
+    return (cameraSpiTransact(true, sensorReg, value, nullptr));
+}
+
+bool LAUAuBoard::cameraSetReset(bool released)
+{
+    // reg 0x37 = {7:reset_n, 2..0:trigger}. Preserve the triggers.
+    int cur = readRegister(LAUAU_REG_CAM_GPIO);
+    if (cur < 0) {
+        return (false);
+    }
+    quint8 v = (quint8)(cur & 0x07);
+    if (released) {
+        v |= 0x80;
+    }
+    return (writeRegister(LAUAU_REG_CAM_GPIO, v));
+}
+
+bool LAUAuBoard::cameraSetTriggers(quint8 mask3)
+{
+    int cur = readRegister(LAUAU_REG_CAM_GPIO);
+    if (cur < 0) {
+        return (false);
+    }
+    quint8 v = (quint8)((cur & 0x80) | (mask3 & 0x07));
+    return (writeRegister(LAUAU_REG_CAM_GPIO, v));
+}
+
+int LAUAuBoard::cameraMonitorPins()
+{
+    int v = readRegister(LAUAU_REG_CAM_MON);
+    if (v < 0) {
+        return (-1);
+    }
+    return (v & 0x03);
+}
+
+bool LAUAuBoard::verifyCameraChipId()
+{
+    // The sensor comes out of FPGA configuration HELD IN RESET (cam_gpio resets to 0x00,
+    // and the board fits a 10k pulldown on reset_n). Nothing answers on SPI until it is
+    // released -- so a failure here with reset still asserted is not a board fault.
+    if (!cameraSetReset(true)) {
+        return (false);
+    }
+
+    int id = cameraSpiRead(PYTHON_REG_CHIP_ID);
+    if (id < 0) {
+        return (false);
+    }
+    if (id != PYTHON_CHIP_ID) {
+        // 0xA1A0 is 0x50D0 shifted left one bit -- the signature of sampling miso on the
+        // wrong sck edge. It is a logic bug, NOT a bad board. See CAMERA_SENSOR_PROTOCOL.md 1.1.
+        errorString = QString("camera: chip ID 0x%1, expected 0x%2%3")
+                          .arg(id, 4, 16, QChar('0'))
+                          .arg(PYTHON_CHIP_ID, 4, 16, QChar('0'))
+                          .arg(id == 0xA1A0 ? "  (== ID << 1: miso sampled on the wrong edge)" : "");
+        return (false);
+    }
+    return (true);
+}

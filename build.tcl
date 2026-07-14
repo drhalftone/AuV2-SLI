@@ -42,6 +42,10 @@ read_verilog [glob $rtl/*.v]
 
 # ---- constraints ----
 read_xdc $here/constrs_1/imports/RTL/Au2.xdc
+# PYTHON 1300 camera element: the 10 CMOS control pins only. No LVDS -- on the Au the
+# pairs scatter across banks 14/15/34 and dout0 lands on the 1.35 V DDR3 bank. See the
+# header of cam_au2.xdc.
+read_xdc $here/constrs_1/imports/RTL/cam_au2.xdc
 
 # ---- synth + implement ----
 synth_design -top $top -include_dirs $rtl

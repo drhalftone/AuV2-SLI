@@ -50,6 +50,31 @@
 #define LAUAU_REG_SLICTRL   0x13   // {7:sw_en, 3:R_en, 2:G_en, 1:B_en, 0:orient}
 #define LAUAU_ID_MAGIC      0x48
 
+// ---- PYTHON 1300 camera (see CAMERA_SENSOR_PROTOCOL.md) -----------------------
+// A sensor SPI transaction is a 9-bit address + 16-bit data, which does not fit the
+// 1-byte register model. The operands are staged across these registers, then fired.
+#define LAUAU_REG_CAM_ADDR    0x30   // W  sensor addr[7:0]
+#define LAUAU_REG_CAM_CMD     0x31   // W  {7:rw (1=write), 0:addr[8]}
+#define LAUAU_REG_CAM_WDATA_L 0x32   // W  wdata[7:0]
+#define LAUAU_REG_CAM_WDATA_H 0x33   // W  wdata[15:8]
+#define LAUAU_REG_CAM_GO      0x34   // W  fire (any value) / R {7:busy, 6:done}
+#define LAUAU_REG_CAM_RDATA_L 0x35   // R  rdata[7:0]
+#define LAUAU_REG_CAM_RDATA_H 0x36   // R  rdata[15:8]
+#define LAUAU_REG_CAM_GPIO    0x37   // RW {7:reset_n, 2..0:trigger[2:0]}
+#define LAUAU_REG_CAM_MON     0x38   // R  {1..0:monitor[1:0]}
+
+#define LAUAU_CAM_GO_BUSY     0x80
+#define LAUAU_CAM_GO_DONE     0x40
+
+// Sensor-side registers worth naming (datasheet Table 28)
+#define PYTHON_REG_CHIP_ID    0      // read-only status; MUST read 0x50D0
+#define PYTHON_REG_TRAINING   116    // R/W, default 0x03A6 -- a safe write/read-back target
+#define PYTHON_REG_PLL_LOCK   24     // [0] = PLL locked
+#define PYTHON_REG_LVDS_PWR   112    // LVDS driver power. DO NOT WRITE ON AN Au BUILD --
+                                     // dout0 lands on the Au's 1.35 V bank 15, which is not
+                                     // 3.3 V tolerant. See CAMERA_IO_MAP.md section 8.2.
+#define PYTHON_CHIP_ID        0x50D0
+
 class LAUAuBoard : public QObject
 {
     Q_OBJECT
@@ -113,6 +138,31 @@ public:
     // switches). horizontalOrient: false = vertical stripes (cols), true = rows.
     bool setSLIControl(bool usbEnable, bool rEnable, bool gEnable, bool bEnable, bool horizontalOrient);
 
+    // ---- PYTHON 1300 camera ----------------------------------------------------
+    // The sensor's SPI is asynchronous to its system clock: these work with NO sensor
+    // clock running, before any configuration. That is what makes Au V2 bring-up possible.
+
+    // Read a 16-bit sensor register. Returns -1 on error.
+    int  cameraSpiRead(quint16 sensorReg);
+
+    // Write a 16-bit sensor register.
+    bool cameraSpiWrite(quint16 sensorReg, quint16 value);
+
+    // Release (or assert) the sensor's reset. It comes out of FPGA config HELD IN RESET.
+    bool cameraSetReset(bool released);
+
+    // Drive trigger[2:0]. Keeps reset_n at its current value.
+    bool cameraSetTriggers(quint8 mask3);
+
+    // Read monitor[1:0]. Returns -1 on error.
+    int  cameraMonitorPins();
+
+    // THE HARDWARE GATE. Reads sensor register 0 and checks it against 0x50D0.
+    // A pass proves the power tree came up correctly sequenced, the DF40 pin map and the
+    // stack pass-through are right, reset_n released, and the SPI path works -- in one
+    // transaction. See CAMERA_RTL_PLAN.md milestone 5.
+    bool verifyCameraChipId();
+
     // --- static builders -------------------------------------------------------
     // 256 bytes from a 256-entry float (0..1) tone-correction curve: b[g] = round(255*tcc[g]).
     static QByteArray correctionTable(LAUMemoryObject toneCurve);
@@ -131,6 +181,9 @@ private:
     int         timeoutMs;
 
     // open the named port with 115200 8N1, no flow control.
+    // Stage operands -> fire -> poll -> collect. Shared by cameraSpiRead/Write.
+    bool cameraSpiTransact(bool isWrite, quint16 sensorReg, quint16 wdata, quint16 *rdata);
+
     bool openPort(const QString &portName);
     // write the whole frame, flushing.
     bool writeFrame(const QByteArray &frame);

@@ -244,6 +244,19 @@ Zero collisions with `Au2.xdc` (checked against every LED, UART, TMDS, switch an
 | `monitor0` | A16 | **K2** | 35 |
 | `monitor1` | A17 | **H2** | 35 |
 
+**Three independent sources agree on this map:**
+
+1. Alchitry Labs 2, `AuV2Pin.kt` (the primary derivation above).
+2. **`Au2.xdc`'s own commented-out Bank-A lines** — the historical pinout, before the Bank-B remap.
+   They annotate the very same element numbers: `M6` → *"A5 orientation"*, `N9` → *"A6 Blue"*,
+   `K1` → *"A11 Green"*, `L3` → *"A12 Red"*. Four exact hits, from this repo's own history.
+3. The Pt-side derivation in §4, via the shared element bus.
+
+Constrained in `constrs_1/imports/RTL/cam_au2.xdc`. The pull directions there **match the board's
+external 10 kΩ resistors** (`ss_n` up; `reset_n` and `trigger0–2` down) — they agree with them
+rather than fight them. The external resistors are the primary guarantee: they hold through the
+whole FPGA configuration window, when the internal pulls do nothing.
+
 > ### ⚠️ The element-pin / FPGA-ball namespace trap — the same class of bug as §7.
 > `Au2.xdc` puts HDMI TMDS on FPGA **balls** literally named `A3`, `A4`, `A5`. The camera uses
 > **element pins** also named A3, A4, A5. **They are unrelated.** Element A3 → ball **N6**.
