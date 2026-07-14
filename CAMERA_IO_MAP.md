@@ -212,3 +212,92 @@ drawings. **Never transfer their plug pin numbers.**
 connector: the **odd** control-header pins 1–15 must read **3.3 V** (not the even ones, which are
 `VCC` at 5 V+). That validates the pass-through *and* the pin mapping at once — against a sensor
 whose absolute maximum is **4.3 V**.
+
+---
+
+# 8. The Au V2 bring-up path — SPI only, and why
+
+**Status: DERIVED AND CROSS-CHECKED.** Source: Alchitry Labs 2,
+`src/main/kotlin/com/alchitry/labs2/hardware/pinout/AuV2Pin.kt` (the same class of source the Pt map
+in §1 came from), plus <https://alchitry.com/tutorials/references/pinouts-and-custom-elements/>.
+
+The camera element is a **Pt V2** board. But the *sensor's SPI is asynchronous to its system clock*
+(`CAMERA_SENSOR_PROTOCOL.md` §1) — it needs no clock, no PLL, no LVDS, and no configuration. So the
+**Au V2 can talk to the sensor over SPI**, and one chip-ID read proves the power tree, the DF40 pin
+map, the stack pass-through and our RTL, all at once. That is the whole Au V2 milestone.
+
+## 8.1 The 11 CMOS signals on the Au V2 — all bank 14/35, fixed 3.3 V
+
+Zero collisions with `Au2.xdc` (checked against every LED, UART, TMDS, switch and trigger pin).
+
+| Sensor signal | Element pin | **Au V2 ball** | Bank |
+|---|---|---|---|
+| `mosi` | A3 | **N6** | 14 |
+| `miso` | A4 | **P9** | 14 |
+| `sck` | A5 | **M6** | 14 |
+| `clk_pll` | A6 | **N9** | 14 |
+| `reset_n` | A9 | **J1** | 35 |
+| `ss_n` | A10 | **L2** | 35 |
+| `trigger0` | A11 | **K1** | 35 |
+| `trigger1` | A12 | **L3** | 35 |
+| `trigger2` | A15 | **H1** | 35 |
+| `monitor0` | A16 | **K2** | 35 |
+| `monitor1` | A17 | **H2** | 35 |
+
+> ### ⚠️ The element-pin / FPGA-ball namespace trap — the same class of bug as §7.
+> `Au2.xdc` puts HDMI TMDS on FPGA **balls** literally named `A3`, `A4`, `A5`. The camera uses
+> **element pins** also named A3, A4, A5. **They are unrelated.** Element A3 → ball **N6**.
+> Never carry a pin number across the two namespaces.
+
+## 8.2 ⛔ LVDS CANNOT WORK ON THE Au. This is not fixable in RTL.
+
+The Pt puts all seven pairs in **one** bank (13) at 2.5 V. On the Au the *same element pins* scatter
+across **three banks at three different fixed voltages**:
+
+| Sensor pair | Element | Au balls | Au bank | VCCO |
+|---|---|---|---|---|
+| `clock_out±` | B40/B42 | P13 / N13 | **14** | 3.3 V (fixed) — no `LVDS_25`, no `DIFF_TERM` |
+| `dout0±` | B46/B48 | D9 / D10 | **15** | **1.35 V (fixed)** — the DDR3 bank |
+| `dout1–3±`, `sync±`, `lvds_clock_in±` | B52…B78 | P1/N1 … N4/M5 | **34** | 3.3 / 2.5 / 1.8 (selectable) |
+
+The forwarded bit clock lands in a bank that can **never** be 2.5 V, so the one pair that matters
+most gets neither `LVDS_25` nor `DIFF_TERM`. And `dout0±` lands on **bank 15**, which Alchitry
+documents as **"The 1.35V pins are not 3.3V tolerant."** Only 5 of 7 pairs are even in the
+multi-voltage bank. **Do not constrain the LVDS pins in an Au build.**
+
+**Why that is nevertheless SAFE:** the sensor's LVDS drivers are **powered down at reset**
+(register 112 = 0, all three fields — see `CAMERA_SENSOR_PROTOCOL.md` §3). They only turn on if
+something writes register 112. So `dout0` never drives the 1.35 V bank, provided **nothing writes
+register 112 on an Au build**. That is a one-line rule, not a gamble.
+
+## 8.3 VBSEL — the Au has it too, and it is harmless here
+
+The camera board pulls **control-header pin 38 (`VBSEL_A`) to +3V3 through 1 kΩ**. That is a Pt V2
+strap, so the obvious worry is what pin 38 does on an Au.
+
+**It is the same pin.** Alchitry's V2 control header is common: pin **38 = `VBSEL_A`**, pin
+**40 = `VBSEL_B`**, same truth table on both boards (floating/floating → 3.3 V; high/high → 2.5 V;
+high/low → 1.8 V). On the Au they select the VCCO of the **multi-voltage bank, which is bank 34**.
+
+**And the SLI design uses ZERO bank-34 pins.** Its Bank-B remap lands on element B27–B30
+(`R11`/`R16`/`R10`/`R15`) and B33–B36 (`K5`/`N16`/`E6`/`M16`) — every one of those is in bank **14
+or 35**, both hardwired 3.3 V. So the strap changes the voltage of a bank nothing is using.
+
+> **Recommendation for an Au build: do not populate the `VBSEL_A` strap resistor.** Nothing on the
+> Au needs 2.5 V. Leaving it off keeps bank 34 at its 3.3 V default and makes the whole board
+> uniformly 3.3 V — one less variable during first power-up. It is electrically safe either way.
+
+## 8.4 What the Au CAN and CANNOT prove
+
+| | Au V2 |
+|---|---|
+| Power tree comes up, correctly sequenced | ✅ (the sensor answers on SPI) |
+| DF40 pin map + stack pass-through correct | ✅ (ditto — §6 lists this as *"NOT checked"*) |
+| `reset_n` releases; SPI RTL works both ways | ✅ |
+| Trigger / monitor pins | ✅ |
+| Bank 13 @ 2.5 V, `DIFF_TERM`, SRCC/BUFIO choice, even-row routing | ❌ **Pt only** |
+| 1:10 ISERDES receiver, training, pixels | ❌ **Pt only** |
+
+The half the Au *can* test — the power tree and the pin map — is precisely the half that has never
+been energised and was validated only in SPICE and in Vivado. The half it cannot test is the half
+Vivado has already checked on paper.

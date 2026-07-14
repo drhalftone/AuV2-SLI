@@ -72,7 +72,56 @@ window (so a pull is fine, and the board fits one).
 
 The datasheet notes the max SPI frequency *scales with the input clock frequency* (L1449–1451).
 With **no sensor clock running** during first bring-up, run `sck` slowly — a few hundred kHz off
-`clk100` is free and removes the question entirely.
+`clk100` is free and removes the question entirely. We run **1 MHz** (`usb_link.v`).
+
+### 1.1 The edges are CONFIRMED against a shipping implementation — do not "fix" them
+
+The `miso`-on-the-falling-edge rule above is the one thing in this document derived from *prose*
+rather than a table, it is unusual, and it fails in a way that looks like a wiring fault (reads come
+back shifted one bit: `0x50D0` → `0xA1A0`). Our RTL and our testbench were written from the same
+reading, so a passing test could not rule out a shared misreading.
+
+**It is now ruled out.** Avnet's `onsemi_vita_spi` core (VHDL, Xilinx, shipping on the
+PYTHON-1300-C module) was written independently and agrees on every point:
+
+| | Avnet `spi_top.vhd` | `cam_spi_master.v` |
+|---|---|---|
+| Frame width | `gDATA_WIDTH => 26` | 26 cycles ✔ |
+| Bit order | `gTxMSB_FIRST / gRxMSB_FIRST => 1` | MSB first ✔ |
+| `sck` idle | `gSCLK_POLARITY => '0'` | CPOL = 0 ✔ |
+| Chip select | `gCS_POLARITY => '1'` (active low) | `ss_n` ✔ |
+| **`mosi` driven** | **falling edge** | falling edge ✔ |
+| **`miso` sampled** | **falling edge** | falling edge ✔ |
+| Rate | `gSpiClkSpeed => 1000` kHz | 1 MHz ✔ |
+
+> ### ⚠️ THE TRAP: Avnet's generic comments say the OPPOSITE of what their code does.
+>
+> `spi_top.vhd` instantiates the core with:
+>
+> ```vhdl
+> gMISO_SAMPLE => '0'   -- '0': sample on rising edge, '1': sample on falling edge
+> gMOSI_CLK    => '0'   -- '0': clock out on rising edge, '1': clock out on falling edge
+> ```
+>
+> Read literally, that is *rising*-edge sampling — contradicting the datasheet and our RTL.
+> **It isn't.** `ClockOut`/`SampleIn` are one-cycle strobes, and the state machine inverts the
+> generic in the falling-edge branch (`spi_lowlevel.vhd`, state `Clk_High`):
+>
+> ```vhdl
+> when Clk_High =>                       -- sck is HIGH; this transition drives it LOW
+>     ClockOut <= not gMOSI_CLK;         --  = '1'  -> mosi updated  } on the
+>     SampleIn <= not gMISO_SAMPLE;      --  = '1'  -> miso sampled  } FALLING edge
+>     SCLK     <= gSCLK_POLARITY;        --  = '0'  -> sck falls
+>
+> when Clk_Low =>                        -- sck is LOW; this transition drives it HIGH
+>     ClockOut <= gMOSI_CLK;             --  = '0'  -> no strobe
+>     SampleIn <= gMISO_SAMPLE;          --  = '0'  -> no strobe
+>     SCLK     <= not gSCLK_POLARITY;    --  = '1'  -> sck rises
+> ```
+>
+> **Nothing happens on the rising edge.** Both strobes fire on the falling edge — exactly what the
+> datasheet says and what we implement. Anyone who reads only the generic comment will conclude our
+> edges are backwards and "fix" them. They are not backwards.
 
 ---
 
@@ -342,6 +391,23 @@ gh api "repos/Avnet/hdl/contents/Projects/fmchc_python1300c/software/sw_reposito
 
 > The *register values* are facts about a chip and we use them freely (with the two deviations in
 > §7 — monochrome, and our clocking mode). The *file* is Avnet's and stays out of the tree.
+
+### 8.2.1 Avnet's SPI HDL core — the independent confirmation of §1.1
+
+Same repo, same licence caveat (read, do not redistribute). This is the **HDL** that actually
+drives the pins — the `.c` file above only pokes AXI registers.
+
+```sh
+for f in spi_top.vhd spi_lowlevel.vhd onsemi_vita_spi_core.vhd; do
+  gh api "repos/Avnet/hdl/contents/IP/onsemi_vita_spi/hdl/$f" --jq '.content' \
+    | base64 -d > "docs/reference/avnet_$f"
+done
+```
+
+`spi_top.vhd` holds the generic map (26-bit frame, MSB first, CPOL 0, CS active low, 1 MHz);
+`spi_lowlevel.vhd` holds the state machine that proves the strobes fire on the **falling** edge
+despite the generic comments claiming otherwise. See **§1.1** — read that before touching
+`cam_spi_master.v`'s edges.
 
 ### 8.3 Open Vision Computer — `docs/reference/ovc_*` (gitignored)
 
