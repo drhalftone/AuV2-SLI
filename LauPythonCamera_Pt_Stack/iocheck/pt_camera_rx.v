@@ -2,7 +2,34 @@
 //=============================================================================
 // pt_camera_rx.v
 //
-// The REAL LVDS receiver structure, on the EVEN-row pin assignment.
+// ############################################################################
+// ##  PLACEMENT PROOF ONLY. DO NOT COPY THIS INTO THE REAL DESIGN.          ##
+// ############################################################################
+//
+// This file exists to prove ONE thing to Vivado: that an SRCC pin can drive
+// BUFIO + BUFR into a cascaded ISERDESE2 on the even-row pin assignment. It
+// does that, and the result is quoted in the README. It is NOT a receiver.
+//
+// TWO REASONS IT MUST NOT BE PASTED FORWARD:
+//
+//  1. THE lvds_clock_in OUTPUT IS A STARTUP DEADLOCK. The ODDR near the bottom
+//     of this file is clocked from `wordclk`, which is BUFR-divided from the
+//     sensor's RETURNED clock_out. So the clock we send TO the sensor is derived
+//     from the clock the sensor sends BACK: at power-up the sensor has no input
+//     clock, emits no output clock, and we therefore never generate its input
+//     clock. It can never start. That is harmless here (nothing is being
+//     simulated; the loop just has to place) and fatal anywhere else.
+//
+//  2. WE NO LONGER DRIVE lvds_clock_in AT ALL. The design uses the sensor's
+//     INTERNAL PLL: the FPGA supplies 72 MHz CMOS on clk_pll and the sensor
+//     multiplies x5 internally. See CAMERA_SENSOR_PROTOCOL.md §4. The whole
+//     360 MHz LVDS transmit path -- ODDR, OBUFDS, and the deadlock with it --
+//     does not exist in the real receiver.
+//
+// Also: BITSLIP is tied to 0 and IOBDELAY is "NONE", so there is no word
+// alignment here whatsoever, and nothing decodes the sync channel.
+//
+// The real receiver is cam_lvds_rx.v (task #8). See CAMERA_RTL_PLAN.md.
 //
 // WHY THIS EXISTS
 // ---------------
