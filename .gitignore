@@ -44,3 +44,12 @@ CMakeLists.txt.user*
 *.kicad_sch.bak*
 *.kicad_pcb.bak*
 *-backups/
+
+# Third-party reference material -- fetched locally, NOT redistributed.
+# This repo is public; see CAMERA_SENSOR_PROTOCOL.md §8 to re-fetch.
+#   - docs/datasheets/  : onsemi datasheet PDF + text extract (onsemi copyright)
+#   - docs/reference/   : Avnet driver source ("Publication of this design is not
+#                         authorized without written consent from Avnet"), and
+#                         osrf/ovc HDL (Apache-2.0, but the files carry no header)
+docs/datasheets/
+docs/reference/

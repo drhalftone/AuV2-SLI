@@ -169,8 +169,23 @@ FT2232HQ is USB 2.0 (JTAG/UART only) — not a data path.
 
 <!-- PIN_TABLE_START -->
 
-**Clocking scheme: the FPGA drives the sensor's LVDS clock directly** (`lvds_clock_in±` at
-~360 MHz, PLL bypassed). `clk_pll` is routed but unused — kept as an escape hatch.
+> ### ⚠️ SUPERSEDED — we now use the sensor's internal PLL. See [`CAMERA_SENSOR_PROTOCOL.md`](../CAMERA_SENSOR_PROTOCOL.md) §4.
+>
+> **The escape hatch became the main road.** The FPGA drives **`clk_pll` at 72 MHz (CMOS)** and the
+> sensor's internal PLL multiplies ×5 to the 360 MHz bit clock. **`lvds_clock_in±` is NOT driven** —
+> those two pins stay undriven and unconstrained.
+>
+> Why: Avnet's *published, proven* register sequence (`docs/reference/onsemi_python_sw.c`) is the
+> PLL variant, and no bypass-mode sequence is published — the datasheet warns that inventing one
+> *"may cause the sensor to malfunction."* It also deletes the entire 360 MHz LVDS transmit path
+> (no ODDR, no OBUFDS), and it costs nothing: **both modes give 720 Mbps/lane and the same max
+> frame rate.**
+>
+> **The board is unchanged** — `clk_pll` was already routed for exactly this. Nothing to respin.
+
+**Original plan (no longer followed):** ~~the FPGA drives the sensor's LVDS clock directly
+(`lvds_clock_in±` at ~360 MHz, PLL bypassed); `clk_pll` is routed but unused — kept as an escape
+hatch.~~
 
 ### 5.1 LVDS — top Bank B, bank 13, VCCO = 2.5 V
 
