@@ -247,25 +247,44 @@ IDELAYCTRL_inst : IDELAYCTRL
    --------------------------------
 hdmi_MMCME2_BASE_inst : MMCME2_BASE
    generic map (
-      -- x15 recovery (ported from MimasA7-SLI): VCO = pixel x 15. The Au V2 is a -2 part
-      -- (Fvco max 1440 MHz vs the Mimas -1's 1200), so the input lock band is ~40-96 MHz
-      -- (was 60-77 at x10) -> covers 75 Hz modes (1024x768@75=78.67, 800x600@75=49.5).
-      -- x5 deserialiser clock at 96 MHz = 480 MHz, within the -2 BUFIO/ISERDES limit.
+      -- x10 recovery: VCO = pixel x 10.  Fvco on this -2 part is 600..1440 MHz, so the
+      -- input lock band is 60..144 MHz.
+      --
+      -- WAS x15 (band 40..96 MHz). x15 cannot lock 1280x1024@60: VCO would be
+      -- 108 x 15 = 1620 MHz, 12% over the 1440 MHz maximum. The multiplier MUST be a
+      -- multiple of 5 -- the deserialiser needs x5 = 5*pixel off the same VCO, so
+      -- CLKOUT0_DIVIDE = M and CLKOUT2_DIVIDE = M/5 -- which leaves only x20 (30-72),
+      -- x15 (40-96), x10 (60-144) and x5 (120-288). x10 is the only one that reaches 108.
+      --
+      -- COST: the 40-60 MHz modes drop out of the pass-through window -- 800x600@60
+      -- (40.0), 800x600@75 (49.5), 800x600@72 (50.0). 1024x768@60/70/75 (65/75/78.67)
+      -- and 1280x720/800@60 (74.25/71.1) all survive, and 1280x1024@60 (108) is gained.
+      -- Keeping BOTH bands needs a DRP-reconfigurable recovery MMCM (x15 <-> x10 chosen
+      -- from the measured input clock) -- that is the real fix, and a bigger job.
+      --
+      -- x5 deserialiser clock at 108 MHz = 540 MHz. The OUTPUT side already runs its
+      -- OSERDES at 540 MHz (idx13, hardware-verified), and the -2 BUFIO/ISERDES ceiling
+      -- is comparable (~600 MHz), so this should hold -- but it IS the fastest the RX has
+      -- ever been driven. If pll_locked chatters at 108, this is the first suspect.
+      --
       -- HIGH = widest loop bandwidth -> tracks a wandering source (PC GPUs run spread-spectrum
       -- by default) and HOLDS LOCK. "LOW" (tried at x15) gave the narrowest tracking and the PLL
       -- chattered lock ~7% of frames (telemetry pll_locked drops) -> drifting line + brief blackouts,
-      -- while symbol_sync stayed up = classic marginally-locked PLL. x10 used OPTIMIZED and was stable.
+      -- while symbol_sync stayed up = classic marginally-locked PLL. Left at HIGH deliberately:
+      -- only the multiplier is being changed here.
       BANDWIDTH => "HIGH",
       DIVCLK_DIVIDE   => 1,          -- Master division value (1-106)
-      CLKFBOUT_MULT_F => 15.0,        -- VCO = pixel x 15
+      CLKFBOUT_MULT_F => 10.0,        -- VCO = pixel x 10
       CLKFBOUT_PHASE => 0.0,         -- Phase offset in degrees of CLKFB (-360.000-360.000).
-      CLKIN1_PERIOD => 13.000,  -- Input clock period in ns to ps resolution (i.e. 33.333 is 30 MHz).
+      -- Fastest input we now accept (108 MHz = 9.259 ns). This is what Vivado's STA uses
+      -- for the RX datapath, so it must be the FASTEST expected clock, not a typical one.
+      CLKIN1_PERIOD => 9.259,
       --CLKIN1_PERIOD => 6.734,
 
       -- CLKOUT0_DIVIDE - CLKOUT6_DIVIDE: Divide amount for each CLKOUT (1-128)
-      CLKOUT0_DIVIDE_F => 15.0,       -- pixel = VCO/15
-      CLKOUT1_DIVIDE   => 15,         -- pixel x1
-      CLKOUT2_DIVIDE   => 3,          -- clk_x5 = VCO/3 = 5x pixel
+      CLKOUT0_DIVIDE_F => 10.0,       -- pixel = VCO/10
+      CLKOUT1_DIVIDE   => 10,         -- pixel x1
+      CLKOUT2_DIVIDE   => 2,          -- clk_x5 = VCO/2 = 5x pixel
       CLKOUT3_DIVIDE   => 10,
       CLKOUT4_DIVIDE   => 2,
       CLKOUT5_DIVIDE   => 2,

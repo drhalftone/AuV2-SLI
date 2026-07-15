@@ -11,7 +11,11 @@ set_property BITSTREAM.CONFIG.SPI_FALL_EDGE YES [current_design]
 ##Clock Signal
 set_property -dict { PACKAGE_PIN "N14"    IOSTANDARD LVCMOS33       SLEW FAST} [get_ports { clk100 }]     ;     
 create_clock -add -name sys_clk_pin -period 10.00 -waveform {0 5} [get_ports clk100]
-create_clock -add -name hdmi_clk -period 13.300 -waveform {0 5} [get_ports hdmi_rx_clk_p] 
+# RX recovered clock. MUST be the FASTEST pixel clock we accept in pass-through, not a
+# typical one: this is what STA analyses the whole RX datapath against. The recovery MMCM
+# is now x10 (band 60-144 MHz), so 1280x1024@60 = 108 MHz = 9.259 ns is the worst case.
+# Was 13.300 ns (75 MHz) under the old x15 / 40-96 MHz window.
+create_clock -add -name hdmi_clk -period 9.259 -waveform {0 4.63} [get_ports hdmi_rx_clk_p] 
 ##HDMI in 1080p or 720p or 1080p@50
 #create_clock -add -name hdmi_clk -period 6.734 -waveform {0 5} [get_ports hdmi_rx_clk_p]  
 #create_clock -add -name hdmi_clk -period 8.08080808081 -waveform {0 5} [get_ports hdmi_rx_clk_p] 

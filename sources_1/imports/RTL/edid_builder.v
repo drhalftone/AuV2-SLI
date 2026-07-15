@@ -26,16 +26,21 @@
 //  DRAFT - unsimulated. See test plan in the design note.
 //==============================================================================
 module edid_builder #(
-    parameter [15:0] F_MIN_10K = 16'd4000,    // 40.00 MHz (hdmi_input MMCM now x15: VCO=pixel*15>=600)
-    parameter [15:0] F_MAX_10K = 16'd9000,    // 90.00 MHz (x15 on the -2 part: VCO<=1440 -> pixel<=96; 90=margin)
-    // x15 lock band = 40-90 MHz -> the 75 Hz modes now fit. Keep every established mode BOTH
-    // in-band AND on the display. In-window established positions (pixel clocks):
-    //   B35 bit0 = 800x600@60 (40.0)
-    //   B36 bit7 = 800x600@72 (50.0)  bit6 = 800x600@75 (49.5)
-    //        bit3 = 1024x768@60 (65.0) bit2 = 1024x768@70 (75.0) bit1 = 1024x768@75 (78.75)
-    //   Excluded: 640x480/720x400 (<40, below floor); 1280x1024@75 (135, over).
-    parameter [7:0]  EST_MASK35 = 8'h01,      // 800x600@60 (bit0)
-    parameter [7:0]  EST_MASK36 = 8'hCE,      // 800x600@72/75 (b7,b6) + 1024x768@60/70/75 (b3,b2,b1)
+    parameter [15:0] F_MIN_10K = 16'd6000,    // 60.00 MHz (hdmi_input MMCM is x10: VCO=pixel*10>=600)
+    parameter [15:0] F_MAX_10K = 16'd11000,   // 110.00 MHz (x10: VCO<=1440 -> pixel<=144, but the
+                                              // x5 deserialiser is the real cap; 110 admits
+                                              // 1280x1024@60 = 108 MHz with a little margin)
+    // x10 lock band = 60-110 MHz. These masks MUST agree with F_MIN/F_MAX and with the
+    // recovery MMCM's multiplier -- nothing checks them at runtime (see CAND below), so a
+    // mode listed here that the MMCM cannot lock is offered to the PC and then black-screens.
+    //   B36 bit3 = 1024x768@60 (65.0)  bit2 = 1024x768@70 (75.0)  bit1 = 1024x768@75 (78.75)
+    //   Excluded: 640x480/720x400 (<60); 800x600@60/72/75 (40.0/50.0/49.5 -- DROPPED when the
+    //             recovery MMCM went x15 -> x10 and the floor rose 40 -> 60 MHz);
+    //             1280x1024@75 (135, over the ceiling).
+    //   1280x1024@60 (108) cannot be expressed as an Established bit -- it is offered as a
+    //   Standard Timing instead (CAND below).
+    parameter [7:0]  EST_MASK35 = 8'h00,      // (was 0x01 = 800x600@60 -- now below the floor)
+    parameter [7:0]  EST_MASK36 = 8'h0E,      // 1024x768@60/70/75 (b3,b2,b1)
     parameter [7:0]  EST_MASK37 = 8'h00
 )(
     input  wire        clk,
@@ -57,19 +62,23 @@ module edid_builder #(
     // (pixel clocks are all in [60,120] MHz by construction, so membership in the
     // display's slots is the only runtime test needed.)
     //--------------------------------------------------------------------------
-    localparam integer NCAND = 8;
-    // packed {hi,lo} per candidate - in-window (40-90 MHz) standard timings, incl. 75 Hz.
+    localparam integer NCAND = 6;
+    // Standard-timing codes we may offer the PC. There is NO runtime pixel-clock check --
+    // an EDID Standard Timing carries only (Hactive, aspect, refresh), not a clock, so the
+    // clock is implied by DMT/CVT and has to be known here. That is why this is a list.
+    // EVERY ENTRY MUST SIT INSIDE [F_MIN_10K, F_MAX_10K] AND BE LOCKABLE BY THE RECOVERY
+    // MMCM -- if it is not, the PC picks it and the screen goes black.
+    // (The 800x600 entries were removed when the MMCM went x15 -> x10: at 40-50 MHz their
+    //  VCO would be 400-500 MHz, under the 600 MHz minimum.)
     reg [15:0] CAND [0:NCAND-1];
     // higher index = higher pixel clock (used to pick the "best" survivor)
     initial begin
-        CAND[0]  = 16'h4540; // 800x600@60    40.00
-        CAND[1]  = 16'h454F; // 800x600@75    49.50
-        CAND[2]  = 16'h454C; // 800x600@72    50.00
-        CAND[3]  = 16'h6140; // 1024x768@60   65.00
-        CAND[4]  = 16'h8100; // 1280x800@60   71.00 (RB)
-        CAND[5]  = 16'h81C0; // 1280x720@60   74.25
-        CAND[6]  = 16'h614A; // 1024x768@70   75.00
-        CAND[7]  = 16'h614F; // 1024x768@75   78.75
+        CAND[0]  = 16'h6140; // 1024x768@60    65.00
+        CAND[1]  = 16'h8100; // 1280x800@60    71.00 (RB)
+        CAND[2]  = 16'h81C0; // 1280x720@60    74.25
+        CAND[3]  = 16'h614A; // 1024x768@70    75.00
+        CAND[4]  = 16'h614F; // 1024x768@75    78.75
+        CAND[5]  = 16'h8180; // 1280x1024@60  108.00   <- 5:4 aspect (b1[7:6]=10)
     end
 
     //--------------------------------------------------------------------------
