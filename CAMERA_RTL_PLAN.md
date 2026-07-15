@@ -43,10 +43,10 @@ model, which is what keeps Pt availability off the critical path.
 | **1** | Pin down every protocol constant from the datasheet | No constant appears in RTL that is not traceable to a citation | ✅ `CAMERA_SENSOR_PROTOCOL.md` |
 | **2** | `cam_spi_master.v` | Self-checking TB at the max legal 10 MHz | ✅ **686 checks, 0 errors** |
 | **3** | SPI mailbox on the `0xA5` UART control plane | Real 115200 bytes in → chip ID out | ✅ **89 checks, 0 errors** |
-| **4** | `cam_ctrl.xdc` (Au V2) + build a bitstream | Synth + impl clean, timing met, DRC clean | ⬜ |
-| **5** | 🔴 **HARDWARE GATE — read chip ID `0x50D0`** | The correct value comes back | ⬜ |
-| **6** | Sensor boot sequencer (ROM-driven register upload) | Sensor reports PLL lock + ready | ⬜ (blocked on nothing — see §7 of the protocol doc) |
-| **14** | Settle the `clk_pll` 20 ps jitter spec | We know the number, its units, and whether our clock clears it | ⬜ |
+| **4** | `cam_au2.xdc` (Au V2) + build a bitstream | Synth + impl clean, timing met, DRC clean | ✅ **WNS +2.106 ns; pins verified by readback** |
+| **6** | Sensor boot sequencer (ROM-driven register upload) | Sensor reports PLL lock + ready | ✅ **12 checks, 0 errors** (`cam_boot_seq.v`) |
+| **5** | 🔴 **HARDWARE GATE — read chip ID `0x50D0`** | The correct value comes back | ⬜ **needs the Au on the bench** |
+| **14** | Settle the `clk_pll` 20 ps jitter spec | We know the number, its units, and whether our clock clears it | ⬜ a number to look up / measure |
 
 ### Milestone 5 is the one that matters
 
@@ -67,12 +67,16 @@ It is the whole "confirm the PCB, demonstrate working HDL" goal in a single tran
 
 | # | Milestone | Test gate | Status |
 |---|---|---|---|
-| **7** | Behavioral PYTHON LVDS transmitter model (**bit-level**) | Golden decoder recovers a known image | ⬜ |
-| **8** | `cam_lvds_rx.v` — ISERDES receiver | Deserialised words on all 5 channels; cold start works | ⬜ |
-| **9** | Per-lane training / bitslip alignment FSM | Every lane locks, over many seeds of random skew + bit phase | ⬜ |
-| **10** | Sync decoder + 4-lane de-interleave | Known image recovered **bit-exact** | ⬜ |
-| **11** | Line-capture buffer readable over UART | Known line out, checksum correct | ⬜ |
-| **12** | 🔴 **HARDWARE GATE — capture a real line of pixels (Pt V2)** | Sane pixels from a known scene | ⬜ |
+| **7** | Behavioral PYTHON LVDS transmitter model (**bit-level**) | Golden decoder recovers a known image | ✅ **258 checks, 0 errors** (`python1300_lvds_model.v`) |
+| **8** | `cam_lvds_rx.v` — ISERDES receiver | Deserialised words on all 5 channels; cold start works | ✅ proven in the full chain below |
+| **9** | Per-lane training / bitslip alignment FSM | Every lane locks, over many seeds of random skew + bit phase | ✅ **locks from 4 phases + 0.9 ns skew** (`cam_align.v`) |
+| **10** | Sync decoder + 4-lane de-interleave | Known image recovered **bit-exact** | ✅ **256 px bit-exact** (`cam_sync_decode.v`) |
+| **11** | Line-capture buffer readable over UART | Known line out, checksum correct | ✅ **34 checks, 0 errors** (`cam_line_buf.v`) |
+| **12** | 🔴 **HARDWARE GATE — capture a real line of pixels (Pt V2)** | Sane pixels from a known scene | ⬜ **needs the Pt + the integration in §"Pt integration"** |
+
+> The full receive chain — `python1300_lvds_model → cam_lvds_rx → cam_align → cam_sync_decode`
+> — recovers a 32×8 test image **bit-exact** in `tb_cam_decode` (258 checks, 0 errors). Every
+> module #12 needs is written and individually proven; #12 is the Pt-only integration + bench test.
 
 ### The three traps already identified
 
@@ -85,6 +89,32 @@ It is the whole "confirm the PCB, demonstrate working HDL" goal in a single tran
 3. **A full frame will never fit the UART.** `uart_ctrl`'s `len` is `reg [11:0]` (4095 bytes max) and
    the link is 11.5 kB/s — a 1.3 MB frame would take ~2 minutes. One *line* (1280 B) fits exactly and
    is a fine bring-up instrument. Frames need the Ft+.
+
+---
+
+## Pt integration (task #12)
+
+Every module is written and individually proven. #12 is the top-level assembly on the Pt, which
+does not exist yet and cannot be bench-tested until it does. What it takes:
+
+1. **Port `Au2_SLI` to the Pt V2** (`XC7A100T-FGG484`). Every `PACKAGE_PIN` in `Au2.xdc` is invalid
+   on the Pt (different die *and* package); HDMI moves to the Hd's connectors, USB to the Ft+. This
+   is the large prerequisite — see `pt_camera.xdc` and `POLARFIRE_PORT_FEASIBILITY.md`.
+2. **Add a 72 MHz MMCM** for `cam_clk_pll` (D=5, M=54 → VCO 1080 → /15 = 72.000 MHz exact; 2 MMCMs
+   spare). Confirm its jitter clears the sensor's 20 ps spec first — task #14.
+3. **Instantiate the chain** `cam_lvds_rx → cam_align → cam_sync_decode → cam_line_buf` on the
+   bank-13 LVDS pins from `pt_camera.xdc`, and wire `cam_line_buf`'s read port to `usb_link`'s
+   `cam_line_addr` / `cam_line_data` (tied to 0 on the Au today).
+4. **Instantiate `cam_boot_seq`** and add the arbitration the module headers describe:
+   - MUX `cam_spi_master`'s control between `cam_boot_seq` (while `boot.busy`) and the host mailbox.
+   - MUX `cam_reset_n` between `cam_boot_seq` (while booting) and the mailbox's reg `0x37`.
+   - Add a host trigger register (e.g. `0x39`: write = go, read = `{ready, busy, failed, pll_timeout}`)
+     so the Qt tool starts boot after confirming the chip ID.
+5. **Bench test**: boot the sensor, let the lanes train, capture one line, `readCameraLine()` in the
+   Qt tool, plot it. Cover the lens → near-black; bright field → flat; a hard edge → a step in the
+   expected column. **A de-interleave error shows as a period-4 comb** — look for it specifically.
+   This gate is the first time the LVDS pin plan, `DIFF_TERM`, the SRCC/BUFIO choice, the even-row
+   routing, and the within-kernel channel pairing are tested against reality rather than Vivado.
 
 ---
 

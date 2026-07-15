@@ -324,9 +324,17 @@ A CRC check gives us a free, self-checking correctness signal for the receiver �
 
 ---
 
-## 7. ⚠️ THE GAP: the register upload sequence is NDA-gated
+## 7. The register upload sequence — datasheet gap, RESOLVED without the NDA
 
-**This is the one thing the datasheet does not give us**, and it blocks the boot sequencer (task #6).
+> ### ✅ RESOLVED. Avnet published the sequence; task #6 is done.
+> The values below are indeed NDA-gated *at onsemi*, but Avnet's PYTHON-1300 reference design
+> publishes the complete flow (`docs/reference/onsemi_python_sw.c`, §8.2), cross-checked against
+> the datasheet in four places. `cam_boot_seq.v` implements it (12 checks, 0 errors), with one
+> traceable deviation: monochrome (`reg 2 = 0x0000`, not Avnet's `0x0001`). The analysis below is
+> kept as the record of *why* the datasheet alone is insufficient.
+
+**This is the one thing the datasheet does not give us**, and it originally blocked the boot
+sequencer (task #6) until Avnet's design supplied it.
 
 > *"The SPI uploads that need to be executed to configure the sensor for P1-SN/SE/FN, P3-SN/SE/FN
 > 10-bit serial mode, with the PLL, and all available LVDS channels, as well as all other supported
@@ -349,8 +357,8 @@ are not.**
 | SPI master (#2), mailbox (#3), XDC (#4) | **No** — §1 is fully specified |
 | **Chip-ID read (#5)** | **No** — register 0 is a read-only status register; no configuration needed |
 | Behavioral LVDS model (#7), receiver (#8), bitslip (#9), sync decode (#10) | **No** — §5 gives every code we need |
-| **Boot sequencer (#6)** — getting the sensor to actually *stream* | **YES** |
-| Real pixel capture (#12) | **YES** (transitively — needs #6) |
+| **Boot sequencer (#6)** — getting the sensor to actually *stream* | ~~YES~~ → **resolved via Avnet** ✅ |
+| Real pixel capture (#12) | needs the Pt hardware, not the sequence |
 
 **Routes to the NDA material, in order of preference:**
 

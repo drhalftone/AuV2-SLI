@@ -211,6 +211,21 @@ of block 0 is the authoritative extension count.
 | 0x24–0x25 | VACT | R | active lines, lo/hi (12-bit) |
 | 0x26–0x28 | PCLK | R | pixel clock in kHz, lo/mid/hi (17-bit) |
 | 0x29–0x2A | SUPP | R | 13-bit supported-mode mask (bit *i* = table index *i*) |
+| 0x30–0x36 | CAM_SPI | R/W | PYTHON 1300 SPI mailbox — stage a 9-bit-addr/16-bit-data sensor transaction (`0x30` addr, `0x31` `{rw,addr[8]}`, `0x32/33` wdata, `0x34` go/status, `0x35/36` rdata) |
+| 0x37 | CAM_GPIO | R/W | `{7:reset_n, 2..0:trigger[2:0]}` — resets to `0x00` (sensor held in reset) |
+| 0x38 | CAM_MON | R | `{1..0:monitor[1:0]}` |
+
+**The PYTHON 1300 camera.** The stacked `LauPythonCamera_Pt_Stack` sensor board is driven entirely
+through the `0xA5` control plane: an SPI mailbox (`0x30`–`0x36`) for the sensor's config registers,
+discrete pins on `0x37`/`0x38`, and a captured-line readback on `rdtbl` target **`0x04`**
+(`readCameraLine()`, 1280 bytes). The full datapath — SPI master, boot sequencer, and the LVDS
+receive chain (ISERDES → bitslip → sync-decode → de-interleave → line buffer) — is written and
+proven in simulation; see [`CAMERA_RTL_PLAN.md`](CAMERA_RTL_PLAN.md) for status and
+[`CAMERA_SENSOR_PROTOCOL.md`](CAMERA_SENSOR_PROTOCOL.md) for the datasheet-cited constants. The
+high-speed LVDS half needs the **Pt V2** (bank-13 @ 2.5 V); the SPI/control half runs on the Au.
+
+**rdtbl targets (op `0x72`).** `0x00` LUT (720 B), `0x01` LUT-V (1280 B), `0x02` CORR (256 B),
+`0x03` EDID (256 B), `0x04` CAM_LINE (1280 B, camera bring-up).
 
 **Reading the offline mode decision.** `mode_select` is the most involved call the FPGA makes on its
 own — parse the display's EDID, work out which curated modes it supports, pick the best — and
