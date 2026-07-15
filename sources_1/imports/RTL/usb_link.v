@@ -45,6 +45,12 @@ module usb_link #(
     output wire [7:0]  edid_rd_addr,
     input  wire [7:0]  edid_rd_data,
 
+    // ---- captured camera-line read port (rdtbl TGT_CAM_LINE) -> cam_line_buf ----
+    // On the Au (no LVDS receiver) tie cam_line_data to 0 at the top; the target still
+    // works and reads zeros. On the Pt this connects to cam_line_buf's read port.
+    output wire [10:0] cam_line_addr,
+    input  wire [7:0]  cam_line_data,
+
     // ---- offline mode decision (regs 0x20..0x2A). Caller supplies these already
     // synced into clk100; they are quasi-static (change only on a new EDID parse).
     input  wire [3:0]  mode_idx_i,
@@ -184,6 +190,7 @@ module usb_link #(
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
         .lutv_addr(lutv_addr), .lutv_dout(lutv_dout),
         .edid_rd_addr(edid_rd_addr), .edid_rd_data(edid_rd_data),
+        .cam_line_addr(cam_line_addr), .cam_line_data(cam_line_data),
         .mode_idx_i(mode_idx_i), .mode_valid_i(mode_valid_i),
         .mode_edid_ok_i(mode_edid_ok_i), .mode_refr_i(mode_refr_i),
         .mode_hact_i(mode_hact_i), .mode_vact_i(mode_vact_i),

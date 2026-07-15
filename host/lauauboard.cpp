@@ -267,8 +267,13 @@ QByteArray LAUAuBoard::readTable(quint8 target)
         return (QByteArray());
     }
 
-    // PAYLOAD LENGTH IS IMPLIED BY THE TARGET (same mapping as upload)
-    int expect = (target == LAUAU_TARGET_LUT) ? 720 : (target == LAUAU_TARGET_LUT_V) ? 1280 : (target == LAUAU_TARGET_CORR) ? 256 : 0;
+    // PAYLOAD LENGTH IS IMPLIED BY THE TARGET (same mapping as the FPGA's uart_ctrl)
+    int expect = (target == LAUAU_TARGET_LUT)      ? 720
+               : (target == LAUAU_TARGET_LUT_V)    ? 1280
+               : (target == LAUAU_TARGET_CORR)     ? 256
+               : (target == LAUAU_TARGET_EDID)     ? 256
+               : (target == LAUAU_TARGET_CAM_LINE) ? LAUAU_CAM_LINE_LEN
+               : 0;
     if (expect == 0) {
         errorString = QString("Unknown read-table target 0x%1.").arg(target, 2, 16, QChar('0'));
         return (QByteArray());

@@ -41,6 +41,11 @@
 #define LAUAU_TARGET_LUT_V  0x01   // 1280-byte pattern cosine (side-to-side / col)
 #define LAUAU_TARGET_CORR   0x02   // 256-byte 8-bit intensity correction (shared)
 
+// readback targets for op 0x72 (read-only)
+#define LAUAU_TARGET_EDID     0x03 // 256-byte captured display EDID
+#define LAUAU_TARGET_CAM_LINE 0x04 // one captured camera line (1280 bytes, 8-bit; bring-up)
+#define LAUAU_CAM_LINE_LEN    1280
+
 // control / status register addresses
 #define LAUAU_REG_ID        0x00   // const 0x48 ('H')
 #define LAUAU_REG_VERSION   0x01
@@ -131,6 +136,15 @@ public:
     QByteArray readCorrectionTable()
     {
         return (readTable(LAUAU_TARGET_CORR));
+    }
+
+    // Convenience: read one captured camera line (TARGET 0x04, 1280 bytes, 8-bit).
+    // The bring-up instrument (CAMERA_RTL_PLAN.md #11): grabs the first image line of the
+    // latest frame. Empty on error. Pt only -- on the Au there is no receiver, so this
+    // reads back zeros.
+    QByteArray readCameraLine()
+    {
+        return (readTable(LAUAU_TARGET_CAM_LINE));
     }
 
     // --- SLI control register 0x13 convenience ---------------------------------

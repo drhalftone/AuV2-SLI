@@ -309,6 +309,10 @@ architecture Behavioral of Au2_SLI is
                -- captured-EDID read port -> edid_merge's 3rd port (rdtbl TGT_EDID)
                edid_rd_addr : out STD_LOGIC_VECTOR(7 downto 0);
                edid_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               -- captured camera-line read port (rdtbl TGT_CAM_LINE). No receiver on the
+               -- Au, so the top ties cam_line_data to 0 -- the target reads back zeros.
+               cam_line_addr : out STD_LOGIC_VECTOR(10 downto 0);
+               cam_line_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                -- radiometric transfer LUT read by pattern_gen (combinational)
                corr_pat_addr : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                corr_pat_dout : out STD_LOGIC_VECTOR(7 downto 0);
@@ -492,6 +496,8 @@ begin
         lutv_addr => "00000000000", lutv_dout => open,
         corr_pat_addr => pat_lut_din, corr_pat_dout => pat_lut_dout,
         edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data,
+        -- camera line readback: no receiver on the Au, so tie the data in to 0.
+        cam_line_addr => open, cam_line_data => "00000000",
         -- offline mode decision. clkgen_mode_idx is the APPLIED index (already the
         -- clk100-synced one that drives the clock + timing), so the host reads the
         -- mode actually in use, not a candidate mode_select may not have applied yet.

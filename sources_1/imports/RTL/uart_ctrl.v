@@ -55,7 +55,11 @@
 //==============================================================================
 module uart_ctrl #(
     parameter [7:0] ID_MAGIC = 8'h48,    // 'H'
-    parameter [7:0] VERSION  = 8'h01
+    parameter [7:0] VERSION  = 8'h01,
+    // camera line-buffer readback length (bytes) and its address width. Default is the real
+    // 1280-pixel line; the testbench overrides it small so a full UART read stays fast.
+    parameter integer CAM_LINE_LEN = 1280,
+    parameter integer CAM_LINE_AW  = 11
 )(
     input  wire        clk,
     input  wire        rst,
@@ -91,6 +95,11 @@ module uart_ctrl #(
     // the same latency as the local RAMs, so S_RTAB needs no special-casing.
     output wire [7:0]  edid_rd_addr,
     input  wire [7:0]  edid_rd_data,
+
+    // ---- captured camera-line read port (TGT_CAM_LINE, rdtbl 0x04) ----
+    // Same external-RAM pattern as TGT_EDID: the line buffer lives in cam_line_buf.
+    output wire [CAM_LINE_AW-1:0] cam_line_addr,
+    input  wire [7:0]             cam_line_data,
 
     // ---- offline mode decision (regs 0x20..0x2A, read-only) ----
     // What mode_select chose from the display's EDID, and what it had to choose
@@ -163,7 +172,8 @@ module uart_ctrl #(
     localparam [7:0] OP_W = 8'h57, OP_R = 8'h52, OP_L = 8'h5B, OP_LR = 8'h72;  // W R upload read-table('r')
     localparam [7:0] ACK_K = 8'h4B, ACK_E = 8'h45, ACK_N = 8'h4E;
     localparam [7:0] TGT_LUT = 8'h00, TGT_LUTV = 8'h01, TGT_CORR = 8'h02;
-    localparam [7:0] TGT_EDID = 8'h03;   // read-only: the display's captured EDID
+    localparam [7:0] TGT_EDID = 8'h03;       // read-only: the display's captured EDID
+    localparam [7:0] TGT_CAM_LINE = 8'h04;   // read-only: one captured camera line (task #11)
 
     // ---- table RAMs (write-through during upload; read ports for Stage 2) ----
     reg [7:0] corr [0:255];
@@ -211,16 +221,21 @@ module uart_ctrl #(
     reg [3:0]  state = S_SYNC;
     reg [7:0]  addr, dbyte, sum8;
     reg [11:0] cnt, len;             // up to 1280
-    reg [1:0]  tgt;                  // 0=lut 1=lutv 2=corr 3=edid
+    reg [2:0]  tgt;                  // 0=lut 1=lutv 2=corr 3=edid 4=cam_line
 
     // readback byte source (selected by target)
-    wire [7:0] rb_dout = (tgt == 2'd3) ? edid_rd_data :
-                         (tgt == 2'd2) ? corr_dout    :
-                         (tgt == 2'd1) ? lutv_dout    : lut_dout;
+    wire [7:0] rb_dout = (tgt == 3'd4) ? cam_line_data :
+                         (tgt == 3'd3) ? edid_rd_data  :
+                         (tgt == 3'd2) ? corr_dout     :
+                         (tgt == 3'd1) ? lutv_dout     : lut_dout;
 
     // EDID RAM address (external, in edid_merge). Only sampled while we are
     // streaming TGT_EDID; harmless otherwise -- it is a pure read port.
     assign edid_rd_addr = rd_idx[7:0];
+
+    // Camera line-buffer read port (external, in cam_line_buf). Same TGT_EDID pattern:
+    // drive the address out, take registered data back one clock later.
+    assign cam_line_addr = rd_idx[CAM_LINE_AW-1:0];
 
     // response buffer (1 or 3 bytes)
     reg [7:0]  resp [0:2];
@@ -397,10 +412,10 @@ case (addr)
                     sum8 <= rx_data;                     // CK base = TARGET
                     cnt  <= 12'd0;
                     case (rx_data)
-                        TGT_LUT:  begin tgt <= 2'd0; len <= 12'd720;  state <= S_UDATA; end
-                        TGT_LUTV: begin tgt <= 2'd1; len <= 12'd1280; state <= S_UDATA; end
-                        TGT_CORR: begin tgt <= 2'd2; len <= 12'd256;  state <= S_UDATA; end
-                        default:  begin                  // unknown target -> 'E'
+                        TGT_LUT:  begin tgt <= 3'd0; len <= 12'd720;  state <= S_UDATA; end
+                        TGT_LUTV: begin tgt <= 3'd1; len <= 12'd1280; state <= S_UDATA; end
+                        TGT_CORR: begin tgt <= 3'd2; len <= 12'd256;  state <= S_UDATA; end
+                        default:  begin                  // unknown target -> 'E' (incl. read-only cam_line)
                             resp[0] <= ACK_E; resp_len <= 2'd1; resp_idx <= 2'd0;
                             state <= S_RESP;
                         end
@@ -408,9 +423,9 @@ case (addr)
                 end
                 S_UDATA: if (rx_valid) begin
                     case (tgt)
-                        2'd0: lut [cnt[9:0]]  <= rx_data;
-                        2'd1: lutv[cnt[10:0]] <= rx_data;
-                        2'd2: corr[cnt[7:0]]  <= rx_data;
+                        3'd0: lut [cnt[9:0]]  <= rx_data;
+                        3'd1: lutv[cnt[10:0]] <= rx_data;
+                        3'd2: corr[cnt[7:0]]  <= rx_data;
                     endcase
                     sum8 <= sum8 + rx_data;
                     if (cnt == len - 12'd1) state <= S_UCK;
@@ -419,9 +434,9 @@ case (addr)
                 S_UCK: if (rx_valid) begin
                     if (u_sum == 8'h00) begin            // good -> commit (set loaded)
                         case (tgt)
-                            2'd0: lut_ld  <= 1'b1;
-                            2'd1: lutv_ld <= 1'b1;
-                            2'd2: corr_ld <= 1'b1;
+                            3'd0: lut_ld  <= 1'b1;
+                            3'd1: lutv_ld <= 1'b1;
+                            3'd2: corr_ld <= 1'b1;
                         endcase
                         resp[0] <= ACK_K;
                     end else begin
@@ -434,11 +449,12 @@ case (addr)
                 S_RTGT: if (rx_valid) begin
                     dbyte <= rx_data;                    // raw target (checksum + prologue)
                     case (rx_data)
-                        TGT_LUT:  begin tgt <= 2'd0; len <= 12'd720;  end
-                        TGT_LUTV: begin tgt <= 2'd1; len <= 12'd1280; end
-                        TGT_CORR: begin tgt <= 2'd2; len <= 12'd256;  end
-                        TGT_EDID: begin tgt <= 2'd3; len <= 12'd256;  end  // read-only
-                        default:  begin tgt <= 2'd0; len <= 12'd0;    end  // unknown -> rejected
+                        TGT_LUT:      begin tgt <= 3'd0; len <= 12'd720;  end
+                        TGT_LUTV:     begin tgt <= 3'd1; len <= 12'd1280; end
+                        TGT_CORR:     begin tgt <= 3'd2; len <= 12'd256;  end
+                        TGT_EDID:     begin tgt <= 3'd3; len <= 12'd256;  end   // read-only
+                        TGT_CAM_LINE: begin tgt <= 3'd4; len <= CAM_LINE_LEN[11:0]; end  // read-only
+                        default:      begin tgt <= 3'd0; len <= 12'd0;    end   // unknown -> rejected
                     endcase
                     state <= S_RTCK;
                 end

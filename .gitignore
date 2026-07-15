@@ -53,3 +53,6 @@ CMakeLists.txt.user*
 #                         osrf/ovc HDL (Apache-2.0, but the files carry no header)
 docs/datasheets/
 docs/reference/
+
+# IP simulation artifacts dropped in the root by build.tcl
+*.mif
