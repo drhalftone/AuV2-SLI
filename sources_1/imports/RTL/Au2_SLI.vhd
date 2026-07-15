@@ -116,6 +116,7 @@ architecture Behavioral of Au2_SLI is
        -- hdmi_tx_rsda  : inout std_logic;
         hdmi_tx_p     : out   std_logic_vector(2 downto 0);
         hdmi_tx_n     : out   std_logic_vector(2 downto 0);
+        tx_squelch    : in    std_logic := '0';   -- LINKCTL: 1 = tristate TMDS out
 
         pixel_clk     : out std_logic;
         -------------------------------
@@ -326,6 +327,9 @@ architecture Behavioral of Au2_SLI is
                mode_pclk_i    : in STD_LOGIC_VECTOR(16 downto 0) := (others => '0');
                mode_supp_i    : in STD_LOGIC_VECTOR(13 downto 0) := (others => '0');
                mode_force     : out STD_LOGIC_VECTOR(7 downto 0);
+               -- LINKCTL (reg 0x15) self-timed disconnect pulse
+               link_drop_host : out STD_LOGIC;
+               link_drop_proj : out STD_LOGIC;
                -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
                -- usb_link, so these are the sensor's physical pins.
                cam_sck     : out STD_LOGIC;
@@ -380,6 +384,12 @@ architecture Behavioral of Au2_SLI is
 
     signal merge_dbg2 : std_logic_vector(15 downto 0);
     signal merge_dbg  : std_logic_vector(7 downto 0);
+
+    -- LINKCTL (reg 0x15) self-timed disconnect. link_drop_host gates the host HPD
+    -- (hdmi_rx_hpa) low; link_drop_proj tristates the TMDS output (see hdmi_io).
+    signal link_drop_host : std_logic;
+    signal link_drop_proj : std_logic;
+    signal hdmi_rx_hpa_i  : std_logic;   -- edid_merge's HPD, before the LINKCTL gate
 
     -- USB SLI-control override (register 0x13) of the physical newSW switch pins.
     -- 0x13 = {7:sw_en, 3:R_en, 2:G_en, 1:B_en, 0:orient}; bits [3:0] map 1:1 to
@@ -510,6 +520,8 @@ begin
         mode_pclk_i    => mt_pclk,
         mode_supp_i    => mode_bus_s1(13 downto 0),
         mode_force     => mode_force_bus,
+        link_drop_host => link_drop_host,
+        link_drop_proj => link_drop_proj,
         -- PYTHON 1300 camera element (top-side stack board). SPI mailbox on regs
         -- 0x30..0x36, discrete pins on 0x37/0x38. cam_reset_n comes out of reset LOW,
         -- so the sensor stays held in reset until the host deliberately releases it.
@@ -532,7 +544,7 @@ begin
         hdmi_tx_hpd  => hdmi_tx_hpd,
         hdmi_rx_scl  => hdmi_rx_scl,
         hdmi_rx_sda  => hdmi_rx_sda,
-        hdmi_rx_hpa  => hdmi_rx_hpa,
+        hdmi_rx_hpa  => hdmi_rx_hpa_i,
         dbg          => open,
         dbg2         => merge_dbg2,
         mode_rd_addr => mode_rd_addr,
@@ -540,6 +552,9 @@ begin
         host_rd_addr => edid_host_addr,
         host_rd_data => edid_host_data,
         edid_ok      => edid_ok );
+    -- LINKCTL host disconnect: force HPD low while link_drop_host is asserted, so the
+    -- source sees an unplug (>100 ms) and fully re-reads EDID / re-negotiates on release.
+    hdmi_rx_hpa <= hdmi_rx_hpa_i and not link_drop_host;
     merge_dbg <= merge_dbg2(7 downto 0);
     -- LED bus: normal status byte (led_i) when video is live, else the idle
     -- "sign of life" slider. led_i bit layout matches the old per-bit mapping:
@@ -596,7 +611,8 @@ i_hdmi_io: hdmi_io port map (
 --        hdmi_tx_rscl  => hdmi_tx_rscl,
 --        hdmi_tx_rsda  => hdmi_tx_rsda,
         hdmi_tx_p     => hdmi_tx_p,
-        hdmi_tx_n     => hdmi_tx_n,     
+        hdmi_tx_n     => hdmi_tx_n,
+        tx_squelch    => link_drop_proj,
 
         
         pixel_clk => pixel_clk,

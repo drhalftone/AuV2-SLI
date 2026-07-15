@@ -45,7 +45,10 @@ entity hdmi_io is
       --  hdmi_tx_rsda  : inout std_logic;
         hdmi_tx_p     : out   std_logic_vector(2 downto 0);
         hdmi_tx_n     : out   std_logic_vector(2 downto 0);
-        
+        -- LINKCTL projector disconnect: 1 = tristate all four TMDS output pairs so the
+        -- projector sees an unplugged link (loses signal, re-detects on release).
+        tx_squelch    : in    std_logic := '0';
+
         pixel_clk : out std_logic;
         -------------------------------
         -- VGA data recovered from HDMI
@@ -547,7 +550,10 @@ i_DVID_output: DVID_output port map (
        pixel_clk       => oclk,
        pixel_io_clk_x1 => oclk1,
        pixel_io_clk_x5 => oclk5,
-        data_valid      => '1',
+        -- LINKCTL projector disconnect: data_valid=0 holds every serialiser (incl. the
+        -- clock serialiser) in reset, so the TMDS clock stops and the projector drops the
+        -- link. Normal operation is data_valid=1 (tx_squelch=0), unchanged from before.
+        data_valid      => not tx_squelch,
         -- VGA Signals
         vga_blank     => out_blank,
         vga_hsync     => out_hsync,
@@ -573,8 +579,12 @@ i_DVID_output: DVID_output port map (
     -----------------
     -- Output buffers
     -----------------
+-- Plain OBUFDS: these are fed by OSERDESE2 serialisers, so 3-state must come from the
+-- OSERDES TQ pin, not an external net (Vivado [Place 30-608]). The projector disconnect
+-- is done instead by holding DVID_output in reset (data_valid=0 => the clock serialiser
+-- stops toggling => the projector loses its TMDS clock). See the i_DVID_output map.
 out_clk_buf: OBUFDS    port map ( O  => hdmi_tx_clk_p, OB => hdmi_tx_clk_n, I => tmds_out_clk);
-    
+
 out_tx0_buf: OBUFDS    port map ( O  => hdmi_tx_p(0), OB => hdmi_tx_n(0), I  => tmds_out_ch0);
 
 out_tx1_buf: OBUFDS    port map ( O  => hdmi_tx_p(1), OB => hdmi_tx_n(1), I  => tmds_out_ch1);

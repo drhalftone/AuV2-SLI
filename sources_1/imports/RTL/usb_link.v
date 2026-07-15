@@ -71,6 +71,10 @@ module usb_link #(
     // ---- MODEFORCE (reg 0x14): {7:force_en, 3..0:idx} ----
     output wire [7:0]  mode_force,
 
+    // ---- LINKCTL (reg 0x15): self-timed host/projector disconnect pulse ----
+    output wire        link_drop_host,   // force hdmi_rx_hpa low (host re-negotiates)
+    output wire        link_drop_proj,   // tristate TMDS out (projector loses signal)
+
     // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
     // The SPI master lives in here, right next to the control plane that drives it,
     // so the top level only ever sees the sensor's physical pins.
@@ -180,7 +184,7 @@ module usb_link #(
     assign cam_reset_n = cam_gpio[7];
     assign cam_trigger = cam_gpio[2:0];
 
-    uart_ctrl i_ctrl (
+    uart_ctrl #(.CLK_HZ(CLK_HZ)) i_ctrl (
         .clk(clk100), .rst(rst),
         .rx_data(rx_data), .rx_valid(rx_valid),
         .tx_data(c_data), .tx_send(c_send), .tx_busy(c_tx_busy), .tx_active(c_active),
@@ -197,6 +201,7 @@ module usb_link #(
         .mode_pclk_i(mode_pclk_i), .mode_supp_i(mode_supp_i),
         .corr_pat_addr(corr_pat_addr), .corr_pat_dout(corr_pat_dout),
         .mode_force(mode_force),
+        .link_drop_host(link_drop_host), .link_drop_proj(link_drop_proj),
         // ---- PYTHON 1300 mailbox ----
         .cam_spi_addr(cam_spi_addr), .cam_spi_rw(cam_spi_rw),
         .cam_spi_wdata(cam_spi_wdata), .cam_spi_start(cam_spi_start),

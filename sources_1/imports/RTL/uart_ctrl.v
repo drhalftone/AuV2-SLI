@@ -33,6 +33,15 @@
 //        overriding mode_select's EDID pick. For bringing up a new high-clock mode on a
 //        display whose EDID would otherwise always steer to a lower-clock, higher-refresh
 //        mode. force_en=0 hands control back to the EDID.)
+//   0x15 LINKCTL = {7..2:secs_x2, 1:proj, 0:host}  (R/W -- disconnect pulse)
+//        Write starts a self-timed disconnect: bit0 drops the HOST hot-plug
+//        (hdmi_rx_hpa low -> the PC/source re-reads EDID + re-negotiates on
+//        reconnect); bit1 tristates the TMDS OUTPUT (the projector loses signal
+//        and re-detects on reconnect). bits[7:2] = duration in HALF-seconds
+//        (1..63 -> 0.5..31.5 s). The FPGA reconnects automatically when it expires,
+//        so no host follow-up is needed. Write 0x00 (or targets=0) to cancel.
+//        Read 0x15 -> {proj_active, host_active, remaining_half_secs[5:0]}.
+//        Example: A5 57 15 19 CK drops the host for 3 s (0x19 = secs_x2=6, host=1).
 //   0x13 SLICTRL = {7:sw_en, 6:mode_en, 5:mode_val, 3:R,2:G,1:B,0:orient}  (R/W)
 //        sw_en   : USB drives R/G/B/orient instead of the physical SW[3:0] pins.
 //        mode_en : USB drives the SLI pattern enable instead of the camera "mode" GPIO
@@ -56,6 +65,7 @@
 module uart_ctrl #(
     parameter [7:0] ID_MAGIC = 8'h48,    // 'H'
     parameter [7:0] VERSION  = 8'h01,
+    parameter integer CLK_HZ = 100_000_000,   // clk rate -> LINKCTL half-second tick
     // camera line-buffer readback length (bytes) and its address width. Default is the real
     // 1280-pixel line; the testbench overrides it small so a full UART read stays fast.
     parameter integer CAM_LINE_LEN = 1280,
@@ -135,6 +145,14 @@ module uart_ctrl #(
     // -- and therefore never tested -- on such a display without forcing it.
     output reg  [7:0]  mode_force,
 
+    // ---- LINKCTL (reg 0x15): host / projector hot-plug disconnect pulse ----
+    // Self-timed: the command carries a duration, and the FPGA holds the disconnect
+    // for that long then reconnects on its own (so a host crash can never leave the
+    // links dead). link_drop_host forces hdmi_rx_hpa low (host re-negotiates on
+    // reconnect); link_drop_proj tristates the TMDS output (projector sees no signal).
+    output reg         link_drop_host,
+    output reg         link_drop_proj,
+
     // ---- PYTHON 1300 SPI mailbox (regs 0x30..0x36) ----
     // A sensor SPI transaction is 9-bit address + 16-bit data, which does not fit the
     // 1-byte register model. So the host stages the operands across registers, then fires:
@@ -209,6 +227,13 @@ module uart_ctrl #(
     reg [15:0] cam_rdata_l = 16'd0;
     reg        cam_done_l  = 1'b0;
 
+    // ---- LINKCTL self-timer (reg 0x15) ----
+    localparam integer HALF_SEC = CLK_HZ/2;      // clk ticks per half-second
+    reg [25:0] link_presc  = 26'd0;              // 0..HALF_SEC-1 (2^26 = 67M > 50M)
+    reg [5:0]  link_secs   = 6'd0;               // remaining half-seconds
+    reg [1:0]  link_tgt    = 2'd0;               // {proj, host}
+    reg        link_active = 1'b0;
+
     // ---- FSM ----
     localparam [3:0]
         S_SYNC  = 4'd0,  S_OP    = 4'd1,
@@ -282,6 +307,7 @@ case (addr)
             8'h10:   rd_data  = pins;
             8'h13:   rd_data  = sli_ctrl;
             8'h14:   rd_data  = mode_force;
+            8'h15:   rd_data  = {link_drop_proj, link_drop_host, link_secs};
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -322,6 +348,8 @@ case (addr)
             state <= S_SYNC; tx_send <= 1'b0; sli_ctrl <= 8'h00;
             corr_ld <= 1'b0; lut_ld <= 1'b0; lutv_ld <= 1'b0;
             mode_force <= 8'h00;       // force_en=0 -> EDID pick is in charge
+            link_drop_host <= 1'b0; link_drop_proj <= 1'b0;
+            link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
             // camera: reset_n = cam_gpio[7] = 0 -> the sensor stays HELD IN RESET
@@ -340,6 +368,19 @@ case (addr)
                 cam_rdata_l <= cam_spi_rdata;
                 cam_done_l  <= 1'b1;
             end
+
+            // ---- LINKCTL self-timer: hold the commanded disconnect(s) for link_secs
+            // half-seconds, then release. Placed BEFORE the case so a fresh 0x15 write
+            // (which re-arms link_active/secs/presc/tgt) overrides this same cycle.
+            if (link_active) begin
+                if (link_presc >= HALF_SEC-1) begin
+                    link_presc <= 26'd0;
+                    if (link_secs <= 6'd1) link_active <= 1'b0;
+                    else                   link_secs   <= link_secs - 6'd1;
+                end else link_presc <= link_presc + 26'd1;
+            end
+            link_drop_host <= link_active & link_tgt[0];
+            link_drop_proj <= link_active & link_tgt[1];
 
             case (state)
                 // ---- frame sync + opcode dispatch -------------------------
@@ -366,6 +407,12 @@ case (addr)
                         sli_ctrl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h14) begin    // MODEFORCE (bring-up / test)
                         mode_force <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h15) begin    // LINKCTL: self-timed disconnect
+                        link_tgt    <= dbyte[1:0];
+                        link_secs   <= dbyte[7:2];
+                        link_presc  <= 26'd0;
+                        link_active <= (dbyte[7:2] != 6'd0) && (dbyte[1:0] != 2'd0);
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
                     // ---- PYTHON 1300 SPI mailbox ----
                     end else if (addr == 8'h30) begin    // sensor addr[7:0]
                         cam_spi_addr[7:0] <= dbyte;      resp[0] <= ACK_K; resp_len <= 2'd1;
