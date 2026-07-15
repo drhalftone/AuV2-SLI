@@ -285,8 +285,12 @@
 # Closes README open item 5.
 # =====================================================================
 
+# Scoped to NON-power nets: the neck-down exists so the fine SIGNAL escapes
+# (LVDS pairs + single-ended control) can leave the 0.4mm DF40 pads. Power and
+# GND traces are wide BY DESIGN and legitimately exceed 0.26mm near the
+# connectors, so they are exempted (they are still governed by clearance).
 (rule "DF40 fanout - neck-down track width"
-	(condition "A.intersectsCourtyard('J1') || A.intersectsCourtyard('J2') || A.intersectsCourtyard('J3')")
+	(condition "A.NetClass != 'Power' && (A.intersectsCourtyard('J1') || A.intersectsCourtyard('J2') || A.intersectsCourtyard('J3'))")
 	(constraint track_width (min 0.12mm) (opt 0.15mm) (max 0.26mm)))
 
 (rule "DF40 fanout - neck-down clearance"
