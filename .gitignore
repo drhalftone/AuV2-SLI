@@ -56,3 +56,5 @@ docs/reference/
 
 # IP simulation artifacts dropped in the root by build.tcl
 *.mif
+
+build_pt/
