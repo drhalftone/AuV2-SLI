@@ -39,6 +39,7 @@ module python1300_spi_model (
     integer    s_cnt;
     reg        miso_drv = 1'b0;
     reg        miso_oe  = 1'b0;
+    reg        pll_arm  = 1'b0;   // set when reg 16 enables the PLL; arms the delayed lock
 
     assign miso = miso_oe ? miso_drv : 1'bz;
 
@@ -99,8 +100,18 @@ module python1300_spi_model (
                 end else begin
                     regs[s_addr] = sh_in[15:0];
                     $display("[python] WRITE reg %0d <= 0x%04h", s_addr, sh_in[15:0]);
+                    // PLL: reg 16 bit[1] = enable. The real PLL takes time to lock, then
+                    // sets reg 24[0]. Arm a short delayed lock so a boot sequencer's poll
+                    // loop actually iterates before it sees lock (exercises the retry path).
+                    if (s_addr == 9'd16 && sh_in[1]) pll_arm = 1'b1;
                 end
             end
         end
+    end
+
+    // Simulated PLL lock: assert reg 24[0] a few us after the PLL is enabled.
+    always @(posedge pll_arm) begin
+        #4000;                       // ~4 us lock time
+        regs[24] = regs[24] | 16'h0001;
     end
 endmodule
