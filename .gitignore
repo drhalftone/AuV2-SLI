@@ -56,3 +56,5 @@ docs/reference/
 
 # IP simulation artifacts dropped in the root by build.tcl
 *.mif
+/LauPythonCamera_Pt_Stack/*.step
+/LauPythonCamera_Pt_Stack/production/*.step
