@@ -7,7 +7,7 @@
 	(title_block
 		(title "LauPythonCamera_Pt_Stack - Image Sensor")
 		(company "University of Kentucky")
-		(comment 1 "onsemi PYTHON 1300 (NOIP1SN1300A-QDI) - 48-pin LCC, socketed")
+		(comment 1 "onsemi PYTHON 1300 (NOIP1SN1300A-QTI) - 48-pin LCC, socketed")
 		(comment 2 "Alchitry Pt V2 element, TOP. LVDS on bank 13 @ 2.5V (VBSEL A+B strapped HIGH).")
 		(comment 3 "POWER: VDD = 5V USB-C. U3 (low-noise LDO) feeds vdd_33 AND vdd_pix via FB1.")
 		(comment 4 "R2 is the ONLY termination R: the sensor's LVDS clock INPUT. Outputs use DIFF_TERM.")
@@ -3259,7 +3259,7 @@
 					(justify left bottom)
 				)
 			)
-			(property "Value" "NOIP1SN1300A-QDI"
+			(property "Value" "NOIP1SN1300A-QTI"
 				(at -30.48 36.83 0)
 				(show_name no)
 				(do_not_autoplace no)
@@ -22994,7 +22994,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "NOIP1SN1300A-QDI"
+		(property "Value" "NOIP1SN1300A-QTI"
 			(at 172.54 121.27 0)
 			(show_name no)
 			(do_not_autoplace no)

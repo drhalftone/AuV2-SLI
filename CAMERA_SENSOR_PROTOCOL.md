@@ -18,7 +18,8 @@ pdftotext -layout docs/datasheets/NOIP1SN1300A.pdf docs/datasheets/python1300.tx
 Every `L<n>` citation below indexes that generated `python1300.txt`, so the citations are
 reproducible without redistributing the document.
 
-Part in the socket: **NOIP1SN1300A-QDI** — P1-SN, monochrome, **4 LVDS data channels**, 48-pin LCC.
+Part in the socket: **NOIP1SN1300A-QTI** — P1-SN, monochrome, **4 LVDS data channels**, 48-pin LCC.
+(The originally-specified `-QDI` is discontinued; `-QTI` is the same sensor with a peel-off protective foil.)
 
 ---
 

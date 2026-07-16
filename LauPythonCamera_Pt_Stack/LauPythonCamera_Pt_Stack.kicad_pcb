@@ -5714,7 +5714,7 @@
 				)
 			)
 		)
-		(property "Value" "NOIP1SN1300A-QDI"
+		(property "Value" "NOIP1SN1300A-QTI"
 			(at 0 9.882 0)
 			(layer "F.Fab")
 			(uuid "acf03e18-28dc-4a4b-a3e2-a849f62d46f5")

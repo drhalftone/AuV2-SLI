@@ -132,7 +132,9 @@ both **require VCCO = 2.5 V**. So bank 13 is mandatory regardless of how we term
 
 ## 4. Sensor
 
-**`NOIP1SN1300A-QDI`** — PYTHON 1300, monochrome, 4-LVDS output, 48-pin LCC.
+**`NOIP1SN1300A-QTI`** — PYTHON 1300, monochrome, 4-LVDS output, 48-pin LCC. *(The
+originally-specified `-QDI` is discontinued; `-QTI` is the identical sensor with a peel-off
+protective foil over the glass — see the ordering note below.)*
 
 | | |
 |---|---|
@@ -149,8 +151,11 @@ datasheet carries a *"no silicon fix planned"* erratum (first-row blooming, cost
 
 Design the rails to **PYTHON's tighter tolerances** so either part drops in.
 
-> Order the **`-QDI`** suffix, **not `-QTI`** — the latter ships with a protective foil over
-> the glass.
+> **Order the `-QTI` suffix.** The originally-specified `-QDI` (no protective foil) has been
+> discontinued. `-QTI` is the identical PYTHON 1300 sensor but ships with a **peel-off
+> protective foil** over the glass — remove it before installing the sensor (handle the glass
+> by the edges afterward). The foil is otherwise harmless handling protection, and a bonus:
+> its tab points toward pin 1 — a useful orientation aid, since the package has no chamfer/dot (§12).
 
 ### Bandwidth check
 
@@ -1019,8 +1024,9 @@ The only physical index is **pin 1's castellation, which is roughly twice as lon
 stops a 90° error.
 
 - **Orient by the top-surface laser marking.** "ON / PYTHON 1300 A" reads upright when pin 1
-  is at mid-left. (The protective foil's tab, on `-QTI` parts, also points toward pin 1 — but
-  we order `-QDI`, which has no foil.)
+  is at mid-left. (We now order the `-QTI` part, which has a **peel-off protective foil**; its
+  tab points toward pin 1, so it doubles as an orientation aid. Peel the foil before installing
+  the sensor. The originally-specified `-QDI` — no foil — is discontinued.)
 - The board's silkscreen carries a **pin-1 dot** outside the left pad row. Use it.
 - **Cross-check that closes the loop:** Andon's own Fig. 17 puts **pin 1 on the left-hand
   column, middle** — matching onsemi's mid-left. The socket and the sensor agree.
@@ -1156,7 +1162,7 @@ Be clear about the boundary. Vivado has validated the **FPGA side**. It knows no
 
 | # | Item | Blocks | Owner |
 |---|---|---|---|
-| **1** | **🔴 ORDER THE SENSOR AND SOCKET.** `NOIP1SN1300A-QDI` had **49 in stock at DigiKey and a 27-week factory lead**. If that stock goes, the board arrives and sits on a bench for six months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. | Nothing — do it now | **You** |
+| **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. | Nothing — do it now | **You** |
 | 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. | Item 1 | Andon (one email), or default to `-0` |
 | 3 | **`U3` (load switch) and `FB1` (ferrite) have hard specs, not yet part numbers.** `U3`: active-high EN, **EN V<sub>IH</sub> ≤ 1.2 V** (driven from the 1.8 V rail — a ratiometric-threshold part **never turns on**), reverse-blocking, slew-controlled, **R<sub>DS(on)</sub> ≤ 50 mΩ**. `FB1`: **DCR ≤ 50 mΩ** — it carries 140 mA, and a 0.3 Ω bead drops 42 mV and pushes `vdd_33` under its floor. **The BOM is not orderable until both are settled.** | `vdd_33` in spec, and the sensor powering up at all | Purchasing |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
