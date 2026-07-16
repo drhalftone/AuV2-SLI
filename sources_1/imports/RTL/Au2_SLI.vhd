@@ -503,7 +503,7 @@ architecture Behavioral of Au2_SLI is
         port ( wordclk : in std_logic; rst : in std_logic; aligned : in std_logic;
                d0_word, d1_word, d2_word, d3_word, sync_word : in std_logic_vector(9 downto 0);
                kpix0, kpix1, kpix2, kpix3, kpix4, kpix5, kpix6, kpix7 : out std_logic_vector(9 downto 0);
-               kbase       : out std_logic_vector(7 downto 0);
+               kbase       : out std_logic_vector(10 downto 0);
                kvalid      : out std_logic;
                line_start  : out std_logic;
                frame_start : out std_logic;
@@ -512,7 +512,7 @@ architecture Behavioral of Au2_SLI is
     component cam_line_buf is
         port ( wordclk : in std_logic;
                frame_start, line_start, kvalid : in std_logic;
-               kbase : in std_logic_vector(7 downto 0);
+               kbase : in std_logic_vector(10 downto 0);
                kpix0, kpix1, kpix2, kpix3, kpix4, kpix5, kpix6, kpix7 : in std_logic_vector(9 downto 0);
                rd_clk  : in  std_logic;
                rd_addr : in  std_logic_vector(10 downto 0);
@@ -525,7 +525,7 @@ architecture Behavioral of Au2_SLI is
     signal cam_bitslip : std_logic_vector(4 downto 0);
     signal cam_aligned : std_logic;
     signal cam_k0, cam_k1, cam_k2, cam_k3, cam_k4, cam_k5, cam_k6, cam_k7 : std_logic_vector(9 downto 0);
-    signal cam_kbase   : std_logic_vector(7 downto 0);
+    signal cam_kbase   : std_logic_vector(10 downto 0);
     signal cam_kvalid, cam_line_start, cam_frame_start : std_logic;
     signal cam_line_addr_w : std_logic_vector(10 downto 0);   -- usb_link -> cam_line_buf read
     signal cam_line_data_w : std_logic_vector(7 downto 0);    -- cam_line_buf -> usb_link read

@@ -407,6 +407,12 @@ case (addr)
                             resp[0] <= ACK_N; resp_len <= 2'd1;
                         end else begin
                             cam_boot_go <= 1'b1;
+                            // Release reset (cam_gpio[7]) as part of issuing boot. The sequencer
+                            // drives reset itself while busy; this makes ownership hand BACK to a
+                            // released state when it finishes, so a just-booted sensor is not yanked
+                            // into reset if the host had not already set reg 0x37 bit 7. The host
+                            // still controls reset afterward via 0x37.
+                            cam_gpio[7] <= 1'b1;
                             resp[0] <= ACK_K; resp_len <= 2'd1;
                         end
                     end else begin                       // RO / undefined

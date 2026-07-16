@@ -32,7 +32,7 @@ module tb_cam_decode;
         .d0_word(d0w),.d1_word(d1w),.d2_word(d2w),.d3_word(d3w),.sync_word(syw),
         .bitslip(bitslip),.lane_locked(lane_locked),.aligned(aligned),.lane_failed(lane_failed));
 
-    wire [9:0] kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7; wire [7:0] kbase;
+    wire [9:0] kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7; wire [10:0] kbase;
     wire kvalid, line_start, frame_start, in_black;
     cam_sync_decode decode (.wordclk(wordclk),.rst(1'b0),.aligned(aligned),
         .d0_word(d0w),.d1_word(d1w),.d2_word(d2w),.d3_word(d3w),.sync_word(syw),

@@ -40,7 +40,7 @@ module tb_cam_line;
     // ---- synthetic decoder kernel drive ----
     reg        wordclk=0; always #7 wordclk=~wordclk;   // ~71 MHz-ish, phase-independent
     reg        frame_start=0, line_start=0, kvalid=0;
-    reg [7:0]  kbase=0;
+    reg [10:0] kbase=0;                                // match cam_line_buf's 11-bit kbase port
     reg [9:0]  kp[0:7];
 
     // reference image line

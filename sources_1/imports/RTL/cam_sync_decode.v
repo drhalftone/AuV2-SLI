@@ -35,7 +35,7 @@ module cam_sync_decode (
 
     // one full 8-pixel kernel, emitted in parallel when kvalid pulses
     output reg  [9:0]  kpix0, kpix1, kpix2, kpix3, kpix4, kpix5, kpix6, kpix7,
-    output reg  [7:0]  kbase,            // column of kpix0 within the line
+    output reg  [10:0] kbase,            // column of kpix0 within the line (0..1279, so 11 bits)
     output reg         kvalid,           // pulse: kpix0..7 valid this cycle
     output reg         line_start,       // pulse: a new image line begins
     output reg         frame_start,      // pulse: a new frame begins
@@ -49,13 +49,13 @@ module cam_sync_decode (
 
     reg        word_b;                   // 0 = expecting word A, 1 = word B
     reg        kpar;                      // kernel parity: 0 even (ascending), 1 odd (descending)
-    reg [7:0]  kcol;                      // base column of the current kernel
+    reg [10:0] kcol;                      // base column of the current kernel (0..1279)
     reg [9:0]  a0,a1,a2,a3;               // held word-A lanes = positions 0,2,4,6
 
     always @(posedge wordclk) begin
         if (rst || !aligned) begin
             st <= S_IDLE; kvalid <= 1'b0; line_start <= 1'b0; frame_start <= 1'b0;
-            in_black <= 1'b0; word_b <= 1'b0; kpar <= 1'b0; kcol <= 8'd0;
+            in_black <= 1'b0; word_b <= 1'b0; kpar <= 1'b0; kcol <= 11'd0;
         end else begin
             kvalid      <= 1'b0;          // single-cycle strobes
             line_start  <= 1'b0;
@@ -71,7 +71,7 @@ module cam_sync_decode (
                 end
                 S_AFTER_LS: begin                          // consume window-ID word
                     line_start <= 1'b1;
-                    word_b <= 1'b0; kpar <= 1'b0; kcol <= 8'd0;
+                    word_b <= 1'b0; kpar <= 1'b0; kcol <= 11'd0;
                     st <= S_LINE;
                 end
                 S_LINE: begin
@@ -98,7 +98,7 @@ module cam_sync_decode (
                             end
                             kbase  <= kcol;
                             kvalid <= 1'b1;
-                            kcol   <= kcol + 8'd8;
+                            kcol   <= kcol + 11'd8;
                             word_b <= 1'b0;
                             kpar   <= ~kpar;
                         end

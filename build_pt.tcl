@@ -37,8 +37,12 @@ file mkdir $ipwork
 foreach d [glob -nocomplain -type d $ipd/*] {
     file copy -force $d $ipwork
 }
-# repoint each copy's output products at its own directory, so nothing lands in the shared
-# <parent>/Au2_SLI.gen (which the Au build owns) and nothing needs a relative escape path.
+# Repoint each copy's gen_directory. HONEST NOTE: Vivado 2025.1 largely IGNORES this for a
+# physically-relocated .xci -- it detects the move and forces output products back to the .xci's
+# recorded original location, i.e. the SHARED <parent>/Au2_SLI.gen that the Au 35T build
+# (build.tcl) also resolves to. Reliable path-isolation of a moved .xci is not achievable this
+# way, so we do NOT depend on it; correctness is guaranteed by the fresh-DCP wipe below instead.
+# Consequence: the Au and Pt builds share one IP gen dir and MUST NOT be run concurrently.
 foreach xci [glob -nocomplain $ipwork/*/*.xci] {
     set fp [open $xci r]; set data [read $fp]; close $fp
     regsub -all {"gen_directory"[ ]*:[ ]*"[^"]*"} $data {"gen_directory": "."} data
@@ -48,17 +52,26 @@ read_ip [glob $ipwork/*/*.xci]
 upgrade_ip -quiet [get_ips]
 generate_target all [get_ips]
 
-# synth_ip runs each IP out-of-context in a spawned child Vivado process. On this Windows
-# host those children intermittently fail to read Vivado's OWN installed .tcl helpers
-# ("couldn't read file .../{unimacro,retarget}_{vhdl,verilog}.tcl: No error") -- a file-lock
-# / AV-scan race on a file that plainly exists, hitting a different IP each run. synth_ip is
-# idempotent (it re-synths only IPs whose output-product DCP is missing), so retry until
-# every DCP exists. maxThreads=1 above does NOT prevent this -- the race is in the OOC child.
+# Force fresh, part-correct IP synthesis. Because the outputs land in the shared gen dir (above),
+# a stale 35T DCP from an Au build could otherwise sit there and satisfy the missing-DCP check
+# below without being re-synthesised for the 100T. Delete each IP's DCP first so synth_ip MUST
+# regenerate it for THIS part and the check is meaningful.
+foreach ip [get_ips] {
+    set dcp [get_property IP_OUTPUT_DIR $ip]/[get_property NAME $ip].dcp
+    if {[file exists $dcp]} { file delete -force -- $dcp }
+}
+
+# synth_ip runs each IP out-of-context in a spawned child Vivado process. On this Windows host
+# those children intermittently fail to read Vivado's OWN installed .tcl helpers ("couldn't read
+# file .../{unimacro,retarget}_{vhdl,verilog}.tcl: No error") -- a file-lock / AV-scan race on a
+# file that plainly exists, hitting a DIFFERENT IP each run. synth_ip is idempotent (re-synths
+# only IPs whose DCP is missing), so retry. We DISTINGUISH the transient from a real error by
+# PROGRESS: the transient always clears the IP it hit on the next attempt, so the missing set
+# must shrink. If the SAME IPs are still missing after a re-run, that is a deterministic failure
+# -- stop immediately instead of burning 6 attempts and masking it as "transient".
+set prev_missing {}
 for {set try 1} {$try <= 6} {incr try} {
-    if {[catch {synth_ip [get_ips]} err]} {
-        puts "==== synth_ip attempt $try hit a transient read error; retrying ===="
-        puts "     ($err)"
-    }
+    catch {synth_ip [get_ips]}
     set missing {}
     foreach ip [get_ips] {
         if {[get_property GENERATE_SYNTH_CHECKPOINT $ip] && ![file exists [get_property IP_OUTPUT_DIR $ip]/[get_property NAME $ip].dcp]} {
@@ -66,7 +79,11 @@ for {set try 1} {$try <= 6} {incr try} {
         }
     }
     if {[llength $missing] == 0} { puts "==== all IP DCPs present after attempt $try ===="; break }
-    puts "==== still missing after attempt $try: $missing ===="
+    if {$try > 1 && $missing eq $prev_missing} {
+        error "synth_ip: no progress on attempt $try -- '$missing' failing deterministically, NOT the transient glitch. Check the log for a real IP synth error."
+    }
+    puts "==== synth_ip attempt $try: still missing '$missing' (transient glitch); retrying ===="
+    set prev_missing $missing
     if {$try == 6} { error "synth_ip: DCPs still missing after 6 attempts: $missing" }
 }
 
@@ -83,14 +100,27 @@ read_verilog [glob $rtl/*.v]
 read_xdc $here/constrs_1/imports/RTL/Au2_pt.xdc
 
 # ---- synth + implement ----
-# The same transient .tcl-read race hits the TOP synth too (it loads unimacro_vhdl.tcl when
-# it starts on the VHDL top). synth_design re-elaborates from the already-read HDL/IP, so a
-# retry starts clean. opt/place/route do not load those helpers and need no retry.
+# The same transient .tcl-read race hits the TOP synth too (it loads unimacro_vhdl.tcl when it
+# starts on the VHDL top). synth_design re-elaborates from the already-read HDL/IP, so a retry
+# starts clean. A REAL RTL error, though, would fail identically every attempt -- so we only
+# retry when the transient's signature ("couldn't read file ...: No error") actually appears in
+# the log for this attempt; anything else fails immediately. If the log can't be read (Windows
+# sharing), we fall back to assuming transient so behaviour is never worse than a plain retry.
+# opt/place/route do not load those helpers and need no retry.
+set logf $here/build_pt/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
+    set mark 0
+    if {[file exists $logf]} { set mark [file size $logf] }
     if {[catch {synth_design -top $top -include_dirs $rtl} err]} {
-        puts "==== synth_design attempt $try hit a transient read error; retrying ===="
-        puts "     ($err)"
-        if {$try == 6} { error "synth_design failed after 6 attempts: $err" }
+        set transient 1
+        if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
+            set transient [string match {*couldn't read file*No error*} $tail]
+        }
+        if {!$transient} {
+            error "synth_design failed with a REAL error (not the .tcl-read glitch): $err"
+        }
+        puts "==== synth_design attempt $try hit the transient .tcl-read glitch; retrying ===="
+        if {$try == 6} { error "synth_design: transient .tcl-read glitch persisted 6 attempts" }
     } else {
         puts "==== synth_design succeeded on attempt $try ===="
         break

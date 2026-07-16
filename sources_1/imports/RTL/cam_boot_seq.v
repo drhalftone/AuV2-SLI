@@ -141,8 +141,14 @@ module cam_boot_seq #(
 
             case (st)
                 S_IDLE: begin
-                    ready <= 1'b0; failed <= 1'b0; pll_timeout <= 1'b0;
+                    // ready/failed/pll_timeout are STICKY: they hold the last boot's outcome
+                    // until the next GO. `go` is a 1-clock strobe, so S_DONE/S_FAIL fall back
+                    // here immediately -- clearing them here unconditionally (as before) made
+                    // the result observable for only ~1 clk, and a host polling reg 0x39 over
+                    // the slow UART would always read 0x00 (success looked like "never booted").
+                    // Clear only when a new boot actually starts.
                     if (go) begin
+                        ready <= 1'b0; failed <= 1'b0; pll_timeout <= 1'b0;
                         busy <= 1'b1; reset_n <= 1'b0; wait_cnt <= T_RST_LOW[23:0];
                         idx <= 6'd0; pll_cnt <= 4'd0; pll_done <= 1'b0;
                         st <= S_RST_LOW;

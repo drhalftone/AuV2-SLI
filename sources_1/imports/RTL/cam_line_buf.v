@@ -33,7 +33,7 @@ module cam_line_buf #(
     input  wire        frame_start,
     input  wire        line_start,
     input  wire        kvalid,
-    input  wire [7:0]  kbase,
+    input  wire [10:0] kbase,          // 0..1279 (11 bits) -- full-line column of kpix0
     input  wire [9:0]  kpix0, kpix1, kpix2, kpix3, kpix4, kpix5, kpix6, kpix7,
 
     // ---- read side: driven by uart_ctrl (rd_clk domain), TGT_EDID pattern ----
