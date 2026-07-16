@@ -19,7 +19,9 @@
 //
 // COLD START: the sensor emits no clock_out until its PLL locks, so bitclk/wordclk simply
 // do not run until then. Everything downstream is in the wordclk domain and comes up when
-// the clock appears -- there is nothing to reset-sequence here.
+// the clock appears. The ISERDESE2 primitives DO still need a reset sequenced synchronous to
+// CLKDIV once that clock exists -- see the serdes_rst counter below; the iocheck stub omitted
+// it (tied RST=0) and left the outputs undefined.
 //
 // BIT ORDER: the model sends MSB first. ISERDESE2 Q1..Q8/Q3s/Q4s emit in receive-time
 // order; word_bit_map() below folds that into a 10-bit value whose interpretation the

@@ -71,6 +71,8 @@ module cam_sync_decode (
                 end
                 S_AFTER_LS: begin                          // consume window-ID word
                     line_start <= 1'b1;
+                    in_black <= 1'b0;                      // default image until a BL code says otherwise;
+                                                           // was stale from the prior black line at line_start
                     word_b <= 1'b0; kpar <= 1'b0; kcol <= 11'd0;
                     st <= S_LINE;
                 end
