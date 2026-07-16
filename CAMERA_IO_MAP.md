@@ -250,6 +250,52 @@ whose absolute maximum is **4.3 V**.
 
 ---
 
+## 7.1 Pass-through verification — what's source-proven, and the hardware plan
+
+The full signal path and where each link is verified:
+
+```
+ camera DF40 plug pad ──net──► elem pin ──[Ft+ pass-thru]──► ──[Hd pass-thru]──► Pt receptacle ──► FPGA ball
+       └── §"Re-verified 2026-07-16", 25/25 ──┘   └─ NOT in this repo (Alchitry boards) ─┘   └── §1 + XDC, 23/23 ──┘
+```
+
+**Both ENDS are source-verified** (machine-extracted, not asserted):
+- *Camera board*, sensor pin → net → DF40 element pad: the 25/25 netlist check (§ "Re-verified
+  2026-07-16").
+- *Pt board*, element pin → FPGA ball: §1 (from Alchitry's Pt sheet 3), and `Au2_pt.xdc` matches
+  that ball for ball (23/23; the 2 not in the XDC are `lvds_clock_in±`, unused in PLL mode).
+
+**The MIDDLE is NOT verifiable from this repo.** The Hd and Ft+ are Alchitry boards; their
+schematics/netlists are not here — only the derived `iocheck/alchitry_pt_{hd,ft_plus}_bottom.xdc`,
+which list the pins those boards **tap**, not their top→bottom pass-through wiring. The straight-
+through carry rests on two things, both strong but neither a substitute for a hardware check:
+1. The Alchitry V2 **pass-through-site** design — every stacking board carries the full A/B/C
+   element bus straight through and only taps its own pins; that is the premise that lets *any*
+   board (including this camera) sit above it.
+2. §5's result that Hd and Ft+ tap **none** of the camera's 25 pins — so there is nothing for them
+   to intercept, only to pass.
+
+**Confirm on hardware — staged and FUNCTIONAL** (metering 25 signals on a mated 0.4 mm DF40 is not
+practical; let the FPGA drive/read each path instead). Each stage below *is* a pass-through test:
+
+| Stage | Proves the pass-through of | How (all over the existing `0xA5` USB control plane) |
+|---|---|---|
+| **0** | Power rails + pin-map parity | The §7 30-second meter (Ft+ exposed top, odd pins 1–15 = 3.3 V) |
+| **1** | **CMOS Bank A**: `mosi`,`miso`,`sck`,`ss_n`,`reset_n` | **Chip-ID read = `0x50D0`** (regs 0x30–0x36). A correct ID means those 5 pins pass end-to-end through both boards — §8.4 |
+| **2** | `clk_pll`, `trigger[0..2]`, `monitor[0..1]` | `clk_pll`: scope 72 MHz at the sensor. Triggers/monitor: toggle reg 0x37, read back 0x38 |
+| **3** | **LVDS Bank B (bank 13)**: `clock_out`, `d0–3`, `sync` | Boot the sensor (reg 0x39) and let it train. **Each lane's `lane_locked` bit = that lane's pass-through is good**; a stuck `lane_failed[k]` names exactly which pair (clock / d0–3 / sync) is broken |
+
+> **Stage 3 is only as diagnostic as the status it exposes.** `lane_locked`/`lane_failed` are
+> currently tied to `open` at the top (`CAMERA_RTL_REVIEW.md` P3). Surface them to a status register
+> and a broken LVDS pass-through reports *which pair* failed, instead of a silent "won't lock." That
+> one change turns the whole bank-13 pass-through into a self-diagnosing test.
+
+**Manual-meter fallback** (continuity, board powered off): probe each element pin in the §3/§4
+tables against its listed FPGA ball through the mated stack. Ground pairs (1,2 / 7,8 / …) map to
+themselves under the §7 swap and prove nothing — only the signal/power pins can expose a fault.
+
+---
+
 # 8. The Au V2 bring-up path — SPI only, and why
 
 **Status: DERIVED AND CROSS-CHECKED.** Source: Alchitry Labs 2,
