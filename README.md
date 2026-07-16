@@ -149,6 +149,17 @@ vivado -mode batch -source program.tcl   # volatile JTAG load for bring-up (reve
 synth/place/route and writes the bitstream plus a `spix1` / 16 MB `.bin`. The canonical sources are
 `sources_1/` + `constrs_1/`; `Au2_SLI.zip` is only a stale archived GUI project, not the build input.
 
+For the **Pt V2 camera build** (`XC7A100T`, with the PYTHON 1300 LVDS receiver chain integrated):
+
+```
+vivado -mode batch -source build_pt.tcl   # -> build_pt/Au2_SLI_pt.{bit,bin} (gitignored)
+```
+
+`build_pt.tcl` runs the same flow retargeted to the 100T against `Au2_pt.xdc` (a from-scratch re-pin
+— HDMI moves to the Hd connectors, camera LVDS onto bank 13). It wraps IP and top synthesis in retry
+loops that ride out an intermittent Vivado-2025.1 `.tcl`-helper read glitch on this host. Do not run
+it concurrently with `build.tcl` (they share one out-of-tree IP gen dir).
+
 ## Telemetry
 
 Status is streamed over the FT2232H ch.B UART (**COM6, 115200 8N1**), one line ~twice/second:
@@ -214,15 +225,29 @@ of block 0 is the authoritative extension count.
 | 0x30–0x36 | CAM_SPI | R/W | PYTHON 1300 SPI mailbox — stage a 9-bit-addr/16-bit-data sensor transaction (`0x30` addr, `0x31` `{rw,addr[8]}`, `0x32/33` wdata, `0x34` go/status, `0x35/36` rdata) |
 | 0x37 | CAM_GPIO | R/W | `{7:reset_n, 2..0:trigger[2:0]}` — resets to `0x00` (sensor held in reset) |
 | 0x38 | CAM_MON | R | `{1..0:monitor[1:0]}` |
+| 0x39 | CAM_BOOT | R/W | PYTHON 1300 boot sequencer — W (any value) starts the ROM-driven register upload (`N` if already busy); R = `{ready, busy, failed, pll_timeout}`. Owns the SPI master + reset while booting; releases reset on GO so control hands back cleanly |
 
 **The PYTHON 1300 camera.** The stacked `LauPythonCamera_Pt_Stack` sensor board is driven entirely
 through the `0xA5` control plane: an SPI mailbox (`0x30`–`0x36`) for the sensor's config registers,
-discrete pins on `0x37`/`0x38`, and a captured-line readback on `rdtbl` target **`0x04`**
-(`readCameraLine()`, 1280 bytes). The full datapath — SPI master, boot sequencer, and the LVDS
-receive chain (ISERDES → bitslip → sync-decode → de-interleave → line buffer) — is written and
-proven in simulation; see [`CAMERA_RTL_PLAN.md`](CAMERA_RTL_PLAN.md) for status and
-[`CAMERA_SENSOR_PROTOCOL.md`](CAMERA_SENSOR_PROTOCOL.md) for the datasheet-cited constants. The
-high-speed LVDS half needs the **Pt V2** (bank-13 @ 2.5 V); the SPI/control half runs on the Au.
+discrete pins on `0x37`/`0x38`, a ROM-driven **boot sequencer** on `0x39`, and a captured-line
+readback on `rdtbl` target **`0x04`** (`readCameraLine()`, 1280 bytes).
+
+The full datapath — SPI master, boot sequencer, and the LVDS receive chain (ISERDES → bitslip →
+sync-decode → de-interleave → line buffer) — is written, unit-proven, and now **integrated into the
+top-level design and building timing-clean on the Pt V2** (`XC7A100T`, via `build_pt.tcl`). The Au
+design was first re-pinned to the Pt (Phase 1), then the receiver chain, a 72 MHz sensor-reference
+MMCM, and the boot/SPI arbitration were added on top (Phase 2), closing timing (setup WNS ≈ +2 ns,
+DRC clean). The SPI/control half also runs on the Au for the chip-ID bring-up; the high-speed LVDS
+half needs the **Pt V2** (bank-13 @ 2.5 V).
+
+What remains is the **on-bench hardware bring-up** — read the chip ID (`0x50D0`), boot the sensor,
+capture a line. A fresh-eyes RTL review confirmed the receiver *logic* is correct (the de-interleave
+is proven bit-exact against the OVC reference decoder; the SPI protocol against the datasheet text)
+but flagged the gaps to close on hardware — chiefly that the 720 Mbps LVDS interface is
+**mesochronous**, so it needs a training-driven per-channel `IDELAY` eye-centering step that can only
+be tuned on silicon. See [`CAMERA_RTL_PLAN.md`](CAMERA_RTL_PLAN.md) (staged plan + status),
+[`CAMERA_RTL_REVIEW.md`](CAMERA_RTL_REVIEW.md) (review + prioritised bring-up gaps P1–P4), and
+[`CAMERA_SENSOR_PROTOCOL.md`](CAMERA_SENSOR_PROTOCOL.md) (datasheet-cited constants).
 
 **rdtbl targets (op `0x72`).** `0x00` LUT (720 B), `0x01` LUT-V (1280 B), `0x02` CORR (256 B),
 `0x03` EDID (256 B), `0x04` CAM_LINE (1280 B, camera bring-up).
@@ -385,7 +410,11 @@ The newer board folders:
 ├── README.md                        # this file
 ├── ROADMAP.md                       # hardware expansion roadmap (DF40 stacking, Ft+, MIPI)
 ├── MIPI_CSI2_ROADMAP.md             # custom MIPI CSI-2 receiver design plan (Pt V2)
+├── CAMERA_RTL_PLAN.md               # PYTHON 1300 bring-up plan + staged gates / status
+├── CAMERA_RTL_REVIEW.md             # fresh-eyes receiver-chain RTL review + bring-up gaps (P1-P4)
+├── CAMERA_SENSOR_PROTOCOL.md        # PYTHON 1300 datasheet-cited protocol constants
 ├── build.tcl                        # non-project Vivado batch build (sources -> bitstream + .bin)
+├── build_pt.tcl                     # Pt V2 (XC7A100T) camera build — receiver chain integrated
 ├── program.tcl                      # volatile JTAG load for bring-up
 ├── Bitstream/                       # prebuilt bitstream (Au2_SLI.bin)
 ├── sources_1/                       # HDL sources (sources_1/imports/RTL)
