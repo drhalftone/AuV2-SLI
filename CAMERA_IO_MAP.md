@@ -155,6 +155,31 @@ The camera's 25 pins are disjoint from all three. Hd and Ft+ live in the A–G r
 and the MGT area; the camera is entirely in the T/U/V/W/Y/AA/AB rows, columns 11–22, plus a few
 bank-35 pins.
 
+### 5.1 Single-design confirmation — Pt + Hd + Ft+ + camera (2026-07-16)
+
+**Confirmed: all four combine into one FPGA design with no pin, bank, voltage, or resource
+conflict.** Machine-checked, not asserted:
+
+- **Pin-disjoint across all four.** Ball sets extracted from `iocheck/alchitry_pt_base.xdc` (12),
+  `alchitry_pt_hd_bottom.xdc` (24), `alchitry_pt_ft_plus_bottom.xdc` (44), and `pt_camera.xdc`
+  (25) → **105 distinct balls, 0 shared** by any pair. The Ft+'s 44 balls are also disjoint from
+  every ball the **real current design** uses (`constrs_1/imports/RTL/Au2_pt.xdc`, 67 balls) →
+  **111 distinct combined, of ~285 usable on the FGG484** (≈60 % still free).
+- **Bank voltages compatible.** The camera *exclusively* owns bank 13 at 2.5 V (VBSEL strap, for
+  `LVDS_25` + `DIFF_TERM`); Hd/Ft+/base are all on 3.3 V banks. Vivado's `iocheck` stackcheck
+  placed all four together with **clean DRC** — no VCCO/bank conflict (`iocheck/stack_drc_report.txt`).
+- **Already partly built.** `Au2_pt.xdc` (Pt + Hd + camera) synthesises, places, routes, and closes
+  timing DRC-clean on the XC7A100T (WNS ≈ +2 ns; ~8 % LUT, 4/6 MMCM, 12/32 BUFG) — three of the
+  four coexist in a real design today; the Ft+ adds only free pins with ample resource headroom.
+
+**Two caveats — implementation/hardware, not feasibility:**
+1. The **Ft+ FT601 USB3 datapath is not written in RTL** (see `CAMERA_RTL_PLAN.md` "Deliberately
+   NOT in this plan"). Its pins are reserved and collision-free, but the high-speed interface is a
+   separate build; the current control plane uses the onboard FT2232 UART, not the Ft+.
+2. The **stack pass-throughs** (Hd + Ft+ carrying the bank-13 bus straight through to the camera on
+   top) still need the metered power-up check in §7 before first hardware use — a pass-through swap
+   is invisible to a netlist analysis.
+
 ---
 
 ## 6. What is checked, and what is not
