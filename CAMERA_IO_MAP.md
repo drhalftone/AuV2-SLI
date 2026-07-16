@@ -4,6 +4,16 @@
 cross-checked against the schematic, the XDC, and the other elements in the stack. **No errors
 found — no changes made.**
 
+> **Re-verified 2026-07-16 against the ROUTED PCB** (after the control/power routing rework and
+> JLCPCB production export). Machine-extracted the netlist from
+> `LauPythonCamera_Pt_Stack.kicad_pcb` — sensor socket `U1`, Bank A = `J1`, Bank B = `J2` — and
+> joined sensor pin → net → DF40 element pad. **25/25 sensor→element routes match §3/§4**, and
+> **23/23 FPGA balls in `constrs_1/imports/RTL/Au2_pt.xdc` match the ball column** (the 2 missing
+> are `lvds_clock_in±` — deliberately unconstrained in PLL mode per `CAMERA_SENSOR_PROTOCOL.md`
+> §4.2; the PCB still routes `CAM_LVDSCLK_±` to B76/B78, the FPGA just never drives them). Pair
+> polarity is straight-through end to end (net names `CAM_*_P`/`_N` on the P/N balls). The stack
+> pass-throughs (§6/§7) still require the metered power-up check before first use.
+
 > **The previous work broke the *power tree*, not the pin map.** The I/O plan in
 > `LauPythonCamera_Pt_Stack/README.md` §5 is correct and is reproduced here with an independent
 > derivation. Power: see [`CAMERA_POWER_DESIGN.md`](CAMERA_POWER_DESIGN.md).
