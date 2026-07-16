@@ -41,18 +41,24 @@ module cam_line_buf #(
     input  wire [ADDR_W-1:0] rd_addr,
     output reg  [7:0]        rd_data
 );
-    (* ram_style = "block" *) reg [7:0] mem [0:DEPTH-1];
+    // The line is stored 8 pixels (one decode kernel) per 64-bit word. cam_sync_decode emits
+    // kernels on 8-pixel boundaries (kbase = 0, 8, 16, ...), so all 8 pixels of a kernel land
+    // in ONE word at kbase/8 -- a single write port per cycle. A per-pixel byte array (mem[8]
+    // written at kbase+0..7 in one cycle) is correct in simulation but needs 8 write ports and
+    // will NOT infer as a BRAM -- it crashed synthesis. Same capture behaviour, byte-exact.
+    localparam integer WORDS = (DEPTH + 7) / 8;   // 160 words for DEPTH = 1280
+
+    (* ram_style = "block" *) reg [63:0] mem [0:WORDS-1];
 
     // ---- capture the first image line of each frame ----
     reg capturing = 1'b0;
     reg done      = 1'b0;
 
-    // 8-bit truncation of each kernel pixel
-    wire [7:0] p [0:7];
-    assign p[0]=kpix0[9:2]; assign p[1]=kpix1[9:2]; assign p[2]=kpix2[9:2]; assign p[3]=kpix3[9:2];
-    assign p[4]=kpix4[9:2]; assign p[5]=kpix5[9:2]; assign p[6]=kpix6[9:2]; assign p[7]=kpix7[9:2];
+    // 8-bit truncation (top 8 of 10), packed pixel s -> byte s of the word (little-endian).
+    wire [63:0] kword = { kpix7[9:2], kpix6[9:2], kpix5[9:2], kpix4[9:2],
+                          kpix3[9:2], kpix2[9:2], kpix1[9:2], kpix0[9:2] };
+    wire [7:0]  kwaddr = kbase >> 3;              // kbase is 8-aligned (kcol += 8 per kernel)
 
-    integer s;
     always @(posedge wordclk) begin
         if (frame_start) begin
             capturing <= 1'b0;
@@ -64,17 +70,18 @@ module cam_line_buf #(
                 done      <= 1'b1;
             end
             // kvalid only fires on image kernels, so the first one is in the first image
-            // line; start capturing there and write its 8 pixels at kbase+0..7.
+            // line; start capturing there and write its 8 pixels as one word at kbase/8.
             if (kvalid && !done) begin
                 capturing <= 1'b1;
-                for (s = 0; s < 8; s = s + 1)
-                    if ((kbase + s) < DEPTH) mem[kbase + s] <= p[s];
+                if (kwaddr < WORDS) mem[kwaddr] <= kword;
             end
         end
     end
 
-    // ---- registered read (matches local-RAM latency; TGT_EDID pattern) ----
+    // ---- registered read (1-cycle latency; TGT_EDID pattern) ----
+    // Fetch the kernel word at rd_addr/8, select byte rd_addr[2:0], register the result --
+    // identical latency and byte value to the old per-pixel mem[rd_addr].
     always @(posedge rd_clk)
-        rd_data <= mem[rd_addr];
+        rd_data <= mem[rd_addr >> 3][rd_addr[2:0]*8 +: 8];
 
 endmodule

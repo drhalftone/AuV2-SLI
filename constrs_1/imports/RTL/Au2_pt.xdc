@@ -1,9 +1,10 @@
 # =============================================================================
 # Au2_pt.xdc  --  Au2_SLI ported to the Alchitry Pt V2  (XC7A100T-2FGG484I)
 #
-# Phase 1 of the Pt port (CAMERA_RTL_PLAN.md, task #15): the EXISTING SLI design
-# (HDMI passthrough + offline pattern generator), NO camera receiver yet. The camera
-# LVDS/SPI and the receiver chain are added on top for task #12.
+# The Pt port (CAMERA_RTL_PLAN.md). Phase 1 was the EXISTING SLI design (HDMI passthrough
+# + offline pattern generator) re-pinned. Phase 2 (task #12) adds the camera on top: the
+# bank-13 LVDS receive interface + the 72 MHz cam_clk_pll reference are at the bottom of
+# this file; the CMOS SPI/control pins were already here from Phase 1.
 #
 # This is a from-scratch re-pin: every PACKAGE_PIN in Au2.xdc is invalid on the Pt V2
 # (different die AND package). Derivation, all cross-checked:
@@ -162,5 +163,47 @@ set_property -dict { PACKAGE_PIN "M3"   IOSTANDARD LVCMOS33 }                   
 
 set_false_path -to   [get_ports {cam_sck cam_mosi cam_ss_n cam_reset_n cam_trigger[*]}]
 set_false_path -from [get_ports {cam_miso cam_monitor[*]}]
+
+# =============================================================================
+#  PYTHON 1300 camera -- LVDS receive interface (bank 13 @ 2.5 V), task #12.
+#
+#  Balls + rationale are from pt_camera.xdc (the camera-only proof that iocheck
+#  already placed clean). Folded in here now that the receiver chain is integrated.
+#  Bank 13 is 2.5 V, strapped in HARDWARE by the camera element (VBSEL A/B both HIGH);
+#  LVDS_25 + internal DIFF_TERM both require it. LVDS is on the DF40 EVEN row (SRCC
+#  pairs, no MRCC) -- forced by geometry, see pt_camera.xdc / README 5.1.1.
+#
+#  PLL MODE (CAMERA_SENSOR_PROTOCOL.md §4): the FPGA drives 72 MHz on cam_clk_pll
+#  (CMOS) and the sensor's internal PLL makes the 360 MHz DDR bit clock it forwards
+#  back on cam_clkout. lvds_clock_in (elem B76/B78, W15/W16) is NOT driven and is
+#  deliberately absent here -- those balls fall under UNUSEDPIN PULLDOWN below.
+# =============================================================================
+# forwarded 360 MHz bit clock -- SRCC pair, reaches BUFIO + BUFR inside cam_lvds_rx
+set_property -dict {PACKAGE_PIN Y11 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_clkout_p}]
+set_property -dict {PACKAGE_PIN Y12 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_clkout_n}]
+# 4 data lanes, 720 Mbps DDR
+set_property -dict {PACKAGE_PIN U15  IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_p[0]}]
+set_property -dict {PACKAGE_PIN V15  IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_n[0]}]
+set_property -dict {PACKAGE_PIN AB16 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_p[1]}]
+set_property -dict {PACKAGE_PIN AB17 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_n[1]}]
+set_property -dict {PACKAGE_PIN Y16  IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_p[2]}]
+set_property -dict {PACKAGE_PIN AA16 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_n[2]}]
+set_property -dict {PACKAGE_PIN T14  IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_p[3]}]
+set_property -dict {PACKAGE_PIN T15  IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_d_n[3]}]
+# sync channel
+set_property -dict {PACKAGE_PIN W14 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_sync_p}]
+set_property -dict {PACKAGE_PIN Y14 IOSTANDARD LVDS_25 DIFF_TERM TRUE} [get_ports {cam_sync_n}]
+# 72 MHz sensor PLL reference clock -- CMOS out (bank 14/35 @ 3.3 V), forwarded via ODDR
+set_property -dict {PACKAGE_PIN AA18 IOSTANDARD LVCMOS33} [get_ports {cam_clk_pll}]
+
+# 360 MHz forwarded bit clock. cam_lvds_rx's BUFR /5 word clock is derived from it.
+create_clock -name cam_clkout -period 2.778 [get_ports cam_clkout_p]
+# clk_pll is a forwarded clock (ODDR->OBUF), no setup relationship to capture.
+set_false_path -to [get_ports cam_clk_pll]
+# The camera receive clocks (360 MHz + the BUFR /5 word clock) cross into clk100 only
+# through cam_line_buf's dual-port BRAM (quasi-static line readback); the 72 MHz sensor-ref
+# MMCM only feeds an output pin. Both are asynchronous to the HDMI / system domains.
+set_clock_groups -name cam_rx_async  -asynchronous -group [get_clocks -include_generated_clocks cam_clkout]
+set_clock_groups -name cam_ref_async -asynchronous -group [get_clocks -of_objects [get_pins i_cam_mmcm/CLKOUT0]]
 
 set_property BITSTREAM.CONFIG.UNUSEDPIN PULLDOWN [current_design]

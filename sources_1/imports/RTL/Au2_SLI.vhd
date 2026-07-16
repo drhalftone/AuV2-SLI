@@ -68,7 +68,21 @@ entity Au2_SLI is
         cam_miso    : in    std_logic := '0';              -- P9  bank 14
         cam_reset_n : out   std_logic;                     -- J1  bank 35
         cam_trigger : out   std_logic_vector(2 downto 0);  -- K1 / L3 / H1  bank 35
-        cam_monitor : in    std_logic_vector(1 downto 0) := (others => '0')  -- K2 / H2  bank 35
+        cam_monitor : in    std_logic_vector(1 downto 0) := (others => '0');  -- K2 / H2  bank 35
+
+        -- ===== PYTHON 1300 LVDS receive interface (Pt V2 bank 13 @ 2.5 V) =====
+        -- Task #12: the receiver chain. PLL mode -- we drive 72 MHz on cam_clk_pll (CMOS)
+        -- and the sensor's internal PLL makes the 360 MHz DDR bit clock it forwards back on
+        -- cam_clkout. lvds_clock_in is NOT driven (CAMERA_SENSOR_PROTOCOL.md §4.2), so it is
+        -- absent here. These pins are on the Au's DDR3 / scattered banks and are DELIBERATELY
+        -- ABSENT on an Au build -- present only on the Pt, where bank 13 is a 2.5 V LVDS bank.
+        cam_clkout_p : in  std_logic;                     -- forwarded 360 MHz bit clock (SRCC)
+        cam_clkout_n : in  std_logic;
+        cam_d_p      : in  std_logic_vector(3 downto 0);  -- 4 data lanes, 720 Mbps DDR
+        cam_d_n      : in  std_logic_vector(3 downto 0);
+        cam_sync_p   : in  std_logic;                     -- sync channel
+        cam_sync_n   : in  std_logic;
+        cam_clk_pll  : out std_logic                      -- 72 MHz CMOS reference to sensor PLL
     );
 end Au2_SLI;
 
@@ -464,11 +478,81 @@ architecture Behavioral of Au2_SLI is
     signal mode_idx_f, mode_idx_f_q : std_logic_vector(3 downto 0) := "0010";
     signal vg_hStart, vg_hEnd, vg_hMax : std_logic_vector(11 downto 0);
     signal vg_vStart, vg_vEnd, vg_vMax : std_logic_vector(11 downto 0);
+
+    -- ===== PYTHON 1300 LVDS receive chain (task #12; Verilog modules) =====
+    -- python1300_lvds_model -> cam_lvds_rx -> cam_align -> cam_sync_decode -> cam_line_buf,
+    -- proven bit-exact in tb_cam_decode. cam_lvds_rx recovers its own 72 MHz word clock from
+    -- the sensor's forwarded bit clock (BUFIO + BUFR /5) -- no IDELAY / clk200 needed.
+    component cam_lvds_rx is
+        port ( cam_clkout_p, cam_clkout_n : in  std_logic;
+               cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
+               cam_sync_p, cam_sync_n     : in  std_logic;
+               bitslip : in  std_logic_vector(4 downto 0);
+               wordclk : out std_logic;
+               d0_word, d1_word, d2_word, d3_word, sync_word : out std_logic_vector(9 downto 0) );
+    end component;
+    component cam_align is
+        port ( wordclk : in std_logic; rst : in std_logic;
+               d0_word, d1_word, d2_word, d3_word, sync_word : in std_logic_vector(9 downto 0);
+               bitslip     : out std_logic_vector(4 downto 0);
+               lane_locked : out std_logic_vector(4 downto 0);
+               aligned     : out std_logic;
+               lane_failed : out std_logic_vector(4 downto 0) );
+    end component;
+    component cam_sync_decode is
+        port ( wordclk : in std_logic; rst : in std_logic; aligned : in std_logic;
+               d0_word, d1_word, d2_word, d3_word, sync_word : in std_logic_vector(9 downto 0);
+               kpix0, kpix1, kpix2, kpix3, kpix4, kpix5, kpix6, kpix7 : out std_logic_vector(9 downto 0);
+               kbase       : out std_logic_vector(7 downto 0);
+               kvalid      : out std_logic;
+               line_start  : out std_logic;
+               frame_start : out std_logic;
+               in_black    : out std_logic );
+    end component;
+    component cam_line_buf is
+        port ( wordclk : in std_logic;
+               frame_start, line_start, kvalid : in std_logic;
+               kbase : in std_logic_vector(7 downto 0);
+               kpix0, kpix1, kpix2, kpix3, kpix4, kpix5, kpix6, kpix7 : in std_logic_vector(9 downto 0);
+               rd_clk  : in  std_logic;
+               rd_addr : in  std_logic_vector(10 downto 0);
+               rd_data : out std_logic_vector(7 downto 0) );
+    end component;
+
+    -- receive-chain nets (wordclk domain unless noted)
+    signal cam_wordclk : std_logic;
+    signal cam_d0w, cam_d1w, cam_d2w, cam_d3w, cam_syncw : std_logic_vector(9 downto 0);
+    signal cam_bitslip : std_logic_vector(4 downto 0);
+    signal cam_aligned : std_logic;
+    signal cam_k0, cam_k1, cam_k2, cam_k3, cam_k4, cam_k5, cam_k6, cam_k7 : std_logic_vector(9 downto 0);
+    signal cam_kbase   : std_logic_vector(7 downto 0);
+    signal cam_kvalid, cam_line_start, cam_frame_start : std_logic;
+    signal cam_line_addr_w : std_logic_vector(10 downto 0);   -- usb_link -> cam_line_buf read
+    signal cam_line_data_w : std_logic_vector(7 downto 0);    -- cam_line_buf -> usb_link read
+
+    -- wordclk-domain reset: hold cam_align / cam_sync_decode in reset for the first 31 word
+    -- clocks after the sensor's recovered clock starts, then release (mirrors the serdes_rst
+    -- idiom inside cam_lvds_rx -- the wordclk simply does not run until the sensor PLL locks).
+    signal cam_wc_rstcnt : integer range 0 to 31 := 0;
+    signal cam_wc_rst    : std_logic := '1';
+
+    -- 72.000 MHz sensor PLL reference: 100 MHz / 5 * 54 (VCO 1080) / 15. Forwarded to the
+    -- CMOS cam_clk_pll pin via ODDR. Its <= 20 ps input-jitter budget (CAMERA_SENSOR_PROTOCOL
+    -- §4.1, task #14) is not yet checked against this MMCM's output jitter -- flagged, not gating.
+    signal cam_clk72_raw, cam_clk72, cam_clkfb, cam_clk72_o : std_logic;
+    signal cam_mmcm_locked : std_logic;
+    -- THE 100 MHz clock net. The raw clk100 PORT drives only a BUFG; everything on sys_clk_pin
+    -- (all 100 MHz fabric + every MMCM CLKIN) runs off its output, clk100_g. Vivado never put
+    -- clk100 on a global buffer (it feeds MMCMs directly, so the auto-inserter skips it); the
+    -- unbuffered net was tolerable only while the fabric stayed compact. Adding cam_line_buf --
+    -- clocked here but placed by the bank-13 LVDS pins -- stretched it across the die and the
+    -- skew hit -17 ns (timing blown). One explicit BUFG fixes it for the whole domain.
+    signal clk100_g : std_logic;
 begin
     debug_pmod <= debug;
     -- Power-up reset for the EDID merge unit
-    process(clk100) begin
-        if rising_edge(clk100) then
+    process(clk100_g) begin
+        if rising_edge(clk100_g) then
             if por_cnt /= 15 then por_cnt <= por_cnt + 1; por <= '1';
             else por <= '0'; end if;
         end if;
@@ -481,7 +565,7 @@ begin
     -- usb_link replaces edid_reader: identical status telemetry on usb_tx, plus the
     -- 0xA5 host control protocol on usb_rx. Stage-2 control/table taps left open for now.
     i_usb_link: usb_link port map (
-        clk100 => clk100, led => led_i, dbg => debug, mrg => merge_dbg,
+        clk100 => clk100_g, led => led_i, dbg => debug, mrg => merge_dbg,
         tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
         usb_rx => usb_rx, usb_tx => usb_tx,
         phys_sw => newSW, eff_sw => effective_sw,
@@ -496,8 +580,8 @@ begin
         lutv_addr => "00000000000", lutv_dout => open,
         corr_pat_addr => pat_lut_din, corr_pat_dout => pat_lut_dout,
         edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data,
-        -- camera line readback: no receiver on the Au, so tie the data in to 0.
-        cam_line_addr => open, cam_line_data => "00000000",
+        -- camera line readback: on the Pt this reaches cam_line_buf's read port (task #12).
+        cam_line_addr => cam_line_addr_w, cam_line_data => cam_line_data_w,
         -- offline mode decision. clkgen_mode_idx is the APPLIED index (already the
         -- clk100-synced one that drives the clock + timing), so the host reads the
         -- mode actually in use, not a candidate mode_select may not have applied yet.
@@ -525,7 +609,7 @@ begin
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
     -- and drive hdmi_rx_hpa with the cache-defeat HPD pulse so Windows re-reads.
     i_edid_merge: edid_merge port map (
-        clk100       => clk100,
+        clk100       => clk100_g,
         rst          => por,
         hdmi_tx_rscl => hdmi_tx_scl,
         hdmi_tx_rsda => hdmi_tx_sda,
@@ -549,7 +633,7 @@ begin
     -- offline pattern generator free-runs -- so the idle slider stays steady.
     connected <= vid_valid or merge_dbg2(2);   -- dbg2(2) = edid_merge monitor_present
     i_led_idle: led_idle_anim port map (
-        clk100     => clk100,
+        clk100     => clk100_g,
         connected  => connected,
         status_led => led_i,
         led_out    => led_out );
@@ -564,8 +648,8 @@ begin
  
 
     
-i_hdmi_io: hdmi_io port map ( 
-        clk100        => clk100,
+i_hdmi_io: hdmi_io port map (
+        clk100        => clk100_g,
          clk200        => clk200,
          clk10 => clk10,
          clk125        => clk125,
@@ -639,7 +723,7 @@ i_hdmi_io: hdmi_io port map (
  --------------------------------------------
 ref_clk_pll : ref_clk
     port map (
-        clk_in  => clk100,
+        clk_in  => clk100_g,
         clk_out => clk200,
         clk125 => clk125_u, clk625 => clk625_u,   -- old static offline clocks: unused now
         clk10 => clk10
@@ -652,7 +736,7 @@ ref_clk_pll : ref_clk
     clkgen_mode_idx <= mode_idx_f;   -- EDID pick or MODEFORCE override; drives clock + timing ROM
 
 i_drp_clkgen13 : drp_clkgen13 port map (
-        clk100   => clk100,
+        clk100   => clk100_g,
         mode_idx => clkgen_mode_idx,
         sen      => clkgen_sen,
         srdy     => clkgen_srdy,
@@ -671,8 +755,8 @@ i_mode_select : mode_select generic map ( CEIL_KHZ => 85000 )
         o_refr=>open, o_pclk_khz=>open, o_supported=>ms_supported );
 
     -- 2FF sync the quasi-static mode decision clk10 -> clk100 for the host registers.
-    process(clk100) begin
-        if rising_edge(clk100) then
+    process(clk100_g) begin
+        if rising_edge(clk100_g) then
             mode_bus_s0 <= ms_valid & edid_ok & ms_supported;
             mode_bus_s1 <= mode_bus_s0;
         end if;
@@ -709,8 +793,8 @@ i_mode_select : mode_select generic map ( CEIL_KHZ => 85000 )
     -- timing ROM while leaving the MMCM on the OLD pixel clock -- 1280x1024 geometry
     -- clocked at 78 MHz. Trigger the retune off the applied index itself instead, so both
     -- sources reconfigure the clock. (sen_tgl is now unused.)
-    process(clk100) begin
-        if rising_edge(clk100) then
+    process(clk100_g) begin
+        if rising_edge(clk100_g) then
             idx_s0 <= applied_idx; idx_s1 <= idx_s0;
 
             if mode_force_bus(7) = '1' then                     -- 0x14 force_en
@@ -835,9 +919,92 @@ i_processing: pixel_pipe Port map (
         lut_din  => pat_lut_din,
         lut_dout => pat_lut_dout
     );
---Vs  <= out_vsync; 
+--Vs  <= out_vsync;
     -- Swap to this if you want to capture the HDMI symbols
     -- and send them up the RS232 port
-    --rs232_tx <= '1';   
-    
+    --rs232_tx <= '1';
+
+ --------------------------------------------
+ --   PYTHON 1300 camera (task #12 Pt integration)
+ --------------------------------------------
+ -- clk100 -> BUFG -> cam MMCM (see clk100_g comment). Keeps the raw clk100 net at one direct
+ -- MMCM so the fabric keeps its global buffer.
+i_clk100_bufg : BUFG port map ( I => clk100, O => clk100_g );
+
+ -- 72 MHz sensor PLL reference. Direct MMCM feedback (no BUFG deskew): the output only
+ -- leaves the chip, so phase alignment to clk100 is irrelevant.
+i_cam_mmcm : MMCME2_BASE
+    generic map (
+        BANDWIDTH          => "OPTIMIZED",
+        CLKIN1_PERIOD      => 10.000,     -- 100 MHz in
+        DIVCLK_DIVIDE      => 5,
+        CLKFBOUT_MULT_F    => 54.000,     -- VCO = 100/5*54 = 1080 MHz
+        CLKOUT0_DIVIDE_F   => 15.000,     -- 1080/15 = 72.000 MHz
+        CLKOUT0_DUTY_CYCLE => 0.5,
+        STARTUP_WAIT       => FALSE )
+    port map (
+        CLKIN1  => clk100_g,
+        CLKFBIN => cam_clkfb, CLKFBOUT => cam_clkfb,
+        CLKOUT0 => cam_clk72_raw,
+        CLKOUT0B => open, CLKOUT1 => open, CLKOUT1B => open,
+        CLKOUT2 => open, CLKOUT2B => open, CLKOUT3 => open, CLKOUT3B => open,
+        CLKOUT4 => open, CLKOUT5 => open, CLKOUT6 => open, CLKFBOUTB => open,
+        LOCKED  => cam_mmcm_locked,
+        RST => '0', PWRDWN => '0' );
+
+i_cam_clk_bufg : BUFG port map ( I => cam_clk72_raw, O => cam_clk72 );
+
+ -- clean single-ended clock forwarding: ODDR (1 on rising, 0 on falling) -> OBUF -> pin.
+i_cam_clk_oddr : ODDR
+    generic map ( DDR_CLK_EDGE => "OPPOSITE_EDGE", INIT => '0', SRTYPE => "SYNC" )
+    port map ( Q => cam_clk72_o, C => cam_clk72, CE => '1',
+               D1 => '1', D2 => '0', R => '0', S => '0' );
+i_cam_clk_obuf : OBUF port map ( I => cam_clk72_o, O => cam_clk_pll );
+
+ -- wordclk-domain reset counter (see signal comment).
+process(cam_wordclk) begin
+    if rising_edge(cam_wordclk) then
+        if cam_wc_rstcnt /= 31 then
+            cam_wc_rstcnt <= cam_wc_rstcnt + 1;
+            cam_wc_rst    <= '1';
+        else
+            cam_wc_rst    <= '0';
+        end if;
+    end if;
+end process;
+
+i_cam_lvds_rx : cam_lvds_rx port map (
+        cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
+        cam_d_p => cam_d_p, cam_d_n => cam_d_n,
+        cam_sync_p => cam_sync_p, cam_sync_n => cam_sync_n,
+        bitslip => cam_bitslip,
+        wordclk => cam_wordclk,
+        d0_word => cam_d0w, d1_word => cam_d1w, d2_word => cam_d2w,
+        d3_word => cam_d3w, sync_word => cam_syncw );
+
+i_cam_align : cam_align port map (
+        wordclk => cam_wordclk, rst => cam_wc_rst,
+        d0_word => cam_d0w, d1_word => cam_d1w, d2_word => cam_d2w,
+        d3_word => cam_d3w, sync_word => cam_syncw,
+        bitslip => cam_bitslip,
+        lane_locked => open, aligned => cam_aligned, lane_failed => open );
+
+i_cam_sync_decode : cam_sync_decode port map (
+        wordclk => cam_wordclk, rst => cam_wc_rst, aligned => cam_aligned,
+        d0_word => cam_d0w, d1_word => cam_d1w, d2_word => cam_d2w,
+        d3_word => cam_d3w, sync_word => cam_syncw,
+        kpix0 => cam_k0, kpix1 => cam_k1, kpix2 => cam_k2, kpix3 => cam_k3,
+        kpix4 => cam_k4, kpix5 => cam_k5, kpix6 => cam_k6, kpix7 => cam_k7,
+        kbase => cam_kbase, kvalid => cam_kvalid,
+        line_start => cam_line_start, frame_start => cam_frame_start,
+        in_black => open );
+
+i_cam_line_buf : cam_line_buf port map (
+        wordclk => cam_wordclk,
+        frame_start => cam_frame_start, line_start => cam_line_start, kvalid => cam_kvalid,
+        kbase => cam_kbase,
+        kpix0 => cam_k0, kpix1 => cam_k1, kpix2 => cam_k2, kpix3 => cam_k3,
+        kpix4 => cam_k4, kpix5 => cam_k5, kpix6 => cam_k6, kpix7 => cam_k7,
+        rd_clk => clk100_g, rd_addr => cam_line_addr_w, rd_data => cam_line_data_w );
+
 end Behavioral;

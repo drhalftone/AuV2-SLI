@@ -162,22 +162,49 @@ module usb_link #(
     always @(posedge clk100) begin mon_d0 <= cam_monitor; mon_s <= mon_d0; end
     wire [7:0] cam_gpio_in = {6'b0, mon_s};
 
+    // ---- boot sequencer (task #6) + SPI-master ownership arbitration (task #12) ----
+    // cam_boot_seq drives the ROM register upload. While it is busy it OWNS the SPI master
+    // and cam_reset_n; otherwise the host mailbox (uart_ctrl, reg 0x30..0x37) does. The
+    // sensor's SPI outputs (rdata/busy/done) fan out to both requesters -- harmless, since
+    // the host is expected to idle during boot (it polls reg 0x39, not the SPI mailbox).
+    wire        boot_go, boot_busy, boot_ready, boot_failed, boot_pll_timeout, boot_reset_n;
+    wire        boot_spi_start, boot_spi_rw;
+    wire [8:0]  boot_spi_addr;
+    wire [15:0] boot_spi_wdata;
+
+    wire        spim_start = boot_busy ? boot_spi_start : cam_spi_start;
+    wire        spim_rw    = boot_busy ? boot_spi_rw    : cam_spi_rw;
+    wire [8:0]  spim_addr  = boot_busy ? boot_spi_addr  : cam_spi_addr;
+    wire [15:0] spim_wdata = boot_busy ? boot_spi_wdata : cam_spi_wdata;
+
     // 1 MHz sck. The datasheet allows 10 MHz, but the sensor's max SPI rate scales with
     // its input clock -- which is NOT running during first bring-up. 1 MHz sidesteps the
     // question entirely and costs ~30 us per transaction: nothing next to the 115200-baud
     // UART frame that carries the request.
     cam_spi_master #(.CLK_HZ(CLK_HZ), .SCK_HZ(1_000_000)) i_cam_spi (
         .clk(clk100), .rst(rst),
-        .start(cam_spi_start), .rw(cam_spi_rw),
-        .addr(cam_spi_addr),   .wdata(cam_spi_wdata),
+        .start(spim_start), .rw(spim_rw),
+        .addr(spim_addr),   .wdata(spim_wdata),
         .rdata(cam_spi_rdata), .busy(cam_spi_busy), .done(cam_spi_done),
         .sck(cam_sck), .mosi(cam_mosi), .ss_n(cam_ss_n), .miso(cam_miso)
+    );
+
+    cam_boot_seq #(.CLK_HZ(CLK_HZ)) i_boot (
+        .clk(clk100), .rst(rst), .go(boot_go),
+        .busy(boot_busy), .ready(boot_ready),
+        .failed(boot_failed), .pll_timeout(boot_pll_timeout),
+        .reset_n(boot_reset_n),
+        .spi_start(boot_spi_start), .spi_rw(boot_spi_rw),
+        .spi_addr(boot_spi_addr),   .spi_wdata(boot_spi_wdata),
+        .spi_rdata(cam_spi_rdata),  .spi_busy(cam_spi_busy), .spi_done(cam_spi_done)
     );
 
     // reg 0x37 = {reset_n, 4'b0, trigger[2:0]}. It resets to 0x00, so reset_n = 0 and the
     // sensor is HELD IN RESET until the host releases it -- matching the board's external
     // pulldown, which holds the part in reset through the whole FPGA configuration window.
-    assign cam_reset_n = cam_gpio[7];
+    // While the boot sequencer is busy IT drives reset_n (it pulses the sensor as part of
+    // the ROM flow); otherwise reg 0x37 bit 7 does.
+    assign cam_reset_n = boot_busy ? boot_reset_n : cam_gpio[7];
     assign cam_trigger = cam_gpio[2:0];
 
     uart_ctrl i_ctrl (
@@ -202,7 +229,10 @@ module usb_link #(
         .cam_spi_wdata(cam_spi_wdata), .cam_spi_start(cam_spi_start),
         .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
         .cam_spi_done(cam_spi_done),
-        .cam_gpio(cam_gpio), .cam_gpio_in(cam_gpio_in)
+        .cam_gpio(cam_gpio), .cam_gpio_in(cam_gpio_in),
+        // ---- boot sequencer control (reg 0x39) ----
+        .cam_boot_go(boot_go),
+        .cam_boot_stat({boot_ready, boot_busy, boot_failed, boot_pll_timeout})
     );
 
     // ---- shared transmitter ----

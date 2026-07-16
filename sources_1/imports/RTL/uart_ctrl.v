@@ -165,7 +165,15 @@ module uart_ctrl #(
     // explicitly releases it. That matches the board, which pulls reset_n low externally
     // so the part is held in reset through the entire FPGA configuration window.
     output reg  [7:0]  cam_gpio,
-    input  wire [7:0]  cam_gpio_in
+    input  wire [7:0]  cam_gpio_in,
+
+    // ---- PYTHON 1300 boot sequencer (reg 0x39) ----
+    //   0x39 W  GO -- any value starts the ROM-driven boot; dropped ('N') if already busy
+    //   0x39 R  {4'b0, ready, busy, failed, pll_timeout}
+    // The sequencer (cam_boot_seq) owns the SPI master + cam_reset_n while busy; the Qt
+    // tool fires this AFTER a chip-ID read, then polls 0x39 until ready (or failed).
+    output reg         cam_boot_go,       // 1-clk strobe
+    input  wire [3:0]  cam_boot_stat      // {ready, busy, failed, pll_timeout}
 );
     // ---- protocol constants ----
     localparam [7:0] SYNC = 8'hA5;
@@ -305,6 +313,7 @@ case (addr)
             // ---- PYTHON 1300 discrete pins ----
             8'h37:   rd_data  = cam_gpio;
             8'h38:   rd_data  = cam_gpio_in;
+            8'h39:   rd_data  = {4'b0, cam_boot_stat};   // {ready, busy, failed, pll_timeout}
             default: rd_data  = 8'h00;
         endcase
     end
@@ -329,9 +338,11 @@ case (addr)
             cam_spi_addr <= 9'd0; cam_spi_rw <= 1'b0; cam_spi_wdata <= 16'd0;
             cam_spi_start <= 1'b0; cam_gpio <= 8'h00;
             cam_rdata_l <= 16'd0; cam_done_l <= 1'b0;
+            cam_boot_go <= 1'b0;
         end else begin
             tx_send       <= 1'b0;                      // default: no TX strobe
             cam_spi_start <= 1'b0;                      // default: no SPI strobe
+            cam_boot_go   <= 1'b0;                      // default: no boot strobe
 
             // Capture the SPI result whenever it lands, regardless of FSM state.
             // Placed BEFORE the case so that a GO arriving in the same cycle wins and
@@ -389,6 +400,15 @@ case (addr)
                         end
                     end else if (addr == 8'h37) begin    // {reset_n, -, trigger[2:0]}
                         cam_gpio <= dbyte;               resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h39) begin    // boot sequencer GO (any value)
+                        // Drop the GO if a boot is already running (busy = cam_boot_stat[2]),
+                        // same policy as the SPI GO at 0x34: 'N' tells the host it did not take.
+                        if (cam_boot_stat[2]) begin
+                            resp[0] <= ACK_N; resp_len <= 2'd1;
+                        end else begin
+                            cam_boot_go <= 1'b1;
+                            resp[0] <= ACK_K; resp_len <= 2'd1;
+                        end
                     end else begin                       // RO / undefined
                         resp[0] <= ACK_N; resp_len <= 2'd1;
                     end

@@ -23,6 +23,13 @@ file mkdir $out
 
 create_project -in_memory -part $part
 
+# Force single-threaded synth. Vivado 2025.1 on this Windows host intermittently fails to
+# read its OWN installed .tcl helpers ("couldn't read file .../{unimacro,retarget}_vhdl.tcl:
+# No error") when the multithreaded synth helper process spawns -- a file-lock / AV-scan race
+# on a file that plainly exists. Not spawning that helper sidesteps it. Costs a little
+# wall-clock on the 100T; buys a deterministic build.
+set_param general.maxThreads 1
+
 # ---- IP: work on COPIES retargeted to the 100T; committed .xci untouched ----
 set ipwork $out/ip_work
 file delete -force $ipwork
@@ -40,7 +47,28 @@ foreach xci [glob -nocomplain $ipwork/*/*.xci] {
 read_ip [glob $ipwork/*/*.xci]
 upgrade_ip -quiet [get_ips]
 generate_target all [get_ips]
-synth_ip [get_ips]
+
+# synth_ip runs each IP out-of-context in a spawned child Vivado process. On this Windows
+# host those children intermittently fail to read Vivado's OWN installed .tcl helpers
+# ("couldn't read file .../{unimacro,retarget}_{vhdl,verilog}.tcl: No error") -- a file-lock
+# / AV-scan race on a file that plainly exists, hitting a different IP each run. synth_ip is
+# idempotent (it re-synths only IPs whose output-product DCP is missing), so retry until
+# every DCP exists. maxThreads=1 above does NOT prevent this -- the race is in the OOC child.
+for {set try 1} {$try <= 6} {incr try} {
+    if {[catch {synth_ip [get_ips]} err]} {
+        puts "==== synth_ip attempt $try hit a transient read error; retrying ===="
+        puts "     ($err)"
+    }
+    set missing {}
+    foreach ip [get_ips] {
+        if {[get_property GENERATE_SYNTH_CHECKPOINT $ip] && ![file exists [get_property IP_OUTPUT_DIR $ip]/[get_property NAME $ip].dcp]} {
+            lappend missing [get_property NAME $ip]
+        }
+    }
+    if {[llength $missing] == 0} { puts "==== all IP DCPs present after attempt $try ===="; break }
+    puts "==== still missing after attempt $try: $missing ===="
+    if {$try == 6} { error "synth_ip: DCPs still missing after 6 attempts: $missing" }
+}
 
 # ---- HDL (Au2_SLI.vhd needs VHDL-2019) ----
 set vhd_all [lsort [glob $rtl/*.vhd]]
@@ -55,7 +83,19 @@ read_verilog [glob $rtl/*.v]
 read_xdc $here/constrs_1/imports/RTL/Au2_pt.xdc
 
 # ---- synth + implement ----
-synth_design -top $top -include_dirs $rtl
+# The same transient .tcl-read race hits the TOP synth too (it loads unimacro_vhdl.tcl when
+# it starts on the VHDL top). synth_design re-elaborates from the already-read HDL/IP, so a
+# retry starts clean. opt/place/route do not load those helpers and need no retry.
+for {set try 1} {$try <= 6} {incr try} {
+    if {[catch {synth_design -top $top -include_dirs $rtl} err]} {
+        puts "==== synth_design attempt $try hit a transient read error; retrying ===="
+        puts "     ($err)"
+        if {$try == 6} { error "synth_design failed after 6 attempts: $err" }
+    } else {
+        puts "==== synth_design succeeded on attempt $try ===="
+        break
+    }
+}
 opt_design
 place_design
 route_design
