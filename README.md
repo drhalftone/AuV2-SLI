@@ -55,11 +55,11 @@ the timing generator is driven from a curated mode table, so the projector is dr
 and refresh it actually advertises — automatically, with no PC attached.
 
 **How the mode is chosen.** `mode_select` parses the display's EDID (established + standard timings
-and the four detailed descriptors), marks which of the 13 curated modes it supports, and picks by
+and the four detailed descriptors), marks which of the 14 curated modes it supports, and picks by
 **highest refresh → highest pixel count**, under the pixel-clock ceiling. No match → the
 640×480@60 failsafe.
 
-The EDID is a **filter, not a source**: the FPGA can only emit one of the 13 curated modes
+The EDID is a **filter, not a source**: the FPGA can only emit one of the 14 curated modes
 (`mode_table.vh` geometry + `drp_recfg` MMCM dividers, both keyed by `mode_idx`). A display's
 preferred timing is *matched against* the table, never adopted wholesale — so a display whose only
 supported modes are outside the table falls back to the failsafe even if the clock would be
@@ -104,18 +104,24 @@ checksum bytes are excluded from the change detector so it fires only on real mo
 every rebuild.)
 
 ### Offline output ceiling
-The offline (FPGA-generated) path is limited to a curated table (`mode_table.vh`) at or below an
-**~85 MHz pixel-clock ceiling** (set by what the output TMDS serializer can drive, 5× ≈ 425 MHz).
-The top offline mode is **1024×768@75**; the failsafe is **640×480@60**. This ceiling applies only
-to the offline path.
+The offline (FPGA-generated) path is limited to the curated table (`mode_table.vh`). The output TMDS
+serializer sets the ceiling: **1280×1024@60 (108 MHz, ×5 = 540 MHz serialiser) is the top offline
+mode**, HW-verified stable on this −2 part; the failsafe is **640×480@60**. This ceiling applies only
+to the offline path — offline drives the output from a clean DRP-tuned `MMCME2_ADV` with **no clock
+recovery and no clock-domain crossing**, so it reaches pixel clocks the recovered pass-through clock
+cannot. **1080p60 (148.5 MHz) is NOT reachable** — ×5 = 742.5 MHz exceeds the ~600 MHz OSERDES/BUFG
+ceiling, and the HDMI I/O is on 3.3 V TMDS HR banks (~1.2 Gb/s/ch).
 
-This 85 MHz figure is inherited verbatim from the Mimas A7 (a −1 50T part). The Au V2 is a faster
-**−2** grade, so its serializer/BUFG ceiling is higher (≈120 MHz pixel); the table can be extended
-above 85 MHz, up to ~120 MHz (e.g. 1280×1024@60 = 108 MHz, 1680×1050@60 RB = 119 MHz) once validated
-on this board. **1080p60 (148.5 MHz) is NOT reachable** — ×5 = 742.5 MHz exceeds the ~600 MHz
-OSERDES/BUFG ceiling, and the HDMI I/O is on 3.3 V TMDS HR banks (~1.2 Gb/s/ch). Raising the
-*pass-through* window toward the same ~120 MHz silicon ceiling is scoped in
-[`sources_1/imports/RTL/INPUT_HIRES_PASSTHRU_DESIGN.md`](sources_1/imports/RTL/INPUT_HIRES_PASSTHRU_DESIGN.md).
+`mode_select` admits `idx13` (1280×1024@60), but its refresh-first priority means a display that also
+advertises e.g. 1024×768@75 is driven at the 75 Hz mode instead — pin 1280×1024 with the **`MODEFORCE`**
+register (`0x14`, below; `0x8D` = force idx13).
+
+> **Pass-through SXGA was attempted and dropped.** 1280×1024 *pass-through* — recovering the PC's
+> 108 MHz clock and re-serialising it at 540 MHz — never held the projector's sync: the recovered
+> clock carries the GPU's HDMI spread-spectrum, and a jitter-cleaner MMCM only reached "mostly
+> perfect" against a timing-marginal path. It was reverted (recovery MMCM back to ×15, 1280×1024
+> removed from the served EDID). **Offline** SXGA (clean clock, no domain crossing) is the supported
+> 1280×1024 route.
 
 ---
 
@@ -216,12 +222,14 @@ of block 0 is the authoritative extension count.
 | 0x06 | FLAGS | R | `{…, usb_sw_en, lut_loaded}` |
 | 0x10 | PINS | R | `{eff_sw[3:0], phys_sw[3:0]}` — active vs physical R/G/B/orient switch pins |
 | 0x13 | SLICTRL | R/W | `{7:sw_en, 6:mode_en, 5:mode_val, 3:R, 2:G, 1:B, 0:orient}` — `sw_en` overrides the R/G/B/orient pins; `mode_en`+`mode_val` override the camera `mode` GPIO to force the SLI pattern on |
+| 0x14 | MODEFORCE | R/W | `{7:force_en, 3..0:idx}` — pin the **offline** mode to a curated index, overriding the EDID pick (`0x8D` = force idx13 = 1280×1024@60); `force_en=0` returns control to the EDID |
+| 0x15 | LINKCTL | R/W | `{7..2:secs×2, 1:proj, 0:host}` — self-timed HDMI disconnect pulse: drop the host HPD (PC re-negotiates) and/or tristate the projector output for N half-seconds, then auto-reconnect. Read: `{proj_active, host_active, remaining_half_secs}`. E.g. `0x41` = host-drop 8 s |
 | 0x20 | MODE | R | `{7:valid, 6:edid_ok, 3..0:mode_idx}` — the curated-table index **in use** |
 | 0x21 | REFR | R | refresh rate (Hz) |
 | 0x22–0x23 | HACT | R | active pixels, lo/hi (12-bit) |
 | 0x24–0x25 | VACT | R | active lines, lo/hi (12-bit) |
 | 0x26–0x28 | PCLK | R | pixel clock in kHz, lo/mid/hi (17-bit) |
-| 0x29–0x2A | SUPP | R | 13-bit supported-mode mask (bit *i* = table index *i*) |
+| 0x29–0x2A | SUPP | R | 14-bit supported-mode mask (bit *i* = table index *i*; idx13 = 1280×1024@60) |
 | 0x30–0x36 | CAM_SPI | R/W | PYTHON 1300 SPI mailbox — stage a 9-bit-addr/16-bit-data sensor transaction (`0x30` addr, `0x31` `{rw,addr[8]}`, `0x32/33` wdata, `0x34` go/status, `0x35/36` rdata) |
 | 0x37 | CAM_GPIO | R/W | `{7:reset_n, 2..0:trigger[2:0]}` — resets to `0x00` (sensor held in reset) |
 | 0x38 | CAM_MON | R | `{1..0:monitor[1:0]}` |
@@ -260,9 +268,10 @@ registers `0x20`–`0x2A` expose the whole thing: what it chose **and** what it 
 ```
 python host/read_mode.py COM6
   mode_idx : 2  (1024x768@75)     resolution : 1024x768 @ 75 Hz, 78.750 MHz
-  supported (mask 0x1C1C): [2] 1024x768@75  <-- PICKED
+  supported (mask 0x3C1C): [2] 1024x768@75  <-- PICKED (refresh-first)
                            [3] 800x600@75   [4] 640x480@75
                            [10] 1024x768@60 [11] 800x600@60  [12] 640x480@60
+                           [13] 1280x1024@60   (higher-res but 60 Hz — force with MODEFORCE 0x8D)
 ```
 
 > After a board reset, `edid_merge` needs a few seconds to finish the I²C read off the DDC. Until it

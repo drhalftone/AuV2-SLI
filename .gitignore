@@ -58,3 +58,5 @@ docs/reference/
 *.mif
 
 build_pt/
+/LauPythonCamera_Pt_Stack/*.step
+/LauPythonCamera_Pt_Stack/production/*.step

@@ -170,6 +170,17 @@
 	(condition "A.NetClass == 'CamLVDS'")
 	(constraint edge_clearance (min 0.30mm)))
 
+# --- B.Cu GND POUR must stay 0.5mm off the LVDS pairs. The 100R geometry (W0.24/
+#     S0.20) was solved as edge-coupled MICROSTRIP over the In2 ground plane, NOT
+#     as coplanar waveguide. A GND pour flooding up to the netclass 0.25mm would
+#     add coplanar return coupling and pull Zdiff well below 100R. Hold the pour
+#     back 0.5mm so the pairs stay microstrip. Scoped to the GND ZONE only, so it
+#     does NOT touch the connector's own 0.4mm-pitch GND pads. ---
+(rule "B.Cu GND pour clearance to LVDS - preserve microstrip impedance"
+	(condition "A.NetClass == 'CamLVDS' && B.Type == 'Zone' && B.Net == 'GND'")
+	(layer B.Cu)
+	(constraint clearance (min 0.5mm)))
+
 # --- VIAS: EXACTLY ONE per trace. Not zero -- one.
 #
 #     An earlier revision of this file forbade vias on the LVDS pairs. That was
@@ -274,8 +285,12 @@
 # Closes README open item 5.
 # =====================================================================
 
+# Scoped to NON-power nets: the neck-down exists so the fine SIGNAL escapes
+# (LVDS pairs + single-ended control) can leave the 0.4mm DF40 pads. Power and
+# GND traces are wide BY DESIGN and legitimately exceed 0.26mm near the
+# connectors, so they are exempted (they are still governed by clearance).
 (rule "DF40 fanout - neck-down track width"
-	(condition "A.intersectsCourtyard('J1') || A.intersectsCourtyard('J2') || A.intersectsCourtyard('J3')")
+	(condition "A.NetClass != 'Power' && (A.intersectsCourtyard('J1') || A.intersectsCourtyard('J2') || A.intersectsCourtyard('J3'))")
 	(constraint track_width (min 0.12mm) (opt 0.15mm) (max 0.26mm)))
 
 (rule "DF40 fanout - neck-down clearance"
