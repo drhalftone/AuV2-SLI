@@ -3,7 +3,7 @@
 	(generator "claude_code")
 	(generator_version "9.0")
 	(layer "F.Cu")
-	(descr "Shun Xiang Nuo SMNR4020 magnetic-resin shielded SMD power inductor, 4.0 x 4.0 x 2.0 mm. L1 = SMNR4020-2.2UH (LCSC C135262): 2.2uH +/-20%, Isat 3.4 A, DCR 46 mohm. Land pattern per SXN datasheet: F=0.95 (pad length), G=2.1 (pad width), H=3.3 (outer span) -> pads 0.95 x 2.1 mm at +/-1.175 mm. SIZED FOR THE 1.50 A STARTUP INRUSH measured in LTspice with TI's TPS61023 model -- NOT the 0.54 A steady-state current. Do not substitute a 3x3 part.")
+	(descr "Shun Xiang Nuo SMNR4020 magnetic-resin shielded SMD power inductor, 4.0 x 4.0 x 2.0 mm. L1 = SMNR4020-2.2UH (LCSC C135262): 2.2uH +/-20%, Isat 3.4 A, DCR 46 mohm. Land pattern per SXN datasheet p.4 'Recommended Land Pattern': F=0.95 Typ is each pad's SHORT side, G=2.1 Typ is the GAP BETWEEN the pads, H=3.3 Typ is each pad's LONG side. -> pads 0.95 x 3.3 mm, centres at +/-(G+F)/2 = +/-1.525 mm, outer span F+G+F = 4.0 mm (flush with the body edge). This equals the part's own terminals (E=3.3 wide, D=2.1 gap): SXN's land is 1:1 with the electrode, no toe fillet -- do not add one, JLCPCB checks against this pattern. SIZED FOR THE 1.50 A STARTUP INRUSH measured in LTspice with TI's TPS61023 model -- NOT the 0.54 A steady-state current. Do not substitute a 3x3 part.")
 	(tags "inductor power 4x4 shielded sxn smnr4020 boost")
 	(attr smd)
 	(property "Reference" "REF**"
@@ -59,14 +59,14 @@
 		(uuid "d3000000-0000-4000-8000-000000000004"))
 
 	(pad "1" smd rect
-		(at -1.175 0)
-		(size 0.95 2.1)
+		(at -1.525 0)
+		(size 0.95 3.3)
 		(layers "F.Cu" "F.Paste" "F.Mask")
 		(uuid "e3000000-0000-4000-8000-000000000001")
 	)
 	(pad "2" smd rect
-		(at 1.175 0)
-		(size 0.95 2.1)
+		(at 1.525 0)
+		(size 0.95 3.3)
 		(layers "F.Cu" "F.Paste" "F.Mask")
 		(uuid "e3000000-0000-4000-8000-000000000002")
 	)
