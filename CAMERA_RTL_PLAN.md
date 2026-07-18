@@ -145,7 +145,109 @@ come after #12.
   implemented. This is its own subproject.
 - **10-bit packing.** At the sensor's full 210 fps, packed 10-bit is ~344 MB/s — essentially *at* the
   Ft+'s measured 350 MB/s. The naive thing (10 bits sitting in a 16-bit word) is **393 MB/s and
-  busts the ceiling**, so the packer is load-bearing, not an optimisation.
+  busts the ceiling**, so the packer is load-bearing, not an optimisation. **← but see the burst-capture
+  spec below: in grab-to-DDR mode the packer is NOT needed, because you never stream at the sensor's
+  instantaneous rate.**
 - **Locking exposure to the projected pattern.** Drive `trigger[0]` from the outgoing HDMI frame
   timing so each exposure is locked to a projected pattern. This is the entire reason the FPGA sits
-  inline on HDMI.
+  inline on HDMI. **← now specified concretely below (the trigger generator, task #18).**
+
+---
+
+## Streaming subsystem — burst capture to DDR (the SLI capture mode)
+
+**This is the target streaming architecture.** It supersedes the vague "FT601 is its own subproject"
+note above with a concrete, sized spec.
+
+### The requirement
+
+> **Grab up to 32 frames at 16 bits/pixel (unpacked), at 120 Hz synchronised to the HDMI projector,
+> into the Pt V2's DDR3L — then stream the frames out to the PC as fast as the Ft+ allows.**
+
+This is a **burst-then-drain** flow, not a continuous stream: capture fills DDR at the trigger-locked
+rate; drain empties it at the USB ceiling. The two phases are sequential ("grab, *then* stream").
+
+### The numbers — why this fits comfortably
+
+| Quantity | Value | Note |
+|---|---|---|
+| Frame geometry | 1280 × 1024 = 1,310,720 px | image lines only |
+| **Bytes/frame** | **2.5 MiB** (2,621,440 B) | 16-bit/pixel, 10 valid bits + 6 spare — *exactly* 2.5 MiB |
+| **32 frames in DDR** | **80 MiB** | **~31 % of the 256 MB DDR** — room to spare (DDR holds ~102 such frames) |
+| Capture window | 32 / 120 Hz = **0.267 s** | one exposure per HDMI frame at 120 Hz |
+| DDR **write** rate (capture) | 1.31 Mpx × 120 × 2 B = **314.6 MB/s** | trivial vs DDR's ~1.6 GB/s (≈20 %) |
+| DDR **read** rate (drain) | Ft+ limited = **~350 MB/s** | "as fast as possible" = USB-bound |
+| Drain time | 80 MiB / 350 MB/s = **0.24 s** | |
+| **Full grab-then-stream cycle** | **~0.5 s** + arm/handshake | |
+
+### Why 16-bit unpacked is the *right* call here (not a compromise)
+
+The "packer is load-bearing" warning above applies only to **continuous** streaming at the sensor's
+instantaneous rate. **Burst-to-DDR removes that constraint entirely:**
+
+- The sensor writes **into DDR**, not into USB — 314.6 MB/s against a 1.6 GB/s controller. Format
+  doesn't threaten any ceiling.
+- The drain reads DDR at the USB rate regardless of pixel format; unpacked just means moving 80 MiB
+  instead of ~64 MiB — **0.24 s vs 0.19 s.** A 50 ms difference on a half-second cycle.
+- In exchange, the host gets **byte-aligned, trivially-parsed** 16-bit little-endian pixels. No
+  unpacker on the PC side, no 16-px/5-word LCM bookkeeping in the FPGA. **The packer subproject is
+  deleted for this mode.**
+
+Store each pixel **LSB-justified** in the 16-bit word (raw value 0–1023, top 6 bits zero), row-major,
+1280 cols × 1024 rows.
+
+### Architecture
+
+```
+ cam_sync_decode        cap ctrl        write FIFO      ┌─────────┐   read FIFO       FT601 master
+ ───────────────      ───────────      ────────────     │  MIG    │  ────────────    ──────────────
+  4 px/clk, 10-bit ─► cam_capture ─►  async BRAM   ─►   │  DDR3L  │  async BRAM  ─►  FT245-sync FSM ─► PC
+  @ 72 MHz wordclk    (arm, count      72→ui_clk        │ 256 MB  │  ui_clk→100      32-bit @ 100 MHz
+                       32 triggers,                      │ 80 MiB  │
+                       write N slots)   ┌── trigger[0] ◄─┤ used    │
+                                        │                └─────────┘
+ outgoing HDMI vsync ─► trig gen ───────┘
+ (projector frame, 120 Hz)
+```
+
+Three clock domains: **`cam_wordclk` (72 MHz)** write side, **MIG `ui_clk` (~200 MHz)** in the middle,
+**`ft_clk` (100 MHz, from the FT601)** drain side. Two small BRAM async FIFOs bridge into and out of
+the MIG — DDR is a *store*, not a low-latency FIFO, so these don't go away.
+
+### DDR memory map
+
+| Region | Base | Size | Contents |
+|---|---|---|---|
+| Frame slots 0–31 | `0x0000_0000` + i × `0x0028_0000` | 2.5 MiB each | one captured frame, row-major 16-bit |
+| (spare) | `0x0500_0000`+ | ~176 MiB free | future: dark/gain calibration maps, more frames |
+
+A small **per-frame header** (frame index, the HDMI frame number the trigger fired on, capture-valid
+flag) lets the host verify ordering and detect a missed trigger. TBD: header in-band (prepended to
+each slot) vs a separate 32-entry table read over the `0xA5` UART.
+
+### New milestones
+
+| # | Milestone | Test gate |
+|---|---|---|
+| **16** | **MIG / DDR3L bring-up** — instantiate the Xilinx DDR3 controller on bank 15, confirm the Alchitry timing preset (width, MT/s, ui_clk) | Write/read a known pattern across all 256 MB; BIST clean |
+| **17** | **FT601 master** (`ft601_master.v`) — FT245 synchronous FIFO FSM | Loop a counter to the PC at ≥ 300 MB/s sustained on the real Ft+ |
+| **18** | **Trigger generator** — derive `trigger[0]` from the outgoing HDMI vsync | Scope: one exposure pulse per projected frame, correct phase |
+| **19** | **`cam_capture` FSM** — arm on host command, count 32 trigger-locked frames, write N slots to DDR via the write FIFO | Sim: 32 model frames land in the right slots, byte-exact |
+| **20** | **Drain FSM** — read slots 0..N-1 → read FIFO → FT601 | 80 MiB out to the PC, byte-exact against what was captured |
+| **21** | **Host control block** — arm / frame-count / status / drain-start registers on the `0xA5` plane (or a sibling) + a Qt "grab 32" button | End-to-end: press button → 32 frames on disk in ~0.5 s |
+| **22** | 🔴 **HARDWARE GATE** — real 32-frame burst, projector-synced, streamed to PC | Frames decode to real images, ordered, no dropped triggers |
+
+**Longest pole is still the FT601 master (#17)** — the only block with zero existing code and a real
+hardware protocol. Recommend building #16 and #17 in parallel (both are independent of the camera
+front end), proving each with a synthetic source before wiring `cam_capture` between them.
+
+### Open decisions (sensible defaults chosen; flag to change)
+
+1. **Capture vs drain overlap** — spec'd as *sequential* (grab all 32, then stream), matching "grab
+   then stream". Overlapping them (drain slot i while capturing slot i+k) is possible later and would
+   hide the drain time behind capture, but adds DDR read/write contention and FSM complexity.
+2. **Frame count** — parameter `N_FRAMES`, 1–32; 32 is the spec max. DDR could hold ~102, so 32 leaves
+   headroom for calibration maps.
+3. **Pixel justification** — LSB-justified (0–1023). Change to MSB-justified (×64) only if the host
+   wants a full-scale 16-bit value.
+4. **Header placement** — in-band per slot vs a side table (see above). TBD.
