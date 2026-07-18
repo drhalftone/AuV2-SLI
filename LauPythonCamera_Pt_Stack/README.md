@@ -1,27 +1,28 @@
 # LauPythonCamera_Pt_Stack — Design Blueprint
 
-> # ⚠️ THE POWER SECTION OF THIS DOCUMENT IS OBSOLETE AND WRONG.
+> ### Power: §§6.2 and 6.5 were rewritten on 2026-07-18 and now match the board.
 >
-> **See [`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md). The schematic now matches that
-> document, not this one.**
+> **[`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md) remains authoritative** for the
+> power tree — full derivation, SPICE verification and BOM. This document is the design
+> blueprint; where the two disagree, that one wins.
 >
-> Everything in §6.2 / §6.5 below (the "3.3 V tap through ferrites + load switch" tree) was built
-> on the premise that the Pt's `+3.3V` rail is 3.300 V. **It is 3.278 V** — derivable from
-> Alchitry's own feedback divider (R16 = 31.6 kΩ / R15 = 10.2 kΩ into the ADP5052's 0.8 V
-> reference), with ±1.5 % tolerance giving **3.229 – 3.327 V**. Consequences:
+> **What changed, and why it matters historically.** The original power section described a
+> "3.3 V tap through ferrites + load switch" tree, built on the premise that the Pt's `+3.3V`
+> rail is 3.300 V. **It is 3.278 V** — derivable from Alchitry's own feedback divider
+> (R16 = 31.6 kΩ / R15 = 10.2 kΩ into the ADP5052's 0.8 V reference), ±1.5 % → **3.229–3.327 V**.
+> That broke the design three ways:
 >
-> - **`vdd_pix` (3.25–3.35 V) is out of spec** at the rail's low corner, by 21 mV.
+> - **`vdd_pix` (3.25–3.35 V) was out of spec** at the rail's low corner, by 21 mV.
 > - **`vdd_33` had ~7 mV** of worst-case margin after ferrite and connector IR drop.
 > - **The tap made correct power-up sequencing impossible.** `vdd_33` tapped from `+3V3` rises the
 >   instant the Pt's rail does, but 1.8 V can only be made by LDO'ing *down from that same rail* —
 >   so `vdd_18` always came up **after** `vdd_33`, the forbidden order, on every power-up. That
 >   risks latch-up and a dead sensor.
 >
-> The board now uses **boost → LDO**: `+3V3` → TPS61023 boost to 4.46 V → two TPS7A2033 LDOs for
-> `vdd_33` and `vdd_pix`, with `vdd_18` from a TPS7A2018 off `+3V3` directly, and **two TLV803S
-> supervisors** enforcing the datasheet's power-up and power-down ordering.
->
-> §§1–5 and 7–13 (sensor, pin plan, mechanical, stackup, socket, validation) remain valid.
+> The board uses **boost → LDO**: `+3V3` → TPS61023 boost to 4.45 V → two TPS7A2033 LDOs for
+> `vdd_33` and `vdd_pix`, `vdd_18` from a TPS7A2018 off `+3V3` directly, and **two TLV803S
+> supervisors** enforcing power-up *and* power-down ordering. **There is no load switch and no
+> ferrite on this board.** If you find text saying otherwise, it is stale — report it (§14.6).
 
 Custom Alchitry **element board** carrying an onsemi **PYTHON 1300** global-shutter image
 sensor in a **socketed 48-pin LCC**, for the AuV2-SLI structured-light system.
@@ -385,9 +386,13 @@ header (pins 1–15 odd, 4 A available) and nothing else usable.
 > pinout page describes `VDD` as "5–12 V board power," but there is no 5 V on this board. Do
 > not design against it, and do not "helpfully" wire it up.
 
-**This board generates every sensor rail from `+3.3V`.** That single constraint shapes the
-whole of §6.5 — most importantly, it means `vdd_33` and `vdd_pix` **cannot be regulated**,
-because you cannot LDO 3.3 V down to 3.3 V.
+**This board generates every sensor rail from `+3.3V`.** That single constraint shapes the whole
+of §6.5. You **cannot LDO 3.3 V down to an accurate 3.3 V** — there is no headroom — so the
+board **boosts to 4.45 V first and regulates back down**. That is why `U3` exists.
+
+> An earlier revision concluded from this that `vdd_33` and `vdd_pix` "cannot be regulated" and
+> had to be filtered taps. **That conclusion is wrong and is superseded by §6.5.** Both rails are
+> now properly LDO-regulated; only the *headroom* had to be manufactured.
 
 | Rail | Sensor pins | Spec | Current |
 |---|---|---|---|
@@ -423,11 +428,16 @@ sits at an indeterminate level and burns **crowbar current** in the sensor's inp
 | `ss_n` | 47 | IN | **R3, 10k UP** → `+3V3_CAM` | a floating select could read as ASSERTED |
 | `reset_n` | 46 | IN | **R4, 10k DOWN** | active-low → holds the sensor in reset. Fail-safe. |
 | `trigger0-2` | 41-43 | IN | **R5/R6/R7, 10k DOWN** | rising edge starts integration; low = no spurious exposure |
-| `mosi` | 2 | IN | **R13, 10k DOWN** | |
-| `sck` | 4 | IN | **R14, 10k DOWN** | |
-| `clk_pll` | 25 | IN | **R15, 10k DOWN** | unused in this clocking scheme, but still a CMOS input |
+| `mosi` | 2 | IN | **R12, 10k DOWN** | |
+| `sck` | 4 | IN | **R13, 10k DOWN** | |
+| `clk_pll` | 25 | IN | **R14, 10k DOWN** | unused in this clocking scheme, but still a CMOS input |
 
-> **`R13`/`R14`/`R15` were missing.** They were originally exempted because `mosi` and `sck`
+> **Designators verified against the routed board (2026-07-18).** An earlier revision of this
+> table listed these three as `R13`/`R14`/`R15`, off by one. **`R15` is not a sensor pull at
+> all** — it is the **100 kΩ `EN_PIX` pull-up to `+3V3_CAM`**, i.e. the sequencing interlock
+> (§6.5). Do not repurpose it.
+
+> **`R12`/`R13`/`R14` were missing.** They were originally exempted because `mosi` and `sck`
 > are "inert while `ss_n` is deasserted". **That is a logic argument, not an electrical one.**
 > The pins are CMOS input buffers regardless of what the protocol is doing, and they float for
 > tens to hundreds of milliseconds at every power-up.
@@ -442,16 +452,21 @@ that matters. **The external resistors are the only guarantee.**
 
 ### 6.5 The power tree
 
-> ### ⚠️ OBSOLETE — this tree is not what is on the board.
-> The tap-through-ferrites design below **does not meet `vdd_pix` and cannot sequence correctly.**
-> The schematic implements the tree shown here instead. Full rationale and BOM:
-> **[`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md)**.
+> **This tree is what is on the board** — verified against the schematic, the routed copper and
+> `production/LauPythonCamera_Pt_Stack_bom.csv`. Full derivation, SPICE verification and BOM:
+> **[`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md)**, which is authoritative if the two
+> ever disagree.
+>
+> An earlier revision of this section described a **tap-through-ferrites** design — a load switch
+> plus `FB1`/`FB2` beads. **That design is dead, and there is no `FB1` or `FB2` on this board.**
+> It could not meet `vdd_pix`'s accuracy window and could not sequence correctly. If you find
+> text anywhere referring to `U3` as a "load switch" or to a ferrite, it is stale — report it.
 
 ```
   +3V3_SYS  (J3 pins 1,3,5,7,9,11,13,15 — 3.229 to 3.327 V, noisy)
      |
-     +--> U3  TPS61023 boost ---> +4V5 (4.46 V) --+--> U4 TPS7A2033 --> +3V3_CAM  vdd_33  140 mA
-     |    L1 2.2uH, R8/R9 649k/100k               |
+     +--> U3  TPS61023 boost ---> +4V5 (4.45 V) --+--> U4 TPS7A2033 --> +3V3_CAM  vdd_33  140 mA
+     |    L1 2.2uH, R8/R9 330k/51k                |
      |                                            +--> U5 TPS7A2033 --> +3V3_PIX  vdd_pix   5 mA
      |
      +--> U2  TPS7A2018 -----------------------------------> +1V8_CAM  vdd_18   80 mA
@@ -470,96 +485,117 @@ Both enforced structurally, not by matched time constants.
 > **`+3V3_PIX` must keep ≤ ~1.5 µF total** (C8–C11 are **100n**, not 1µ; there is deliberately
 > **no bulk cap** on this rail). Power-down depends on U5's 150 Ω internal auto-discharge
 > collapsing `vdd_pix` first. Adding a 10 µF bulk cap here silently breaks the shutdown ordering.
+>
+> **As built the rail carries 1.540 µF** — C8–C11 100n, C19–C22 10n, C28 100n, C37 1µ — i.e.
+> 40 nF over the stated budget. τ = 150 Ω × 1.54 µF = **231 µs**, still three orders of magnitude
+> inside the 10 µs requirement, so this is accepted. Recorded so it stays a decision, not a drift.
 
-#### `U3` is a SWITCH, not a regulator — and that is not a compromise
+#### `U3` is a BOOST, and it exists only to manufacture headroom
 
-**You cannot LDO 3.3 V down to 3.3 V.** There is no headroom. So `vdd_33` and `vdd_pix` are
-*taps* on the Pt's 3.3 V rail, filtered. There is no other option on a 3.3 V board.
+**You cannot LDO 3.3 V down to 3.3 V.** The Pt's `+3V3` is 3.278 V — an LDO regulates only
+*downward* and needs its input meaningfully above its output. So the answer is **up, then back
+down**: boost to 4.45 V, then LDO back to an accurate 3.300 V.
 
-**The switch exists to SEQUENCE.** The datasheet needs `vdd_18` up **before** `vdd_33`. But
-`vdd_18` is LDO'd *from* `+3.3V` — so a bare tap on `+3.3V` for `vdd_33` would come up whenever
-the Pt does, i.e. **before** `vdd_18`. Wrong order. Something has to gate `vdd_33`, and a load
-switch is the cheapest thing that can.
+`U3` is a **TPS61023** synchronous boost, not a switch and not the regulator. **All accuracy and
+all noise rejection happen in the LDOs** (75–95 dB PSRR). The sensor sees **3.300 V ±1.5 %** —
+the LDO's spec — rather than 3.278 V ±whatever Alchitry's tolerance turns out to be.
 
-#### `FB1`/`FB2` are what give the sensor supply rejection — and a filter beats an LDO here
+`R8` = **330 kΩ**, `R9` = **51 kΩ** → V_OUT = 0.595 × (1 + 330/51) = **4.445 V**.
 
-An audit correctly flagged that a **bare** load switch has **no PSRR**: it passes the Pt's 4 A
-buck ripple, and every FPGA and DDR3 transient, straight into the sensor's analog 3.3 V domain.
+> **Do not "tidy" R8/R9 to 649 k/100 k.** That pair gives 4.457 V — a 12 mV difference, entirely
+> irrelevant — but **649 kΩ is a JLCPCB *Extended* part**, and paying a feeder fee for one
+> resistor is silly. 330 k/51 k are both **Basic**. This was a deliberate choice, not an
+> approximation.
 
-**The fix is a filter, not an LDO.** A ferrite + capacitor rolls off at **−40 dB/decade**,
-while **an LDO's PSRR *degrades* above ~100 kHz** — which is exactly where FPGA and DDR3
-transients live. For the noise that actually threatens this sensor, the passive filter is the
-*better* tool, not the cheaper one.
+**Why 4.45 V and not lower?** The TPS7A20's PSRR is specified at V_IN = V_OUT + 1.0 V. Even at
+the low corner of the boost's reference tolerance, 4.33 − 3.3 = **1.03 V**, so full specified
+PSRR is retained under all conditions. Dropping to 4.0 V would save ~60 mW of LDO heat and
+forfeit that.
 
-> **`FB1` must be LOW-DCR (≤ 50 mΩ). This is a hard spec, not a preference.**
-> It carries **140 mA**. A garden-variety 0.3 Ω bead drops **42 mV** and eats the entire DC
-> budget, pushing `vdd_33` under its 3.2 V floor. A 0.05 Ω bead drops 7 mV and doesn't.
-> `FB2` carries 5 mA — its DCR is irrelevant.
+`vdd_18` **skips the boost entirely** — it already has 1.43 V of headroom straight from `+3V3`.
 
-#### `vdd_pix` shares the switched node — which kills the power-down bug
+#### `vdd_pix` gets its own LDO — and that is what closes the accuracy window
 
-`vdd_pix` hangs off the **same** switched node as `vdd_33`, through its own bead. So it
-**cannot outlive `vdd_33`**.
+`vdd_pix`'s window is **3.25–3.35 V (±1.52 %)**, which is tight. `U5` is a **TPS7A2033**, the
+same part as `U4`, regulating to **3.3 V ±1.5 % → 3.2505–3.3495 V**. That fits, with ~50 mV of
+margin at each end.
 
-The datasheet (p.18) requires power-down as `vdd_pix → vdd_33 → vdd_18` and warns that *"Any
-other sequence can cause high peak currents."* An earlier revision fed `vdd_pix` from an
-**independent** rail, so it sat at 3.3 V into a dead core for ~9 ms on **every** power-down —
-and it took a PMOS clamp, a series resistor and a diode to merely *mitigate*.
+> **This supersedes an earlier "honest cost" note** which stated that `vdd_pix`'s tolerance *is*
+> the Pt's `+3.3V` tolerance, and that the rail could sit ~16 mV outside its window at both
+> extremes. **That was true of the dead tap-through-ferrites design and is not true now.**
+> `vdd_pix` is independently regulated, so the Pt's rail accuracy no longer propagates to it.
+> The old action item — "measure the Pt's 3.3 V rail the day the board arrives" — is **no longer
+> load-bearing** for `vdd_pix`. Measuring it is still worth 30 seconds, but nothing depends on it.
 
-**Sharing the node removes the failure mode by construction.** No clamp, no diode, no
-supervisor. (This is the [ruffner/lupa300](https://github.com/ruffner/lupa300) pattern: one
-source, split to the sensitive rails by ferrites.)
+#### Sequencing — two supervisors, and both are required
 
-#### ⚠️ THE HONEST COST — `vdd_pix` accuracy is the Pt's accuracy
+`U6` and `U7` are **TLV803S**, active-low open-drain, V_IT = **2.93 V**, 200 ms power-up delay.
 
-`vdd_pix`'s window is **3.25–3.35 V (±1.52%)**, and **we cannot regulate 3.3 V → 3.3 V.** So:
+| Node | Circuit |
+|---|---|
+| `U2.EN` (`vdd_18`) | tied directly to `+3V3` — comes up with the rail |
+| `U3.EN` (boost) | `U7` RESET → `R17` **1 kΩ** series → EN; `C41` **220 nF** to GND; 100 kΩ pull-up to `+3V3` |
+| `U4.EN` (`vdd_33`) | tied directly to `+1V8_CAM` |
+| `U5.EN` (`vdd_pix`) | `U6` RESET direct; **100 kΩ pull-up to `+3V3_CAM`**; `C39` **10 nF** to GND |
 
-> **`vdd_pix`'s tolerance IS the Pt's `+3.3V` tolerance — which Alchitry does not publish.**
+**The interlock is `U5.EN`'s pull-up going to `vdd_33`, not to `+3V3`.** Before `vdd_33` exists
+that pull-up sits at 0 V, so `vdd_pix` *physically cannot* enable early. The ordering is
+structural, not a race between time constants.
 
-If that rail is ±2%, `vdd_pix` sits at 3.234–3.366 V: **marginally outside the window at both
-extremes**, by ~16 mV.
+> **⚠️ TWO supervisors are required. This is not optional, and the failure is silent.** If one
+> open-drain RESET drove both enables, then whenever RESET released, the two nodes would be
+> connected *to each other* through the series resistor — the pull-up on `EN_BOOST` would drag
+> `EN_PIX` to ~1.6 V, above the TPS7A20's 0.9 V V_IH, and `vdd_pix` would rise *with* `vdd_33`
+> instead of after it. Neither a larger resistor nor a diode-AND rescues it (see
+> `CAMERA_POWER_DESIGN.md` §6). Cost of the second supervisor: $0.09.
 
-**This is a *Recommended Operating Condition*, not an absolute maximum** (that is 4.3 V). The
-consequence is **pixel performance** — FPN, full-well — **not damage**. It is a real cost and it
-is accepted knowingly, because the alternative (a 5 V rail) **does not exist on this board.**
+*Power-up* — **`vdd_18` → `vdd_33` → `vdd_pix`**: `vdd_18` at t ≈ 1 ms; both supervisors release
+at t ≈ 200 ms; the boost's EN crosses 1.2 V at t ≈ 210 ms → 4.45 V in ~700 µs; `vdd_33` at
+t ≈ 212 ms; `U5.EN` then charges (τ ≈ 833 µs) and `vdd_pix` follows **330 µs later**, t ≈ 213.5 ms.
 
-**Action: measure the Pt's 3.3 V rail the day the board arrives.** If it sits near 3.30 V, this
-is a non-issue. If it is badly off, the fallback is to bring 5 V onto the camera board from its
-own connector — your other stacked boards already carry JSTs, so there is precedent.
+*Power-down* — **`vdd_pix` → `vdd_33` → `vdd_18`**: both supervisors assert **immediately** below
+2.93 V (the 200 ms delay applies only to release). `vdd_pix` collapses first via U5's 150 Ω
+discharge (τ = 150 Ω × 1.54 µF as built = **231 µs**; `CAMERA_POWER_DESIGN.md` quotes 216 µs
+against its 1.44 µF budget); `U3.EN` decays through 1 kΩ into 220 nF and the boost disconnects at
+t ≈ 493 µs, dropping `vdd_33` second; `U2` holds `vdd_18` up until `+3V3` falls below ~1.95 V,
+so it dies last.
+
+Separations are **hundreds of µs to ms**, against a **10 µs** datasheet requirement — and both
+directions are **SPICE-verified** with manufacturer models (`CAMERA_POWER_DESIGN.md` §7.5).
+
+> **The boost is what created the power-down problem, and the supervisor is what solves it.**
+> Once started, the TPS61023 runs with V_IN as low as 0.5 V — left alone it would hold 4.45 V
+> while `+3V3` collapsed, making `vdd_33` outlive `vdd_18`: the exact inverse of the required
+> order. `U7` yanking `U3.EN` low at 2.93 V is what prevents that.
 
 #### Part requirements — do not let a BOM optimiser touch these
 
 | | |
 |---|---|
-| **`U2`** | LDO 3.3 → 1.8 V, ≥150 mA, EN pin. e.g. `AP2112K-1.8` (SOT-23-5). |
-| **`U3`** | Load switch. **Active-HIGH** enable, **reverse-blocking**, slew-controlled (≥100 µs), **R<sub>DS(on)</sub> ≤ 50 mΩ**, and **EN V<sub>IH</sub> ≤ 1.2 V**. |
-| **`FB1`** | Ferrite, **DCR ≤ 50 mΩ** (carries 140 mA). |
-| **`FB2`** | Ferrite, DCR irrelevant (5 mA). |
-
-> **`U3`'s EN V<sub>IH</sub> ≤ 1.2 V is load-bearing.** Its enable is driven from the **1.8 V**
-> rail — that is what guarantees the power-up order. A switch with a **ratiometric** threshold
-> (0.7 × V<sub>IN</sub> = 2.3 V) **never turns on**, and the sensor comes up half-powered with
-> no obvious symptom. Also check **body-diode orientation**: if it doesn't block VIN→VOUT when
-> off, `vdd_33` comes up regardless of the enable and the sequencing is defeated entirely.
-
-#### Sequencing
-
-*Power-up*: `R8`/`C29` enables `U2` from `+3.3V`; `R9`/`C30` enables `U3` from **`+1V8_CAM`**.
-Deriving the second enable from the *first rail* guarantees the order **by construction**, not
-by matched time constants: **`vdd_18` → `vdd_33`** (and `vdd_pix` with it). ~0.6–1.5 ms per
-stage against a 10 µs minimum.
-
-*Power-down*: needs nothing. `vdd_pix` shares `vdd_33`'s node, and `vdd_18` outlives both (its
-LDO holds up until `+3.3V` drops below dropout). Order preserved.
+| **`U2`** | `TPS7A2018PDBVR` — LDO 3.3 → 1.8 V, SOT-23-5. Accuracy below 2.8 V out is **±40 mV**, not ±1.5 % — do not write "±1.5 %" next to this rail. |
+| **`U3`** | `TPS61023DRLR` — synchronous boost, SOT-563. **EN V<sub>IH</sub> 1.2 V max, absolute not ratiometric.** True input-to-output disconnect in shutdown — which the power-down ordering depends on. |
+| **`U4`, `U5`** | `TPS7A2033PDBVR` — **same part number for both.** 150 Ω auto-discharge; `U5` relies on it. |
+| **`U6`, `U7`** | `TLV803SDBZT` — 2.93 V threshold. **Two of them.** |
+| **`L1`** | 2.2 µH, **I<sub>sat</sub> ≥ 1.2 A** (peak is 584 mA worst-case → 2.05× margin). |
 
 #### Decoupling
 
-| | |
-|---|---|
-| 11 × **1 µF** | one per supply pin — primary |
-| 11 × **10 nF** | one per supply pin — **HF** |
-| 10 µF + 100 nF per rail | |
-| `C31`/`C32` on `+3V3_SW`; `C33`/`C34` at `U2`/`U3` VIN | |
+As built, verified against the routed copper — **11 supply pins, each with a primary cap and a
+10 nF**, plus per-rail bulk:
+
+| Rail | Per-pin primary | Per-pin HF | Bulk / local | Total |
+|---|---|---|---|---|
+| `vdd_33` (`+3V3_CAM`, 4 pins) | C1–C4 **1 µF** | C12–C15 **10 nF** | C23 10 µF, C26 100 n, C35 1 µF | 15.14 µF |
+| `vdd_18` (`+1V8_CAM`, 3 pins) | C5–C7 **1 µF** | C16–C18 **10 nF** | C24 10 µF, C27 100 n, C30 1 µF | 14.13 µF |
+| `vdd_pix` (`+3V3_PIX`, 4 pins) | C8–C11 **100 nF** | C19–C22 **10 nF** | C28 100 n, C37 1 µF — **no bulk** | 1.54 µF |
+| `+4V5` (boost out) | — | — | C32/C33 10 µF, C34/C36 1 µF | 22.0 µF |
+| `+3V3_SYS` (boost in) | — | — | C31 10 µF, C29 1 µF, C38/C40 100 n | 11.2 µF |
+
+> **`vdd_pix`'s primary is 100 nF, not 1 µF** — deliberately, to stay inside the capacitance
+> budget the shutdown ordering depends on (above). It is the one rail that breaks the pattern.
+
+`C39` (10 n) and `C41` (220 n) are **not decoupling** — they are the `EN_PIX` and `EN_BOOST`
+timing capacitors in the sequencing network.
 
 **The 10 nF bank is not optional.** There was originally **no capacitor anywhere on this board
 below 100 nF** — while the sensor's **LVDS drivers run off `vdd_18` and toggle at 360 MHz**. A
@@ -609,11 +645,16 @@ This design was compared against
 a *manufactured* FPGA carrier for a LUPA300 in the **same Andon LCC48 socket**. Three changes
 came out of that comparison:
 
-| Change | Why |
-|---|---|
-| **`FB1` — ferrite bead on `vdd_pix`** | Their board beads `VPIX`, `VDDA` and `VADC` (BLM18). We had **nothing** on the pixel supply — the most noise-sensitive rail on the sensor. This was a genuine omission. |
-| **The whole topology** | They feed **one ultra-low-noise LDO** into the sensitive rails and **split them with ferrites**, with the LDO's output cap **before** the beads. That is now §6.5. It is what eliminated our `vdd_pix` power-down problem *by construction* — and it is why we no longer have a `U4`, a PMOS clamp, or a diode. |
-| **Per-pin decoupling 100 nF → 1 µF**, plus `C20-C22` (100 nF per rail) | Their primary decoupler is **1 µF**, not 100 nF, backed by 0.1 µF. A modern 1 µF X7R in 0402 has similar ESL to a 100 nF but 10× the capacitance, so it holds supply impedance down across a wider band. |
+> **⚠️ Read this table as history.** The first two rows describe a comparison that led to the
+> **ferrite-split topology, which is now dead** (§6.5, §14.6). They are kept because the
+> *diagnosis* was right — `vdd_pix` genuinely needed dedicated attention — even though the
+> *remedy* was later replaced by a better one. **Row 3 is still current.**
+
+| Change | Why | Status |
+|---|---|---|
+| **Ferrite bead on `vdd_pix`** | Their board beads `VPIX`, `VDDA` and `VADC` (BLM18). We had **nothing** on the pixel supply — the most noise-sensitive rail on the sensor. This was a genuine omission. | ❌ **Superseded.** `vdd_pix` now has its **own TPS7A2033 LDO** (`U5`) with 75–95 dB PSRR — strictly better than a bead. No ferrite on the board. |
+| **The whole topology** | They feed **one ultra-low-noise LDO** into the sensitive rails and **split them with ferrites**, with the LDO's output cap **before** the beads. | ❌ **Superseded** by boost → 3 LDOs → 2 supervisors. The `vdd_pix` power-down problem is instead eliminated by U5's 150 Ω auto-discharge plus the `EN_PIX` interlock. |
+| **Per-pin decoupling 100 nF → 1 µF** | Their primary decoupler is **1 µF**, not 100 nF, backed by 0.1 µF. A modern 1 µF X7R in 0402 has similar ESL to a 100 nF but 10× the capacitance, so it holds supply impedance down across a wider band. | ✅ **Current** for `vdd_33` and `vdd_18`. **`vdd_pix` is the deliberate exception** — 100 nF per pin, to stay inside its capacitance budget (§6.5). |
 
 **Two things from that board we deliberately did NOT copy:**
 
@@ -1335,27 +1376,47 @@ intra-pair and not inter-lane remains correct — only the numeric value is misc
   `unconnected-(J1/J2/J3-…)` entries are deliberately unused connector pins.
 - **Pin-1 markers are present** on U1, J1–J3 and U2–U7. (L1 has none — correct, it is non-polar.)
 
-### 14.6 Documentation drift found during review
+### 14.6 Documentation drift found during review — fixed 2026-07-18
 
-These are **doc bugs, not layout bugs**, but a reader following them would order the wrong parts:
+These were **doc bugs, not layout bugs**, but a reader following them would have ordered the
+wrong parts. All were reconciled against **`CAMERA_POWER_DESIGN.md`** (authoritative), the
+schematic, `production/LauPythonCamera_Pt_Stack_bom.csv`, and the routed copper. The list is
+kept as a record of what was wrong and why.
 
-1. **§6.5's prose contradicts its own diagram.** The section marks the tree OBSOLETE, then the
-   prose beneath it ("`U3` is a SWITCH, not a regulator", "`FB1`/`FB2` are what give the sensor
-   supply rejection", the `FB1` DCR ≤ 50 mΩ requirement) describes that dead design. **There is
-   no FB1 or FB2 on this board** — confirmed against the netlist. The diagram and the routed
-   copper both implement the boost + 3-LDO tree.
-2. **Open item 3 inherits the same stale spec** — it still calls for a load switch and an `FB1`
-   ferrite as the blocker on ordering the BOM.
-3. **Open item 5 is already done** — the area-scoped DRC exception exists in
-   `LauPythonCamera_Pt_Stack.kicad_dru` ("DF40 land pattern", "TPS61023 SOT-563 land pattern").
-4. **§6.4.1's refdes table is stale.** On the board, **R14 is the 10 k pulldown on
-   `CAM_CLK_PLL`** and **R15 is 100 k on `EN_PIX`** (supervisor divider). The pulls all exist;
-   the designators no longer match.
-5. **`+3V3_PIX` totals 1.54 µF** (C8–C11 100n, C19–C22 10n, C28 100n, C37 1 µF) against §6.5's
-   own "**must keep ≤ ~1.5 µF**". Almost certainly inside the "~", but shutdown ordering depends
-   on U5's 150 Ω auto-discharge, so this should be a conscious decision rather than an accident.
-6. **C25 does not exist in the layout** — numbering jumps C24 → C26. Confirm that is intentional
-   and not a lost part.
+1. ✅ **§6.5's prose described a dead design.** It marked the tree OBSOLETE, then the prose
+   beneath it ("`U3` is a SWITCH, not a regulator", "`FB1`/`FB2` are what give the sensor supply
+   rejection", the `FB1` DCR ≤ 50 mΩ spec) described exactly that dead design. **There is no FB1
+   or FB2 on this board.** *Fixed:* the load-switch/ferrite prose is replaced with the boost +
+   3-LDO + 2-supervisor description, and the banner now warns that any surviving reference to a
+   "load switch" or ferrite is stale.
+2. 🔴 **The tree diagram carried the WRONG feedback divider** — `R8`/`R9` as **649 k/100 k**.
+   The board and the BOM both use **330 k/51 k**. This is the most consequential of the seven:
+   649 k/100 k is the pair `CAMERA_POWER_DESIGN.md` §4 explicitly **rejected**, because 649 kΩ is
+   a JLCPCB *Extended* part. Electrically the two are 12 mV apart and interchangeable; the choice
+   was about sourcing. *Fixed,* with the reasoning recorded so it is not "tidied" back.
+3. ✅ **The old §6.5 "HONEST COST" section was wrong under the current design.** It claimed
+   `vdd_pix`'s tolerance *is* the Pt's `+3V3` tolerance and that the rail could sit ~16 mV
+   outside its window at both extremes. True of the tap-through-ferrites design; **false now** —
+   `U5` regulates `vdd_pix` independently to 3.2505–3.3495 V. *Fixed,* and the obsolete action
+   item ("measure the Pt's 3.3 V rail the day the board arrives") is marked as no longer
+   load-bearing.
+4. ✅ **§6.4.1's refdes table was off by one.** On the board the pulls are **R12 = `mosi`,
+   R13 = `sck`, R14 = `clk_pll`**. **`R15` is not a sensor pull at all** — it is the 100 kΩ
+   `EN_PIX` pull-up to `+3V3_CAM`, i.e. the sequencing interlock. *Fixed,* with a warning not to
+   repurpose R15.
+5. ✅ **Open item 3** inherited the stale load-switch/ferrite spec as an ordering blocker.
+   *Closed* — every part is a JLCPCB part number in the BOM.
+6. ✅ **Open item 5** was already implemented in `LauPythonCamera_Pt_Stack.kicad_dru`. *Closed.*
+7. ✅ **The decoupling table did not match copper.** It claimed "11 × 1 µF, one per supply pin";
+   in fact `vdd_pix`'s four pins use **100 nF**, deliberately, to stay inside the capacitance
+   budget the shutdown ordering depends on. The "11 × 10 nF" claim was correct (C12–C22).
+   *Fixed:* replaced with a per-rail table built from the routed nets. Also recorded that
+   `+3V3_PIX` measures **1.540 µF** against its own "≤ ~1.5 µF" budget — accepted, since
+   τ = 231 µs is still far inside the 10 µs requirement, but now a decision rather than a drift.
+
+**Still open — not a drift, a question:** `C25` does not exist in the layout (numbering jumps
+C24 → C26) and appears in neither the BOM nor the schematic. Almost certainly a deleted part
+whose designator was never reused, but **confirm it is not a lost decoupling cap.**
 
 ---
 
@@ -1365,11 +1426,11 @@ These are **doc bugs, not layout bugs**, but a reader following them would order
 |---|---|---|---|
 | **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. | Nothing — do it now | **You** |
 | 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. | Item 1 | Andon (one email), or default to `-0` |
-| 3 | **`U3` (load switch) and `FB1` (ferrite) have hard specs, not yet part numbers.** `U3`: active-high EN, **EN V<sub>IH</sub> ≤ 1.2 V** (driven from the 1.8 V rail — a ratiometric-threshold part **never turns on**), reverse-blocking, slew-controlled, **R<sub>DS(on)</sub> ≤ 50 mΩ**. `FB1`: **DCR ≤ 50 mΩ** — it carries 140 mA, and a 0.3 Ω bead drops 42 mV and pushes `vdd_33` under its floor. **The BOM is not orderable until both are settled.** | `vdd_33` in spec, and the sensor powering up at all | Purchasing |
+| ~~3~~ | ✅ **CLOSED.** Superseded by the boost + 3-LDO + 2-supervisor tree (§6.5). There is no load switch and no ferrite: `U3` = `TPS61023DRLR`, `U4`/`U5` = `TPS7A2033PDBVR`, `U2` = `TPS7A2018PDBVR`, `U6`/`U7` = `TLV803SDBZT`. **Every part is a JLCPCB part number in `production/LauPythonCamera_Pt_Stack_bom.csv`** — the BOM is orderable. | — | — |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
-| 5 | Neck-down at the 0.4 mm DF40 pads violates `track_width (min 0.22mm)` — needs an **area-scoped DRC exception**, not a lower global minimum. | Clean DRC | Add once the board exists |
+| ~~5~~ | ✅ **CLOSED.** The area-scoped exceptions exist in `LauPythonCamera_Pt_Stack.kicad_dru` — rules *"DF40 land pattern — 0.4mm pitch, intra-connector only"* and *"TPS61023 SOT-563 land pattern"*. They relax clearance **only between pads of the same component**; the global minimum and the LVDS rules are untouched. | — | — |
 | 6 | **Impedance geometry is an IPC-2141 approximation (±10%)**, not a field solver. Confirm in KiCad's stackup calculator and **tick "impedance controlled" when ordering** so JLC verifies it. | Signal integrity | At layout |
-| 7 | **Power-DOWN is not sequenced** — only power-up. The RC cascade (§6.5) handles the rise order only. If reverse sequencing turns out to matter, this needs a real sequencer IC. | Possibly nothing | Watch for it in bring-up |
+| ~~7~~ | ✅ **CLOSED.** Stale — it described the dead RC-cascade design. **Power-down IS sequenced**, by `U6`/`U7` asserting immediately below 2.93 V: `vdd_pix` collapses first via U5's 150 Ω auto-discharge, `vdd_33` follows when the boost disconnects at t ≈ 493 µs, `vdd_18` dies last. Both directions are **SPICE-verified** (`CAMERA_POWER_DESIGN.md` §7.5). No sequencer IC needed. | — | — |
 | 8 | Ft+ and Hd current draw — not documented by Alchitry | Power budget | Measure or ask Alchitry |
 | 9 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
 | 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
@@ -1377,7 +1438,9 @@ These are **doc bugs, not layout bugs**, but a reader following them would order
 | **11** | **🔴 Apply the §14 Tier 1 layout fixes on a machine with KiCad, then run `kicad-cli pcb drc`.** Three items: local decoupling for U1 pins 19/22/26/29/36; GND stitching around U3 and C31–C34; widen the `+3V3_SYS` entry and multiply its via. §14 was produced by static geometric analysis **with no DRC run** — confirm the predicted violations (§14.2.3, §14.2.4) in KiCad before acting. Regenerate `production/` afterwards. | Fab | **You / a KiCad PC** |
 
 **Closed:** socket land pattern (§12) · bank-13 pin map (§5.1) · P/N polarity (§13.1) ·
-stack compatibility (§13.2) · regulators + sequencing (§6.5) · DF40 connectors (§6.6)
+stack compatibility (§13.2) · regulators + sequencing (§6.5) · DF40 connectors (§6.6) ·
+power part numbers (old item 3) · fine-pitch DRC exceptions (old item 5) ·
+power-section documentation drift (§14.6)
 
 ---
 
