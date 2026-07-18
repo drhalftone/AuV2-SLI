@@ -1154,7 +1154,208 @@ Be clear about the boundary. Vivado has validated the **FPGA side**. It knows no
 | Sensor pin 1 / orientation | Read directly off the datasheet package drawings, twice, independently (§12) |
 | The schematic | Programmatic net check (31 nets, no orphans) + compared against a **fabbed** board (§6.7) |
 | Impedance geometry | IPC-2141 closed-form, ±10%. **Confirm with KiCad's stackup calculator and tick "impedance controlled" when ordering** (§11.3) |
-| Layout | Not started |
+| Layout | Routed and statically reviewed (§14). **KiCad DRC has NOT been run** — see §14.0 |
+
+---
+
+## 14. Layout review — findings against the routed board
+
+Reviewed **2026-07-18** against `LauPythonCamera_Pt_Stack.kicad_pcb` at commit `2bc854b`.
+Three independent passes: LVDS routing geometry, power/decoupling, placement/mechanical.
+
+### 14.0 ⚠️ What this review is, and is not
+
+**This is static geometric analysis of the `.kicad_pcb` s-expressions — not a DRC run.**
+KiCad was not installed on the machine that produced it, so `kicad-cli pcb drc` was never
+executed. Items 14.2.3 and 14.2.4 below are *predicted* DRC violations and must be confirmed
+in KiCad before anyone acts on them. Nothing here supersedes an actual DRC pass.
+
+Coordinates are **KiCad page coordinates**. Subtract (100, 60) for board-relative.
+
+### 14.1 Tier 1 — fix before fab
+
+**1. Five of U1's eleven supply pins have no usable decoupling.**
+Found independently by two passes. Every `vdd_33` / `vdd_18` cap sits west (x ≈ 120–123) or
+north (y ≈ 67.5–69.4) of the socket. The east-column pins are naked:
+
+| Pin | Rail | Nearest cap | Routed distance |
+|---|---|---|---|
+| U1.19 | `+3V3_CAM` | C4 (1 µF) | **32.1 mm** |
+| U1.22 | `+1V8_CAM` | C7 (1 µF) | **25.2 mm** |
+| U1.26 | `+1V8_CAM` | C7 (1 µF) | **28.0 mm** |
+| U1.29 | `+3V3_CAM` | C4 (1 µF) | **29.5 mm** |
+| U1.36 | `+3V3_CAM` | C4 (1 µF) | **25.4 mm** |
+
+Only the four `vdd_pix` pins (C19–C22, 2.75–2.90 mm) actually satisfy §11.5's "decoupling caps
+hard against their supply pins. **All 11 of them.**"
+
+At 25 mm of 0.5 mm trace there is ~20 nH of loop inductance ahead of the cap — a 10 nF at that
+distance is decoration. This bites hardest on `+1V8_CAM`, which per §6.5 is what the **360 MHz
+LVDS drivers** run from, and pins 22 and 26 are two of the three `vdd_18` pins. Compounded by
+the two facts §6.5 already flags: there is **no power plane** (both inner layers are GND,
+§11.2.1), and the sensor is **socketed** (~1–3 nH per contact).
+
+**Fix:** the strip east of U1 (x 146–154.5) is clear F.Cu pour. Place one 1 µF + one 10 nF pair
+within ~1.5 mm of each of pins 19, 22, 26, 29, and one pair north of pin 36. B.Cu directly under
+those pins is also completely free. **This is the single highest-value change on the board.**
+
+**2. Almost no ground stitching in the power section.**
+Exactly **one** GND via exists at x < 112. U3 (the boost) sits at (107, 73).
+
+| Pad | Nearest GND via |
+|---|---|
+| `U3.4` (boost GND) | **10.80 mm** |
+| `C31` (10 µF boost input) | **15.13 mm** |
+| `U2.2` | 10.74 mm |
+| `C34` | 11.15 mm |
+
+The boost's high-di/dt return loop is confined to the F.Cu/B.Cu pours with no path into the two
+inner planes for over a centimetre. **Fix:** cluster 4 stitching vias within 1 mm of `U3.4`, and
+put vias directly on the GND pads of C31–C34.
+
+Related: U1's own GND pads are 2.6–6.6 mm from the nearest stitch. For a *socketed* sensor
+already carrying 1–3 nH per contact, add a via beside each U1 GND pad — cheap, and directly
+under the part.
+
+**3. The whole board is powered through 0.2 mm trace and a single via.**
+`+3V3_SYS` daisy-chains J3 pins 1–15 odd along y = 65.355 on **0.2 mm B.Cu**, then rises into
+**one via at (111.70, 69.90)**. Cut analysis confirms removing it isolates `L1.1`, `U3.3` and
+`U2.1` — everything.
+
+Current: boost input ≈ 234 mA + 80 mA for U2 ≈ **320 mA average**, plus boost peak inductor
+current, against ~0.5 A for 0.2 mm on 1 oz outer copper. 64 % loaded, no redundancy, and the
+last daisy-chain segment carries the full aggregate.
+
+**Fix:** widen the riser and aggregation run to 0.5–0.8 mm, place 2–3 parallel vias at
+(111.70, 69.90), and **fan** the eight J3 power pins into a short bus rather than chaining them.
+
+### 14.2 Tier 2 — cheap and real
+
+**1. GND stitch vias at the LVDS layer transitions.**
+Both passes agree to within 0.1 mm. Distance from each pair's signal vias to the nearest GND via:
+
+| Pair | Transition | Nearest GND via |
+|---|---|---|
+| `CAM_LVDSCLK` | (148.01, 84.84) | **8.4 / 9.1 mm** |
+| `CAM_D2` | (141.60, 98.80) | 4.3 / 4.8 mm |
+| `CAM_SYNC` | (144.00, 98.80) | 2.7 / 3.4 mm |
+| `CAM_D0` | (139.20, 98.80) | 1.9 / 2.6 mm |
+| `CAM_D3` | (139.05, 93.75) | 1.7 / 0.85 mm |
+| `CAM_CLKOUT` | (130.92, 93.75) | 0.80 / 0.83 mm ✓ |
+| `CAM_D1` | (134.98, 93.75) | 0.82 / 0.87 mm ✓ |
+
+This is rule 2 of the four "rules for a human" in the `.kicad_dru` that DRC cannot enforce.
+
+**Calibrate the severity honestly:** return current for a *differential* signal hops mostly
+between the P and N barrels, which sit 0.68–1.02 mm apart at the same spot. So this is primarily
+a **common-mode / radiated-emissions** problem, not a differential-eye problem. Stitch vias are
+free, though. D0/D2/SYNC all cross at y = 98.800 with 1.72 mm between barrels — four vias at
+x ≈ 138.1, 140.4, 142.8, 145.1 cover all three. D3 needs one near (140.2, 94.4). LVDSCLK has
+nothing within 8 mm and needs two placed deliberately.
+
+**2. Two single vias carry a whole rail each.** Via (124.42, 89.20) is the sole feed to all four
+`+3V3_CAM` sensor pins (140 mA through one 0.4 mm drill); via (109.67, 73.20) is the sole feed
+to both LDOs off `+4V5` (~150 mA through one 0.3 mm drill). DC current density is fine — a
+0.4 mm via handles ~1 A — so this is single-point-of-failure and AC impedance, not heating.
+Double both up.
+
+**3. 1.84 mm of fully uncoupled run on CLKOUT, D1, D3 — exceeds the 1.5 mm DRU limit.**
+These three drop straight down from the U1 pads at 1.016 mm pitch (gap 0.776 mm) and only
+converge at the via. Zdiff rises to ~126 Ω over that stretch. D0, D2 and SYNC already do this
+correctly, converging to 0.44 mm pitch within ~1.06 mm of the pad — **apply the same fanout to
+the other three and the violation disappears.**
+
+**4. Via barrel gap 0.18 mm on D0, D2, SYNC vs `diff_pair_via_gap` 0.25 mm.** 0.680 mm via
+spacing with 0.5 mm pads. Predicted DRC violation, and tight for a 0.5 mm via at JLC. Open to
+0.75 mm spacing.
+
+**5. Boost input loop is long and thin.** `C31 → L1.1` is **19.08 mm**, 10.5 mm of it at 0.2 mm
+width, with C31 at (103.5, 73.95) on the far side of U3 from L1 at (112.28, 76.15). The input
+cap should form a tight loop with the inductor and the IC's VIN/GND. Move C31 adjacent to the
+L1/VIN node and connect at 0.5 mm.
+
+### 14.3 Tier 3 — polish
+
+- **`R2` is topologically a stub tee, not an end-of-line termination.** Both clock nets form a
+  3-way node at their transition via, so the clock is terminated *before* the sensor, leaving
+  2.7–4.5 mm unterminated stubs. Position passes (R2.2 is 0.14 mm from U1.23), but §11.5's
+  actual requirement is about topology. Magnitude is ~12–30 ps against a ~1 ns edge — **it will
+  work.** But R2 is also the only discrete on the mating side; moving it to the empty F.Cu at
+  (147.6–148.6, 82.5–83.5) fixes the topology *and* makes the bottom side 100 % connectors.
+- **Silk refdes were never nudged off pads.** Worst: `U1`'s own designator overlaps socket pads
+  36/37 by 0.64 mm; `R1` sits over U1.28–30; `R14` over U1.25–27. Most fabs auto-clip, so the
+  practical result is fragmented designators — but not on the socket pads.
+- **J1/J2/J3 refdes are hidden**, leaving two physically identical DF40C-80DP connectors
+  unlabeled on the blind side. B_Silkscreen has 101 coordinate points vs 4341 on F.
+- **No test points anywhere** — including `+3V3_PIX`, the rail whose 3.25–3.35 V window §6.5
+  says to measure the day the board arrives. `+1V8_CAM` and `IBIAS_MASTER` have zero vias, so
+  there is not even an accidental probe target. Recommend 5 rails + GND; x 0–3, y 30–45 is empty.
+- **U1 index hole is 0.317 mm from the `+3V3_PIX` via** at (142.625, 73.825). NPTH tolerance is
+  ±0.1 mm with no annular ring — right at the fab's 0.3 mm floor. Shift the via ~0.3 mm.
+- **R6 ↔ U5 courtyards are 0.030 mm apart** — inside pick-and-place repeatability. Nudge R6
+  (and R5, for symmetry) down 0.2–0.3 mm.
+- **Zones `poly8` (81 mm²), `poly4` (48 mm²) and B.Cu `poly1` (39 mm²)** are each large flaps of
+  copper on a single tie. Add 2–3 stitches to each.
+
+### 14.4 The DRU skew rule is too tight to be useful
+
+At 600 Mbps the UI is 1667 ps and tpd is ~5.4 ps/mm, so a strict 2 %-UI intra-pair budget is
+**~6 mm** of length mismatch. The `.kicad_dru` value of **0.08 mm is 0.43 ps — 0.03 % of a UI.**
+
+Measured intra-pair skew: `CAM_CLKOUT`, `D0`, `D1`, `D2`, `D3`, `SYNC` are all **exactly
+0.000 mm**. `CAM_LVDSCLK` is 0.137 mm — which breaks the DRU rule and will raise a DRC warning
+for a **0.74 ps** difference that cannot matter.
+
+**Recommendation: relax the seven skew rules to ~1 mm** so that real violations are not lost in
+noise. The rules were inherited from the MIPI board; the reasoning in §11.4 for constraining
+intra-pair and not inter-lane remains correct — only the numeric value is miscalibrated.
+
+### 14.5 Verified correct — do not "fix" these
+
+- **Trace geometry:** 0.24 mm / 0.20 mm edge-to-edge over the entire routed length of all 14
+  LVDS nets (median gap exactly 0.200), matching §11.3 and the `CamLVDS` netclass.
+- **Reference planes:** In1.Cu and In2.Cu are each a single GND fill of 2115 mm² with **zero**
+  non-GND copper. The only plane discontinuity any LVDS trace crosses is its own via antipad.
+- **P/N via counts match 1:1 on every pair.** One layer change each, as §11.2.1 intends.
+- **Inter-pair fan is clean:** the six sensor-output nets step monotonically 10.714 → 14.873 mm
+  in exact 0.83 mm increments. Deliberately unmatched, per §11.4 — correct.
+- **LVDS vs the switcher (§11.5):** minimum distance from any pair to L1's body or the `SW` node
+  is **20.73 mm**. The "regulators left of x = 24" rule from §8.2 was followed and it worked.
+- **The B.Cu GND pour does not load the pairs.** Checked specifically because 0.25 mm ≈ 1.2× the
+  dielectric height looked like a coplanar risk: a same-mesh 2D FD solve says the pour moves
+  Zdiff by only ~1.5 %. The copper is too thin for edge coupling to compete with the plane
+  0.21 mm below. **Leave the pour alone.**
+- **The §8.1 notch decision was executed exactly.** Socket copper spans x 124.824–147.176,
+  giving **2.324 mm** to the notch — matching the predicted 2.32 mm. The x = 38 alternative that
+  would have given 0.32 mm was correctly rejected.
+- **Edge clearance:** minimum copper-to-`Edge.Cuts` anywhere is 0.525 mm against a 0.3 mm target.
+- **Series elements are intact:** `SW` contains exactly `L1.2` and `U3.5` — no zone, no stray
+  trace. No LDO output is shorted back to its input anywhere in copper.
+- **No courtyard overlaps, no islanded zones, no unrouted nets.** The ~150
+  `unconnected-(J1/J2/J3-…)` entries are deliberately unused connector pins.
+- **Pin-1 markers are present** on U1, J1–J3 and U2–U7. (L1 has none — correct, it is non-polar.)
+
+### 14.6 Documentation drift found during review
+
+These are **doc bugs, not layout bugs**, but a reader following them would order the wrong parts:
+
+1. **§6.5's prose contradicts its own diagram.** The section marks the tree OBSOLETE, then the
+   prose beneath it ("`U3` is a SWITCH, not a regulator", "`FB1`/`FB2` are what give the sensor
+   supply rejection", the `FB1` DCR ≤ 50 mΩ requirement) describes that dead design. **There is
+   no FB1 or FB2 on this board** — confirmed against the netlist. The diagram and the routed
+   copper both implement the boost + 3-LDO tree.
+2. **Open item 3 inherits the same stale spec** — it still calls for a load switch and an `FB1`
+   ferrite as the blocker on ordering the BOM.
+3. **Open item 5 is already done** — the area-scoped DRC exception exists in
+   `LauPythonCamera_Pt_Stack.kicad_dru` ("DF40 land pattern", "TPS61023 SOT-563 land pattern").
+4. **§6.4.1's refdes table is stale.** On the board, **R14 is the 10 k pulldown on
+   `CAM_CLK_PLL`** and **R15 is 100 k on `EN_PIX`** (supervisor divider). The pulls all exist;
+   the designators no longer match.
+5. **`+3V3_PIX` totals 1.54 µF** (C8–C11 100n, C19–C22 10n, C28 100n, C37 1 µF) against §6.5's
+   own "**must keep ≤ ~1.5 µF**". Almost certainly inside the "~", but shutdown ordering depends
+   on U5's 150 Ω auto-discharge, so this should be a conscious decision rather than an accident.
+6. **C25 does not exist in the layout** — numbering jumps C24 → C26. Confirm that is intentional
+   and not a lost part.
 
 ---
 
@@ -1172,6 +1373,8 @@ Be clear about the boundary. Vivado has validated the **FPGA side**. It knows no
 | 8 | Ft+ and Hd current draw — not documented by Alchitry | Power budget | Measure or ask Alchitry |
 | 9 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
 | 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
+
+| **11** | **🔴 Apply the §14 Tier 1 layout fixes on a machine with KiCad, then run `kicad-cli pcb drc`.** Three items: local decoupling for U1 pins 19/22/26/29/36; GND stitching around U3 and C31–C34; widen the `+3V3_SYS` entry and multiply its via. §14 was produced by static geometric analysis **with no DRC run** — confirm the predicted violations (§14.2.3, §14.2.4) in KiCad before acting. Regenerate `production/` afterwards. | Fab | **You / a KiCad PC** |
 
 **Closed:** socket land pattern (§12) · bank-13 pin map (§5.1) · P/N polarity (§13.1) ·
 stack compatibility (§13.2) · regulators + sequencing (§6.5) · DF40 connectors (§6.6)
