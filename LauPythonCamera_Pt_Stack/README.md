@@ -1376,7 +1376,7 @@ intra-pair and not inter-lane remains correct — only the numeric value is misc
   `unconnected-(J1/J2/J3-…)` entries are deliberately unused connector pins.
 - **Pin-1 markers are present** on U1, J1–J3 and U2–U7. (L1 has none — correct, it is non-polar.)
 
-### 14.6 Documentation drift found during review — fixed 2026-07-18
+### 14.6 Documentation drift found during review — fixed 2026-07-18, all closed
 
 These were **doc bugs, not layout bugs**, but a reader following them would have ordered the
 wrong parts. All were reconciled against **`CAMERA_POWER_DESIGN.md`** (authoritative), the
@@ -1414,9 +1414,23 @@ kept as a record of what was wrong and why.
    `+3V3_PIX` measures **1.540 µF** against its own "≤ ~1.5 µF" budget — accepted, since
    τ = 231 µs is still far inside the 10 µs requirement, but now a decision rather than a drift.
 
-**Still open — not a drift, a question:** `C25` does not exist in the layout (numbering jumps
-C24 → C26) and appears in neither the BOM nor the schematic. Almost certainly a deleted part
-whose designator was never reused, but **confirm it is not a lost decoupling cap.**
+**`C25` — ✅ RESOLVED, and the gap is deliberate. Do not "restore" it.**
+
+The numbering jumps C24 → C26 in the layout, the BOM and the schematic. `C25` **was a 10 µF
+0805 bulk capacitor on `+3V3_PIX`** — it is still visible in `LauPythonCamera_Pt_Stack.kicad_sch.bak`
+(`Device:C`, value `10u`, footprint `C_0805_2012Metric`, between `+3V3_PIX` and `GND`). It was
+**deliberately deleted**, and its designator was never reused.
+
+**That deletion is exactly the fix §6.5 demands:** `vdd_pix` must carry **no bulk cap**, because
+power-down depends on U5's 150 Ω auto-discharge collapsing the rail first. A 10 µF part there
+would have taken τ from 231 µs to ~1.7 ms and **silently broken the shutdown ordering** — the
+precise failure §6.5 warns about.
+
+> **The missing designator is the fingerprint of a bug that was found and fixed.** If a future
+> BOM audit flags "C25 is missing", the correct response is to add a note, not a capacitor.
+
+*(The single `"C25"` string remaining in the schematic is unrelated: it is a **pin name** on the
+DF40C-50DP symbol, whose 50 pins are named `C1`–`C50`. There is no component instance `C25`.)*
 
 ---
 
