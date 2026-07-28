@@ -1657,10 +1657,34 @@ the RTL in one transaction.
 
 The files in `production/` are only valid for the `.kicad_pcb` they were exported from.
 
-> 🔴 **They are STALE as of 2026-07-28.** The board gained 10 vias, widened `+3V3_SYS` copper, moved
-> three silk fields and had its zones refilled (§14.1 items 2–3). **Regenerate before ordering** —
-> gerbers, drill, CPL — and re-run DRC (§14.7). The BOM changes too once Tier 1 item 1 adds the
-> decoupling caps, so the natural order is: finish job 1 → refill → DRC → export everything at once.
+> ✅ **Regenerated 2026-07-28**, against the board with every Tier 1 fix, the six test points and the
+> J3 fan-out in place. Verified: **110 PTH drill hits = 110 vias**, 2 NPTH at 1.6 mm (the socket index
+> holes), and the F.Mask layer carries the six 1.5 mm test-point openings.
+>
+> **The BOM did not change and is byte-identical** — no part was added or removed by any of this
+> work. The caps were *redistributed*, not added (§14.1), and the test points are excluded from the
+> BOM by construction (§15.3). **The CPL did change**: 13 of its 68 rows, being the parts that moved.
+>
+> Rebuild them with the commands below after **any** board edit. The gerber zip holds 15 files —
+> 11 gerbers, 2 drill files, 2 drill maps — and deliberately omits the `.gbrjob`.
+
+```powershell
+$cli = "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
+& $cli pcb export gerbers -o production/gerbers --no-protel-ext --check-zones --precision 6 `
+    --layers "F.Cu,In1.Cu,In2.Cu,B.Cu,F.Paste,B.Paste,F.Silkscreen,B.Silkscreen,F.Mask,B.Mask,Edge.Cuts" `
+    LauPythonCamera_Pt_Stack.kicad_pcb
+& $cli pcb export drill -o production/gerbers --format excellon --drill-origin absolute `
+    --excellon-units mm --excellon-zeros-format decimal --excellon-separate-th `
+    --generate-map --map-format gerberx2 LauPythonCamera_Pt_Stack.kicad_pcb
+```
+
+> ⚠️ **The CPL is *not* KiCad's native position file** — it is the JLC-format one produced by the
+> fabrication-toolkit plugin: columns `Designator, Mid X, Mid Y, Layer, Rotation`, X in page
+> coordinates, **Y negated**, rotations 0–360 (never negative). If you regenerate it with
+> `kicad-cli pcb export pos` you will get different columns and a different sign convention, and
+> JLCPCB will place every part in the wrong spot. Either run the plugin, or transform the board's
+> footprint origins as `X = x`, `Y = −y`, `Layer = Top|Bottom`, `Rotation = ((rot mod 360)+360) mod 360`,
+> skipping anything flagged `exclude_from_pos_files`.
 
 **Refilling zones no longer needs the GUI:**
 
@@ -1691,7 +1715,7 @@ refill before believing a single one.
 | 9 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
 | 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
 
-| **11** | **🔴 Finish the §14 Tier 1 fixes — two of three are done.** ✅ GND stitching (8 vias) and ✅ the `+3V3_SYS` widening + 3 parallel vias were applied 2026-07-28, board re-verified **0 errors / 0 unconnected**. ⬜ **Left: (a) local decoupling for U1 pins 19/22/26/29/36 — schematic + placement, on B.Cu since §14.1's east strip is off-board; (b) fan the eight J3 power pins.** Both worked out in **[`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md)**. **`production/` is now stale — regenerate (§15.6).** **The DRC half of this item is done (§14.7): 0 errors, 0 unconnected, and the two predicted violations (§14.2.3, §14.2.4) were false — withdrawn, do not act on them.** | Fab | **You** |
+| **11** | **🔴 Finish the §14 Tier 1 fixes — two of three are done.** ✅ GND stitching (8 vias) and ✅ the `+3V3_SYS` widening + 3 parallel vias were applied 2026-07-28, board re-verified **0 errors / 0 unconnected**. ⬜ **Left: (a) local decoupling for U1 pins 19/22/26/29/36 — schematic + placement, on B.Cu since §14.1's east strip is off-board; (b) fan the eight J3 power pins.** Both worked out in **[`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md)**. **`production/` regenerated 2026-07-28 and verified (§15.6).** **The DRC half of this item is done (§14.7): 0 errors, 0 unconnected, and the two predicted violations (§14.2.3, §14.2.4) were false — withdrawn, do not act on them.** | Fab | **You** |
 | 13 | **What is the state of JLCPCB order `SMT026071660032_Y5`?** Still parked awaiting a reply to the L1 package-mismatch flag, or cancelled? Decides whether the next order revises it (keeping queue position + the review thread) or starts fresh. Not recorded anywhere in this repo — see §15.0. | Ordering | **You** |
 | 12 | **Nudge the silk refdes off the pads** — §14.7 lists them; `U1`'s own designator over socket pads 25–29/36/37 is the one that matters, because U1 is socketed. Cosmetic elsewhere (fabs auto-clip). | Nothing | At layout, with item 11 |
 
