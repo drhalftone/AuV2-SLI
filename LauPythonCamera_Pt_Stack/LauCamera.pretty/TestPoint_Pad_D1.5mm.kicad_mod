@@ -1,0 +1,35 @@
+(footprint "TestPoint_Pad_D1.5mm"
+	(version 20240108)
+	(generator "claude_code")
+	(generator_version "10.0")
+	(layer "F.Cu")
+	(descr "Bring-up test point: 1.5 mm exposed round pad, F.Cu + F.Mask, NO paste. Placed directly ON its rail's existing copper so it is connected by overlap and needs no stub. BOARD-ONLY by design -- it carries exclude_from_bom and exclude_from_pos_files so it never reaches JLCPCB's BOM or placement file, which is why it needs no LCSC part number and no do-not-place instruction. Exists because CAMERA_POWER_DESIGN.md's tree has only ever been validated in SPICE: on arrival vdd_18 must be shown to rise BEFORE vdd_33, and vdd_pix must sit in 3.25-3.35 V. That is a two-probe, scope-triggered measurement taken during power-up -- not something to attempt on 0402 pads next to a socket holding a 27-week-lead sensor.")
+	(tags "test point bring-up power")
+	(attr smd exclude_from_pos_files exclude_from_bom)
+	(property "Reference" "REF**"
+		(at 0 -1.35 0)
+		(layer "F.Fab")
+		(hide yes)
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "TestPoint"
+		(at 0 -1.35 0)
+		(layer "F.SilkS")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.15)
+			)
+		)
+	)
+	(pad "1" smd circle
+		(at 0 0)
+		(size 1.5 1.5)
+		(layers "F.Cu" "F.Mask")
+	)
+)
