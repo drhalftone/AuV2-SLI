@@ -35,9 +35,9 @@ sensor in a **socketed 48-pin LCC**, for the AuV2-SLI structured-light system.
 | Whole stack — Pt V2 + Hd + Ft+ + camera | ✅ **Confirmed by Vivado** — 105 ports, no conflicts (§13.2) |
 | Schematic | ⚠️ Complete and audited — but the **power tree was rebuilt from scratch** after an audit found it architecturally wrong (§6.5). **Deserves a human read before fab.** |
 | Socket footprint | ✅ Built and verified (§12) — **no longer blocked** |
-| Stackup / netclasses / DRC rules | ✅ Written (§11) |
-| **Layout** | ❌ Not started — needs KiCad |
-| **Sensor + socket ordered** | ❌ **27-week factory lead if the in-stock units go. Do this first.** |
+| Stackup / netclasses / DRC rules | ✅ Written (§11), and **calibrated against a real DRC run** (§14.7) |
+| **Layout** | ⚠️ **Routed, reviewed (§14) and DRC-clean — 0 errors, 0 unconnected.** But **three Tier 1 defects DRC cannot see are still open** (§14.1): U1 decoupling distance, power-section stitching, single-via `+3V3_SYS` feed. **Not fab-ready.** |
+| **Sensor + socket ordered** | ❌ **27-week factory lead if the in-stock units go. Do this first** — §15.1. |
 
 **Eleven bugs have been found and fixed in this design so far**, including two that would have
 destroyed the sensor and two that would have scrapped the board. Every one was a *boundary
@@ -1242,12 +1242,29 @@ LVDS drivers** run from, and pins 22 and 26 are two of the three `vdd_18` pins. 
 the two facts §6.5 already flags: there is **no power plane** (both inner layers are GND,
 §11.2.1), and the sensor is **socketed** (~1–3 nH per contact).
 
-**Fix:** the strip east of U1 (x 146–154.5) is clear F.Cu pour. Place one 1 µF + one 10 nF pair
-within ~1.5 mm of each of pins 19, 22, 26, 29, and one pair north of pin 36. B.Cu directly under
-those pins is also completely free. **This is the single highest-value change on the board.**
+**Fix:** place one 1 µF + one 10 nF pair within ~1.5 mm of each of pins 19, 22, 26, 29, and one pair
+near pin 36. **This is the single highest-value change on the board.**
 
-**2. Almost no ground stitching in the power section.**
+> ⚠️ **This paragraph originally said to use "the strip east of U1 (x 146–154.5)". That location does
+> not exist.** The board is **notched to x = 149.5** between y 69.5 and 95.5 — everything past 149.5
+> is off-board — and the 2.3 mm that remains already carries `CAM_CLK_PLL` (x 148.82, y 70–81.5), the
+> `CAM_LVDSCLK` escape and both its vias (x 147.7–148.6, y 82.5–85), `IBIAS_MASTER` and GND. Pin 22,
+> one of the two `vdd_18` pins that matter most, sits directly behind those vias.
+>
+> **The second half of the claim holds:** B.Cu directly under the east pin column *is* free — the
+> only copper in x 143–147.5 / y 76–89 is a 1 mm `CAM_LVDSCLK_N` detour at y 87.6–88.6 — and B.Cu
+> there is a **GND pour**, so each cap grounds where it stands. **Use the bottom side.** Worked
+> example with via coordinates: [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md) job 1.
+>
+> **Third §14 claim to fail verification** (after §14.2.3 and §14.2.4), same root cause each time:
+> checked against a remembered constraint instead of the file. That one never checked `Edge.Cuts`.
+
+**2. Almost no ground stitching in the power section.** — ✅ **FIXED 2026-07-28**
 Exactly **one** GND via exists at x < 112. U3 (the boost) sits at (107, 73).
+
+> ✅ **Eight vias placed** — four around `U3.4` (nearest now 0.58 mm, was 10.80 mm) and one at each
+> of C31–C34's ground pads. All sit on existing GND copper, so the connection does not depend on the
+> pour. Details and the two DRC-forced relocations: [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md) job 2.
 
 | Pad | Nearest GND via |
 |---|---|
@@ -1264,7 +1281,13 @@ Related: U1's own GND pads are 2.6–6.6 mm from the nearest stitch. For a *sock
 already carrying 1–3 nH per contact, add a via beside each U1 GND pad — cheap, and directly
 under the part.
 
-**3. The whole board is powered through 0.2 mm trace and a single via.**
+**3. The whole board is powered through 0.2 mm trace and a single via.** — ✅ **MOSTLY FIXED 2026-07-28**
+
+> ✅ The riser and the run into the boost are now **0.8 mm** (necking to 0.3 mm only for the last
+> 1.6 mm, where U3's pads sit 0.3745 mm off the centreline and 0.5 mm would be illegal), and the
+> single transition via is now **three**. ⬜ **Still open: fan the eight J3 power pins** instead of
+> daisy-chaining them — that is inside the 0.4 mm connector fanout and is routing.
+> [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md) job 3.
 `+3V3_SYS` daisy-chains J3 pins 1–15 odd along y = 65.355 on **0.2 mm B.Cu**, then rises into
 **one via at (111.70, 69.90)**. Cut analysis confirms removing it isolates `L1.1`, `U3.3` and
 `U2.1` — everything.
@@ -1529,12 +1552,136 @@ open. A clean DRC and an unbuildable power delivery are perfectly compatible.
 
 ---
 
+## 15. How to order this board
+
+Every value below was read off the current `.kicad_pcb` and `production/` (2026-07-28). Re-derive
+them if the board changes — §15.6 says how.
+
+### 15.0 The order of operations, which is not the order you'd guess
+
+> **Order the sensor today. Do not order the PCB yet.**
+
+The sensor has a **~27-week factory lead** and is blocked on nothing. The board has three known
+defects that DRC cannot see (§14.1) and *is* blocked on a KiCad session. Doing these in the
+intuitive order — board first, parts later — gets you fabbed hardware with the defects baked in,
+and then a six-month wait for the sensor anyway.
+
+| Step | Do | Blocked on |
+|---|---|---|
+| **1** | Order `NOIP1SN1300A-QTI` + the Andon socket (§15.1) | **Nothing — do it now** |
+| **2** | Apply §14.1 Tier 1 + item 12, re-run DRC, regenerate `production/` (§15.6) — **step-by-step with coordinates: [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md)** | A KiCad PC |
+| **3** | Order the PCB (§15.2) and assembly (§15.3) | Step 2 |
+| **4** | Power-tree bring-up on arrival (§15.5) | Step 3 |
+
+**Also settle the order that is already open.** JLCPCB flagged L1's footprint on order
+`SMT026071660032_Y5`; the fix is in (commit `63ddffb`, §14.6 / closed items) but **whether that
+order is still parked awaiting a reply or was cancelled is not recorded here.** If it is still
+open, upload the revised files *against it* — you keep the queue position and the engineering-review
+thread. That flag was a genuine catch (~40 % too little solder area on the highest-current part), so
+when production review comes back with questions, answer them rather than clicking through.
+
+### 15.1 The two parts JLCPCB cannot supply
+
+**Sensor — `NOIP1SN1300A-QTI`.** The `-QDI` originally specified is discontinued; `-QTI` is the same
+sensor with a peel-off foil (§4, §12). This is the only genuinely time-critical item in the project.
+
+**Socket — Andon `680-48-SM-G10-R14`.** Ordering it requires settling open item 2 first: the **`-1`**
+variant's index pins protrude **~1.66 mm against a 1.6 mm board**. The footprint carries both Ø1.6 mm
+holes so either fits, but `-1` stands proud. **Default to `-0`** unless you specifically want the
+rotation keying — the fix for `-1` is a thicker board, which changes the stack height against the
+Pt / Hd / Ft+. **Buy two:** it is a 48-pad hand-soldered part and you may want a second attempt.
+
+### 15.2 PCB fabrication
+
+Upload `production/LauPythonCamera_Pt_Stack_gerbers.zip` — verified complete: 11 gerbers, both
+`.drl` files, both drill maps.
+
+| Field | Value | Why this value |
+|---|---|---|
+| Dimensions | **55 × 45 mm** | from `Edge.Cuts` |
+| Layers | **4** | both inner layers are solid GND (§11.2.1) — this is deliberate, not spare capacity |
+| Thickness | **1.6 mm** | fixed by the stack, and by the socket index-pin question in §15.1 |
+| Stackup | **`JLC04161H-7628`** | the 100 Ω geometry (W 0.24 / S 0.20) was solved for *this* stackup |
+| **Impedance control** | **YES** | §11.3 is an IPC-2141 ±10 % approximation. Ticking this is what makes the fab verify it against their real process. **Do not skip to save money.** |
+| Surface finish | **ENIG** | three 0.4 mm-pitch DF40s and a 48-pad socket. HASL's co-planarity is the enemy of both |
+| Quantity | 5 (typical minimum) | order spare **bare** boards — they are the cheap half |
+
+**Manufacturability: entirely standard process, no advanced-option fees.**
+
+| Measured | Value |
+|---|---|
+| Minimum copper track | **0.15 mm** — the DF40 fanout neck-down (and it is 0.15 for a derived reason; see the DRU) |
+| Via geometry | 0.5/0.3, 0.6/0.3, 0.8/0.4 mm — 97 vias |
+| Smallest PTH drill | **0.3 mm** |
+| NPTH | **1.6 mm** only — the socket index holes |
+
+### 15.3 Assembly — 68 placements, and both sides
+
+**64 top, 4 bottom.** The bottom four are `J1`, `J2`, `J3` and `R2`: the DF40s face *down* into the
+stack, so **double-sided assembly is unavoidable.** That drives cost and which assembly tier the
+board is eligible for. (Moving `R2` to the top per §14.3 fixes a *topology* concern — it does not
+save you a side.)
+
+Three things to get right, in decreasing order of how much they will cost you:
+
+1. **`U1` must be marked DO NOT PLACE.** It is the only BOM line with **no LCSC part number**, and it
+   is doubly unsuppliable: the footprint is the Andon *socket* land pattern while the Comment names
+   the *sensor*. You solder the socket yourself, then drop the sensor in (§10 — and read the
+   not-mechanically-keyed warning before you do).
+2. **Check LCSC stock before committing** — above all `C294544` (DF40C-80DP, **×2 per board**) and
+   `C424645` (DF40C-50DP). **No substitutions on the DF40s**: they are what mates with the Pt V2.
+   Several parts are LCSC *Extended*, each carrying a feeder fee — that is a cost driver, not a
+   blocker, and §6.5 already avoided one Extended part (649 kΩ) for exactly this reason.
+3. **Check every rotation in the placement preview.** Rotation errors on SOT-23-5 / SOT-563 are the
+   most common assembly failure mode, and this board has five: `U2`/`U4`/`U5` (LDOs, SOT-23-5),
+   `U3` (boost, SOT-563), `U6`/`U7` (supervisors, SOT-23). The CPL exports with **negative Y** —
+   that is the expected convention, not a bug.
+
+### 15.4 BOM ↔ CPL consistency — checked
+
+68 designators in the BOM, 68 rows in the CPL, **no designator in one and missing from the other**.
+The only BOM line without an LCSC part number is `U1`, per §15.3.
+
+### 15.5 The day the boards arrive — before anything touches the Pt
+
+**Meter the power tree with no FPGA involved.** `vdd_18` must come up **before** `vdd_33`, and
+`vdd_pix` must sit in **3.25–3.35 V**. This section was rebuilt from scratch after an audit found it
+architecturally wrong (§6.5) and **has only ever been validated in SPICE** — it has never existed as
+copper. There are also no test points anywhere (§14.3), so plan your probe targets before power-up.
+
+Then: the 30-second pass-through check (`CAMERA_IO_MAP.md` §7), then the chip-ID read — milestone 5
+in `CAMERA_RTL_PLAN.md`, which proves the power tree, the DF40 pin map, the stack pass-through and
+the RTL in one transaction.
+
+### 15.6 Regenerating `production/` after any layout change
+
+The files in `production/` are only valid for the `.kicad_pcb` they were exported from.
+
+> 🔴 **They are STALE as of 2026-07-28.** The board gained 10 vias, widened `+3V3_SYS` copper, moved
+> three silk fields and had its zones refilled (§14.1 items 2–3). **Regenerate before ordering** —
+> gerbers, drill, CPL — and re-run DRC (§14.7). The BOM changes too once Tier 1 item 1 adds the
+> decoupling caps, so the natural order is: finish job 1 → refill → DRC → export everything at once.
+
+**Refilling zones no longer needs the GUI:**
+
+```powershell
+& "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe" pcb drc --refill-zones --save-board `
+    --format json --severity-all --units mm -o drc.json LauPythonCamera_Pt_Stack.kicad_pcb
+```
+
+**This matters more than it sounds.** Widening a track without refilling makes DRC compare new copper
+against the *old* fill and report **0.000 mm zone-clearance errors that are not real** — 15 of them
+appeared mid-edit and all 15 vanished on refill. If you ever see a wall of zone-clearance errors,
+refill before believing a single one.
+
+---
+
 ## Open items
 
 | # | Item | Blocks | Owner |
 |---|---|---|---|
-| **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. | Nothing — do it now | **You** |
-| 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. | Item 1 | Andon (one email), or default to `-0` |
+| **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. **How: §15.1.** | Nothing — do it now | **You** |
+| 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. **Default to `-0`** (§15.1) — the fix for `-1` is a thicker board, which changes the stack height. | Item 1 | Andon (one email), or default to `-0` |
 | ~~3~~ | ✅ **CLOSED.** Superseded by the boost + 3-LDO + 2-supervisor tree (§6.5). There is no load switch and no ferrite: `U3` = `TPS61023DRLR`, `U4`/`U5` = `TPS7A2033PDBVR`, `U2` = `TPS7A2018PDBVR`, `U6`/`U7` = `TLV803SDBZT`. **Every part is a JLCPCB part number in `production/LauPythonCamera_Pt_Stack_bom.csv`** — the BOM is orderable. | — | — |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
 | ~~5~~ | ✅ **CLOSED.** The area-scoped exceptions exist in `LauPythonCamera_Pt_Stack.kicad_dru` — rules *"DF40 land pattern — 0.4mm pitch, intra-connector only"* and *"TPS61023 SOT-563 land pattern"*. They relax clearance **only between pads of the same component**; the global minimum and the LVDS rules are untouched. | — | — |
@@ -1544,7 +1691,8 @@ open. A clean DRC and an unbuildable power delivery are perfectly compatible.
 | 9 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
 | 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
 
-| **11** | **🔴 Apply the §14 Tier 1 layout fixes.** Three items, all invisible to DRC: local decoupling for U1 pins 19/22/26/29/36; GND stitching around U3 and C31–C34; widen the `+3V3_SYS` entry and multiply its via. Regenerate `production/` afterwards. **The DRC half of this item is done (§14.7): 0 errors, 0 unconnected, and the two predicted violations (§14.2.3, §14.2.4) were false — withdrawn, do not act on them.** | Fab | **You** |
+| **11** | **🔴 Finish the §14 Tier 1 fixes — two of three are done.** ✅ GND stitching (8 vias) and ✅ the `+3V3_SYS` widening + 3 parallel vias were applied 2026-07-28, board re-verified **0 errors / 0 unconnected**. ⬜ **Left: (a) local decoupling for U1 pins 19/22/26/29/36 — schematic + placement, on B.Cu since §14.1's east strip is off-board; (b) fan the eight J3 power pins.** Both worked out in **[`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md)**. **`production/` is now stale — regenerate (§15.6).** **The DRC half of this item is done (§14.7): 0 errors, 0 unconnected, and the two predicted violations (§14.2.3, §14.2.4) were false — withdrawn, do not act on them.** | Fab | **You** |
+| 13 | **What is the state of JLCPCB order `SMT026071660032_Y5`?** Still parked awaiting a reply to the L1 package-mismatch flag, or cancelled? Decides whether the next order revises it (keeping queue position + the review thread) or starts fresh. Not recorded anywhere in this repo — see §15.0. | Ordering | **You** |
 | 12 | **Nudge the silk refdes off the pads** — §14.7 lists them; `U1`'s own designator over socket pads 25–29/36/37 is the one that matters, because U1 is socketed. Cosmetic elsewhere (fabs auto-clip). | Nothing | At layout, with item 11 |
 
 **Closed:** socket land pattern (§12) · bank-13 pin map (§5.1) · P/N polarity (§13.1) ·
