@@ -1195,7 +1195,7 @@ Be clear about the boundary. Vivado has validated the **FPGA side**. It knows no
 | Sensor pin 1 / orientation | Read directly off the datasheet package drawings, twice, independently (§12) |
 | The schematic | Programmatic net check (31 nets, no orphans) + compared against a **fabbed** board (§6.7) |
 | Impedance geometry | IPC-2141 closed-form, ±10%. **Confirm with KiCad's stackup calculator and tick "impedance controlled" when ordering** (§11.3) |
-| Layout | Routed and statically reviewed (§14). **KiCad DRC has NOT been run** — see §14.0 |
+| Layout | Routed, statically reviewed (§14), and **DRC-clean: 0 errors, 0 unconnected** (§14.7) |
 
 ---
 
@@ -1210,6 +1210,12 @@ Three independent passes: LVDS routing geometry, power/decoupling, placement/mec
 KiCad was not installed on the machine that produced it, so `kicad-cli pcb drc` was never
 executed. Items 14.2.3 and 14.2.4 below are *predicted* DRC violations and must be confirmed
 in KiCad before anyone acts on them. Nothing here supersedes an actual DRC pass.
+
+> **DRC has since been run — see §14.7 (2026-07-28, KiCad 10.0.3).** It found **neither** of
+> those two predicted violations: both were predicted against DRU values that this file does not
+> contain. **They are withdrawn — do not act on them.** Everything else in §14 stands: DRC has
+> nothing to say about decoupling distance, stitching density or single-via rails, which is why
+> the Tier 1 list survives a clean DRC run unchanged.
 
 Coordinates are **KiCad page coordinates**. Subtract (100, 60) for board-relative.
 
@@ -1300,15 +1306,26 @@ to both LDOs off `+4V5` (~150 mA through one 0.3 mm drill). DC current density i
 0.4 mm via handles ~1 A — so this is single-point-of-failure and AC impedance, not heating.
 Double both up.
 
-**3. 1.84 mm of fully uncoupled run on CLKOUT, D1, D3 — exceeds the 1.5 mm DRU limit.**
-These three drop straight down from the U1 pads at 1.016 mm pitch (gap 0.776 mm) and only
-converge at the via. Zdiff rises to ~126 Ω over that stretch. D0, D2 and SYNC already do this
-correctly, converging to 0.44 mm pitch within ~1.06 mm of the pad — **apply the same fanout to
-the other three and the violation disappears.**
+**~~3. 1.84 mm of fully uncoupled run on CLKOUT, D1, D3 — exceeds the 1.5 mm DRU limit.~~**
+❌ **WITHDRAWN — the premise was false.** The `.kicad_dru` limit is **5.5 mm**, not 1.5 mm. The
+1.5 mm figure was inherited from the MIPI board, found to be geometrically unachievable here, and
+replaced *with a written derivation* long before this review — which read the old number. DRC
+2026-07-28 reports **zero** uncoupled violations on any data pair. 1.84 mm against a 5.5 mm budget
+is not a violation, it is 33 % of it. The underlying advice (converge to 0.44 mm as fast as the
+pads allow, as D0/D2/SYNC do) is still good practice and is written into the DRU comment — but
+there is nothing to fix.
 
-**4. Via barrel gap 0.18 mm on D0, D2, SYNC vs `diff_pair_via_gap` 0.25 mm.** 0.680 mm via
-spacing with 0.5 mm pads. Predicted DRC violation, and tight for a 0.5 mm via at JLC. Open to
-0.75 mm spacing.
+**~~4. Via barrel gap 0.18 mm on D0, D2, SYNC vs `diff_pair_via_gap` 0.25 mm.~~**
+❌ **WITHDRAWN — the rule does not exist.** There is no `diff_pair_via_gap` constraint anywhere in
+`LauPythonCamera_Pt_Stack.kicad_dru`; the only via constraint is `CamLVDS via size` (hole ≥ 0.3 mm,
+diameter ≥ 0.5 mm), which passes. The 0.25 mm value was carried over from a different board's rule
+set. **Do not open the via spacing to 0.75 mm** — that would lengthen the splay on every pair and,
+per §14.7, splay is what the *real* budget on this board is spent on.
+
+> **The lesson, since it cost a review cycle:** §14 was written from the s-expressions with the
+> DRU read as documentation rather than as rules. Both false positives are the same error — a
+> limit quoted from memory of the MIPI board instead of from the file in this directory. **Static
+> analysis can find geometry; only DRC knows the rules.**
 
 **5. Boost input loop is long and thin.** `C31 → L1.1` is **19.08 mm**, 10.5 mm of it at 0.2 mm
 width, with C31 at (103.5, 73.95) on the far side of U3 from L1 at (112.28, 76.15). The input
@@ -1338,7 +1355,7 @@ L1/VIN node and connect at 0.5 mm.
 - **Zones `poly8` (81 mm²), `poly4` (48 mm²) and B.Cu `poly1` (39 mm²)** are each large flaps of
   copper on a single tie. Add 2–3 stitches to each.
 
-### 14.4 The DRU skew rule is too tight to be useful
+### 14.4 The DRU skew rule is too tight to be useful — ✅ FIXED 2026-07-28
 
 At 600 Mbps the UI is 1667 ps and tpd is ~5.4 ps/mm, so a strict 2 %-UI intra-pair budget is
 **~6 mm** of length mismatch. The `.kicad_dru` value of **0.08 mm is 0.43 ps — 0.03 % of a UI.**
@@ -1350,6 +1367,11 @@ for a **0.74 ps** difference that cannot matter.
 **Recommendation: relax the seven skew rules to ~1 mm** so that real violations are not lost in
 noise. The rules were inherited from the MIPI board; the reasoning in §11.4 for constraining
 intra-pair and not inter-lane remains correct — only the numeric value is miscalibrated.
+
+✅ **Applied.** All seven are now `(max 1.0mm)` = 5.4 ps = **0.39 % of a 720 Mbps UI** — still 5×
+inside a 2 %-UI budget, but coarse enough to catch what the rule is actually for: a forgotten
+length-match detour or a mis-picked pad, both millimetre-scale. The derivation is written into the
+`.kicad_dru` above the rules so the next reader cannot mistake it for an arbitrary loosening.
 
 ### 14.5 Verified correct — do not "fix" these
 
@@ -1432,6 +1454,79 @@ precise failure §6.5 warns about.
 *(The single `"C25"` string remaining in the schematic is unrelated: it is a **pin name** on the
 DF40C-50DP symbol, whose 50 pins are named `C1`–`C50`. There is no component instance `C25`.)*
 
+### 14.7 DRC — actually run, 2026-07-28
+
+`kicad-cli pcb drc` (KiCad **10.0.3**), custom rules loaded, run against
+`LauPythonCamera_Pt_Stack.kicad_pcb` unmodified. This is the run §14.0 said was missing.
+
+```
+before DRU fixes:   4 errors   75 warnings   0 unconnected   110 parity
+after  DRU fixes:   0 errors   75 warnings   0 unconnected   110 parity
+```
+
+**All four errors were on one net pair — `CAM_LVDSCLK`, at the sensor right-edge fanout — and all
+four were rule-calibration, not copper.** No track moved. Reproduce with:
+
+```powershell
+& "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe" pcb drc --format json --severity-all `
+    --schematic-parity --units mm -o drc.json LauPythonCamera_Pt_Stack.kicad_pcb
+```
+
+#### What the four were, and what was done
+
+| Reported | Rule said | Actual | Verdict |
+|---|---|---|---|
+| `diff_pair_gap` ×2 | max 0.24 mm | 0.285 mm | **Exception scope stopped 0.3 mm short** — fixed in DRU |
+| `skew` | max 0.08 mm | 0.137 mm | **Rule was 60× too tight** (0.74 ps) — fixed in DRU, §14.4 |
+| `diff_pair_uncoupled` | max 9.0 mm | 10.97 mm | **Artefact of the gap error** — see below |
+
+**1. The gap exception ended at the courtyard, and this pair escapes past it.** U1's courtyard is
+±11.426 mm about (136, 82), so *"Sensor socket fanout — 1.016 mm pad pitch forces the pair apart"*
+quits at x = 147.426. Every other pair escapes west or south, fully inside. `lvds_clock_in` is the
+one pair leaving the **right** edge, and its two escape segments —
+`_N` (147.7, 83.524)→(147.7, 85.0) and `_P` (148.225, 84.580)→(148.225, 82.508) — run parallel on a
+0.525 mm pitch at x = 147.7 and 148.225, i.e. **0.27 and 0.80 mm past where the exception stops.**
+It is the same geometrically-forced splay that rule already excuses.
+
+Fixed with a **layer-scoped** sibling rule (F.Cu only). That scope is safe for a checkable reason,
+verified segment-by-segment: on this pair F.Cu carries *only* escape copper — 4.53 mm on P, 2.68 mm
+on N — and **the entire 100 Ω controlled length is on B.Cu**, exactly as the DRU's routing note
+requires. A layer-scoped relaxation therefore cannot reach the impedance-controlled run — the
+guarantee a hand-drawn rule area could never give. (The DRU carries a `!! RE-SCOPE THIS !!` warning
+if any `lvds_clock_in` copper is ever moved onto F.Cu.)
+
+**2. The uncoupled "violation" was the gap error being billed twice — the 9.0 mm limit was right
+all along.** KiCad counts any segment whose gap exceeds the applicable `diff_pair_gap` as
+*uncoupled*, so the 3.5 mm of 0.285 mm-gap escape was charged to the uncoupled budget **as well as**
+raising its own gap error: one routing feature, two errors, and an uncoupled figure 2.8 mm above the
+truth. Fixing the gap scope dropped it to **8.7148 mm** with no copper moved — against the DRU's
+hand-computed 8.16 mm estimate, which was 0.55 mm light, not wrong. **The limit was not raised.**
+Margin is now 0.29 mm, which is thin: any added detour on this pair will breach it, and that is the
+rule working. *If this number ever jumps again, look for a new gap violation before touching the
+limit.*
+
+#### The 75 warnings are all silkscreen, and ~40 sit on pads
+
+43 `silk_over_copper` + 32 `silk_overlap`. Confirms §14.3's "silk refdes were never nudged off
+pads" — and names them: `U1`'s own designator plus socket pads **25–29, 36, 37**, both pads of
+C3/C4/C6–C18/C27/C37, and `U5.4` / `U7.3`. Fabs auto-clip silk off mask openings so the practical
+result is fragmented designators, not solder defects. **But U1 is a *socketed* part** — the one
+place on this board where joint quality is load-bearing — so nudging the U1-area refdes is cheap
+insurance. Not a fab blocker.
+
+#### Schematic parity: 110 issues, all benign
+
+Every one is *"No corresponding pin found in schematic"* on an `unconnected-(…)` pad: unused DF40
+pins on J1/J2/J3, plus the NC pin 4 of U2/U4/U5. **Zero net conflicts on any real net** — which is
+the check that would have mattered, and it is the strongest evidence yet that the board's netlist
+and the schematic agree.
+
+#### What DRC does *not* clear
+
+**0 errors ≠ ready to fab.** DRC cannot see decoupling *distance*, stitching *density*, or a rail
+fed through a single via — the three Tier 1 items in §14.1 are all invisible to it and all still
+open. A clean DRC and an unbuildable power delivery are perfectly compatible.
+
 ---
 
 ## Open items
@@ -1449,12 +1544,15 @@ DF40C-50DP symbol, whose 50 pins are named `C1`–`C50`. There is no component i
 | 9 | Pt V2's onboard USB2 FIFO signals (`USB_RD`/`USB_WR`/`USB_SIWU`) sit in **bank 13**; setting it to 2.5 V changes their drive level. Appears safe and deliberate, but undocumented. | Nothing (we use the Ft+ for bulk data) | Confirm with Alchitry if the onboard FIFO is ever used |
 | 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
 
-| **11** | **🔴 Apply the §14 Tier 1 layout fixes on a machine with KiCad, then run `kicad-cli pcb drc`.** Three items: local decoupling for U1 pins 19/22/26/29/36; GND stitching around U3 and C31–C34; widen the `+3V3_SYS` entry and multiply its via. §14 was produced by static geometric analysis **with no DRC run** — confirm the predicted violations (§14.2.3, §14.2.4) in KiCad before acting. Regenerate `production/` afterwards. | Fab | **You / a KiCad PC** |
+| **11** | **🔴 Apply the §14 Tier 1 layout fixes.** Three items, all invisible to DRC: local decoupling for U1 pins 19/22/26/29/36; GND stitching around U3 and C31–C34; widen the `+3V3_SYS` entry and multiply its via. Regenerate `production/` afterwards. **The DRC half of this item is done (§14.7): 0 errors, 0 unconnected, and the two predicted violations (§14.2.3, §14.2.4) were false — withdrawn, do not act on them.** | Fab | **You** |
+| 12 | **Nudge the silk refdes off the pads** — §14.7 lists them; `U1`'s own designator over socket pads 25–29/36/37 is the one that matters, because U1 is socketed. Cosmetic elsewhere (fabs auto-clip). | Nothing | At layout, with item 11 |
 
 **Closed:** socket land pattern (§12) · bank-13 pin map (§5.1) · P/N polarity (§13.1) ·
 stack compatibility (§13.2) · regulators + sequencing (§6.5) · DF40 connectors (§6.6) ·
 power part numbers (old item 3) · fine-pitch DRC exceptions (old item 5) ·
-power-section documentation drift (§14.6)
+power-section documentation drift (§14.6) · **DRC run and clean, DRU miscalibrations fixed (§14.7)** ·
+**L1 SMNR4020 land pattern — the JLCPCB package-mismatch flag on order `SMT026071660032_Y5`
+(commit `63ddffb`; F/G/H misread, not a wrong part)**
 
 ---
 

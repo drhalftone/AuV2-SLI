@@ -112,6 +112,23 @@
 #     THE SIX DATA PAIRS ARE STILL HELD TO 5.5 mm by the rule above. Do NOT
 #     "simplify" this by raising the netclass limit -- that is exactly the silent
 #     global loosening this scoped rule exists to avoid.
+#
+#     MEASURED BY DRC 2026-07-28 (KiCad 10.0.3): 8.7148 mm against this 9.0 mm.
+#     The 8.16 mm above was a hand computation and it was very nearly right --
+#     0.55 mm light, not wrong. THE NUMBER TO KEEP IS 9.0: it was calibrated
+#     correctly and does not need loosening.
+#
+#     BEWARE ONE ARTEFACT, because it wasted a review cycle: before the F.Cu
+#     gap rule below existed, DRC reported this same net at 10.97 mm. Nothing
+#     had moved. KiCad counts any segment whose gap exceeds the applicable
+#     diff_pair_gap as UNCOUPLED, so the 3.5 mm of 0.285 mm-gap escape was being
+#     billed here as well as raising its own gap error -- ONE routing feature,
+#     TWO errors, and an uncoupled figure 2.8 mm above the truth. Fixing the gap
+#     scope dropped this to 8.71 mm on its own. If this number ever jumps again,
+#     check for a NEW GAP VIOLATION before you touch this limit.
+#
+#     Margin is 0.29 mm -- thin. Any added detour on this pair will breach it,
+#     and that is the rule working, not the rule being wrong.
 (rule "lvds_clock_in uncoupled - the sensor right-edge fanout is geometrically forced"
 	(condition "A.NetName == 'CAM_LVDSCLK_P' || A.NetName == 'CAM_LVDSCLK_N'")
 	(constraint diff_pair_uncoupled (max 9.0mm)))
@@ -125,37 +142,89 @@
 	(condition "A.NetClass == 'CamLVDS' && A.intersectsCourtyard('U1')")
 	(constraint diff_pair_gap (min 0.15mm) (max 1.10mm)))
 
+# --- THE RULE ABOVE STOPS 0.3 mm TOO SOON, and only for lvds_clock_in.
+#
+#     U1's courtyard is +/-11.426 mm about (136, 82), so it ends at x = 147.426.
+#     Every other pair escapes WEST or SOUTH and is fully inside it. lvds_clock_in
+#     is the one pair that leaves the sensor's RIGHT edge, and its escape runs
+#     OUTSIDE that boundary:
+#
+#       CAM_LVDSCLK_N  F.Cu  (147.7,   83.524) -> (147.7,   85.0)   1.476 mm
+#       CAM_LVDSCLK_P  F.Cu  (148.225, 84.580) -> (148.225, 82.508) 2.072 mm
+#
+#     Those two run parallel on a 0.525 mm centre pitch -- 0.285 mm edge gap
+#     against the netclass 0.24 mm max. It is the SAME forced splay the courtyard
+#     rule already excuses (0.44 mm-pitch pair -> two 0.5 mm vias that cannot sit
+#     0.44 mm apart), measured 0.27 and 0.80 mm past where that rule quits.
+#
+#     SCOPED BY LAYER, AND HERE IS WHY THAT IS SAFE: on this pair, F.Cu carries
+#     ONLY escape copper -- 4.53 mm on P (pad run + drop + via stub) and 2.68 mm
+#     on N -- and the 100 ohm controlled length is 100 % B.Cu, per the ROUTING
+#     note at the top of this file. Verified segment-by-segment against the
+#     routed board 2026-07-28. A layer-scoped relaxation therefore CANNOT reach
+#     the impedance-controlled run, which is exactly the property a hand-drawn
+#     rule area could not guarantee.
+#
+#     !! IF ANY lvds_clock_in COPPER IS EVER MOVED ONTO F.Cu, RE-SCOPE THIS. !!
+#     The safety argument is the layer split, not the rule text.
+(rule "LVDSCLK right-edge fanout - gap, F.Cu escape only"
+	(condition "A.NetName == 'CAM_LVDSCLK_P' || A.NetName == 'CAM_LVDSCLK_N'")
+	(layer F.Cu)
+	(constraint diff_pair_gap (min 0.15mm) (max 1.10mm)))
+
 # --- Intra-pair (P vs N) skew, PER PAIR. Inter-lane matching is intentionally
 #     NOT constrained: the PYTHON LVDS link is source-synchronous and sends
 #     training patterns, so the FPGA's ISERDES bitslips each lane independently.
-#     Match P to N; do not waste effort matching lane to lane. ---
+#     Match P to N; do not waste effort matching lane to lane.
+#
+#     THE LIMIT IS 1 mm, AND IT WAS 0.08 mm. That 0.08 mm was inherited verbatim
+#     from LauMipiCamera_Alchitry_Stack along with the rest of this file, and it
+#     is not a skew budget -- it is a rounding error with a unit on it:
+#
+#       tpd on this stackup     ~5.4 ps/mm  (microstrip, Er_eff ~2.9)
+#       0.08 mm                 = 0.43 ps
+#       data-lane UI @720 Mbps  = 1389 ps   -> 0.08 mm is 0.03 % of a UI
+#       a real 2 %-UI budget    = 27.8 ps   = ~5.1 mm
+#
+#     So the old rule sat ~60x tighter than any budget anyone would defend, and
+#     the one thing it flagged on the routed board was CAM_LVDSCLK's 0.137 mm --
+#     a 0.74 ps difference, reported as an ERROR next to violations that matter.
+#     A rule that only ever cries wolf gets the whole file ignored.
+#
+#     1 mm = 5.4 ps = 0.39 % of a UI: still 5x INSIDE the 2 %-UI budget, so it
+#     concedes nothing real, while remaining tight enough to catch the failure
+#     this rule exists for -- a forgotten length-match detour or a mis-picked
+#     pad, both of which are millimetre-scale, not micron-scale.
+#
+#     Do not "restore" 0.08 mm. If you want these tighter, tighten them to a
+#     number derived from the UI, and write the derivation here. ---
 (rule "CamLVDS skew - LVDSCLK pair (FPGA -> sensor)"
 	(condition "A.NetName == 'CAM_LVDSCLK_P' || A.NetName == 'CAM_LVDSCLK_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 (rule "CamLVDS skew - CLKOUT pair (sensor -> FPGA)"
 	(condition "A.NetName == 'CAM_CLKOUT_P' || A.NetName == 'CAM_CLKOUT_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 (rule "CamLVDS skew - D0 pair"
 	(condition "A.NetName == 'CAM_D0_P' || A.NetName == 'CAM_D0_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 (rule "CamLVDS skew - D1 pair"
 	(condition "A.NetName == 'CAM_D1_P' || A.NetName == 'CAM_D1_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 (rule "CamLVDS skew - D2 pair"
 	(condition "A.NetName == 'CAM_D2_P' || A.NetName == 'CAM_D2_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 (rule "CamLVDS skew - D3 pair"
 	(condition "A.NetName == 'CAM_D3_P' || A.NetName == 'CAM_D3_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 (rule "CamLVDS skew - SYNC pair"
 	(condition "A.NetName == 'CAM_SYNC_P' || A.NetName == 'CAM_SYNC_N'")
-	(constraint skew (max 0.08mm)))
+	(constraint skew (max 1.0mm)))
 
 # --- Extra clearance from the LVDS pairs to all other nets.
 #     Held at 0.25mm rather than a true 3W (0.72mm) because the DF40 is a
