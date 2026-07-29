@@ -1,0 +1,4 @@
+# FT601 SLI video grabber
+ftd3xx>=1.0        # FTDI D3XX Python wrapper (needs the D3XX driver installed)
+numpy>=1.20        # frame reshape (GUI + --bench)
+PySide6>=6.4       # GUI only; not needed for --bench / --raw
