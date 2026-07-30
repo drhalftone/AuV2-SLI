@@ -139,15 +139,27 @@ complete; **step 5, the bench test, is all that remains** — and it needs the p
 These are what you need to **stream** for SLI, not what you need to get the sensor **working**. They
 come after #12.
 
-- **The FT601 / Ft+ USB3 datapath — it does not exist in the RTL at all.** Nothing in
-  `sources_1/imports/RTL/` speaks FT601; the `0xA5` control plane is a **115200-baud UART**. The
-  245.8 MB/s bandwidth budget in the board README is a budget against hardware that is not yet
-  implemented. This is its own subproject.
-- **10-bit packing.** At the sensor's full 210 fps, packed 10-bit is ~344 MB/s — essentially *at* the
-  Ft+'s measured 350 MB/s. The naive thing (10 bits sitting in a 16-bit word) is **393 MB/s and
-  busts the ceiling**, so the packer is load-bearing, not an optimisation. **← but see the burst-capture
-  spec below: in grab-to-DDR mode the packer is NOT needed, because you never stream at the sensor's
-  instantaneous rate.**
+- ~~**The FT601 / Ft+ USB3 datapath — it does not exist in the RTL at all.**~~
+  **UPDATE 2026-07-30: it exists and works** — see [`ft_usb_video/`](ft_usb_video/)
+  (FT601 245-sync-FIFO write master + packed-10-bit source, byte-exact verified on a
+  Pt V2 + Ft+). Still true: nothing in `sources_1/imports/RTL/` speaks FT601, the `0xA5`
+  control plane is a **115200-baud UART**, and `ft_usb_video/` is a **separate build** that
+  has not been merged with the camera design. Integrating the two is its own task.
+- **10-bit packing — the measured link is tighter than this plan assumed.** The Ft+ was
+  credited here with "measured 350 MB/s"; it had never actually been measured. It is
+  **308 MB/s** (77 % of the 400 MB/s theoretical), confirmed 2026-07-30 with a byte-exact
+  check. That changes the conclusion:
+
+  | at 1280×1024 | bytes/frame | rate needed @210 fps | fits in 308 MB/s? |
+  |---|---|---|---|
+  | packed 10-bit | 1,638,400 | 344 MB/s | **no** — caps at **188 fps** |
+  | 10-in-16 (naive) | 2,621,440 | 550 MB/s | no — caps at 118 fps |
+
+  So the packer is still **load-bearing, not an optimisation** — it nearly doubles the
+  achievable rate — but packing alone no longer buys continuous streaming at the sensor's
+  full 210 fps; it is ~12 % short. **← reinforces the burst-capture spec below: in
+  grab-to-DDR mode you never stream at the sensor's instantaneous rate, so the shortfall
+  does not bite.** Packed 10-bit *does* clear 150 fps continuous with margin.
 - **Locking exposure to the projected pattern.** Drive `trigger[0]` from the outgoing HDMI frame
   timing so each exposure is locked to a projected pattern. This is the entire reason the FPGA sits
   inline on HDMI. **← now specified concretely below (the trigger generator, task #18).**
@@ -176,9 +188,9 @@ rate; drain empties it at the USB ceiling. The two phases are sequential ("grab,
 | **32 frames in DDR** | **80 MiB** | **~31 % of the 256 MB DDR** — room to spare (DDR holds ~102 such frames) |
 | Capture window | 32 / 120 Hz = **0.267 s** | one exposure per HDMI frame at 120 Hz |
 | DDR **write** rate (capture) | 1.31 Mpx × 120 × 2 B = **314.6 MB/s** | trivial vs DDR's ~1.6 GB/s (≈20 %) |
-| DDR **read** rate (drain) | Ft+ limited = **~350 MB/s** | "as fast as possible" = USB-bound |
-| Drain time | 80 MiB / 350 MB/s = **0.24 s** | |
-| **Full grab-then-stream cycle** | **~0.5 s** + arm/handshake | |
+| DDR **read** rate (drain) | Ft+ limited = **308 MB/s** | *measured* 2026-07-30 (was assumed 350) — "as fast as possible" = USB-bound |
+| Drain time | 80 MiB / 308 MB/s = **0.27 s** | |
+| **Full grab-then-stream cycle** | **~0.55 s** + arm/handshake | |
 
 ### Why 16-bit unpacked is the *right* call here (not a compromise)
 

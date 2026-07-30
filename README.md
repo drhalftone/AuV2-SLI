@@ -429,6 +429,7 @@ The newer board folders:
 ├── sources_1/                       # HDL sources (sources_1/imports/RTL)
 ├── constrs_1/                       # Xilinx design constraints (XDC)
 ├── sim/                             # testbenches (xsim) — tb_mode_select.v covers the EDID mode pick
+├── ft_usb_video/                    # FT601 USB-3 streaming over the Ft+ — WORKING, byte-exact verified
 ├── build_scripts/                   # historical project-mode build scripts (superseded by build.tcl)
 ├── Matlab/                          # .m scripts + LUT outputs (legacy pattern generation)
 ├── AlchitryFlasher/                 # one-click Windows flasher (GUI + docs)

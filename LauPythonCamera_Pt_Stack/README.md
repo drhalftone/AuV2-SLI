@@ -69,7 +69,7 @@ and camera capture run **simultaneously**. That constraint drives the entire pin
           Alchitry Pt V2            XC7A100T-2FGG484I, 206 IO, 256 MB DDR3L
  ────────────────────────────────
    [ Sp ]    spacer — clears the Pt's bottom-side capacitors        $14.99
-   [ Ft+ ]   bottom  A3-A42 + B3-B24   (3.3 V)   FT601Q USB3, 350 MB/s measured
+   [ Ft+ ]   bottom  A3-A42 + B3-B24   (3.3 V)   FT601Q USB3, 308 MB/s measured
    [ Sp ]    spacer — micro-HDMI / USB cable clearance              $14.99
    [ Hd  ]   bottom  A45-A78           (3.3 V)   2x micro-HDMI (PC in, projector out)
 ```
@@ -162,9 +162,15 @@ Design the rails to **PYTHON's tighter tolerances** so either part drops in.
 
 ```
 1280 x 1024 x 10 bit x 150 fps  =  245.8 MB/s
-Ft+ (FT601Q), measured           =  350   MB/s     ->  fits, ~42% headroom
-Ft  (FT600),  measured           =  190   MB/s     ->  does NOT fit
+Ft+ (FT601Q), MEASURED 2026-07-30 =  308   MB/s     ->  fits, ~25% headroom
+Ft  (FT600),  datasheet estimate  =  190   MB/s     ->  does NOT fit
 ```
+
+> The Ft+ figure was **actually measured** on 2026-07-30 (`ft_usb_video/`, byte-exact
+> verified) — this table previously claimed 350 MB/s "measured" when it never had been.
+> Headroom is real but thinner than advertised: packed 10-bit caps at **188 fps**, so
+> 150 fps fits, the sensor's full 210 fps does not. The Ft (FT600) number is still an
+> estimate — not measured here.
 
 The Ft+ is **mandatory**. The Ft cannot carry full-rate capture, and the Pt V2's onboard
 FT2232HQ is USB 2.0 (JTAG/UART only) — not a data path.

@@ -203,8 +203,10 @@ The `ratspi` table confirms it from the other side: 10-bit / 4 channels is `fin/
 (72/6 = 12 MHz) and `fin/30` with the LVDS clock (360/30 = 12 MHz) — the same SPI ceiling.
 
 > **The binding constraint is USB, not the sensor clock.** At the sensor's full 210 fps, packed
-> 10-bit is 1280 × 1024 × 210 × 1.25 B ≈ **344 MB/s** — essentially *at* the Ft+'s measured
-> 350 MB/s. So we are USB-limited well before the clocking choice matters.
+> 10-bit is 1280 × 1024 × 210 × 1.25 B ≈ **344 MB/s**. The Ft+ was long assumed to do 350 MB/s;
+> it was actually measured on 2026-07-30 at **308 MB/s** (see `ft_usb_video/`), so 344 MB/s does
+> **not** fit — continuous streaming caps at **188 fps**. We are USB-limited well before the
+> clocking choice matters, and by a wider margin than this document previously assumed.
 
 ### 4.1 `clk_pll` requirements
 
