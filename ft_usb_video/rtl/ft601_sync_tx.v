@@ -17,45 +17,126 @@
 //   * RD#   (ft_rd)   -- master output. Held HIGH: we never read.
 //   * BE    (ft_be)   -- byte-enable. All four bytes valid => 0xF on every write.
 //
-// The correctness trick: ft_wr is driven purely combinationally from ft_txe
-// (ft_wr = ~ready, ready = ~ft_txe & s_valid). Because the FT samples WR# and TXE#
-// on the SAME edge, tying them together guarantees the accept condition can never
-// disagree between the two chips -- a word is taken exactly when TXE# was low, and
-// the source is advanced by the identical term (s_adv = ready). No skid buffer,
-// no dropped/duplicated words. DATA is the source's current word, so the source
-// must present first-word-fall-through (FWFT) data: s_word is valid whenever
-// s_valid is high, and s_adv=1 means "that word was consumed, present the next."
+//------------------------------------------------------------------------------
+// WHY THE OUTPUTS ARE REGISTERED (2026-07-30 -- this was a real, measured bug)
+//------------------------------------------------------------------------------
+// The first version drove the bus combinationally: `assign ft_dout = s_word`,
+// straight from the generator's cosine ROM + phase adders to the pads. It moved
+// data at full rate and the host saw zero dropped frames -- but a byte-exact
+// check against the RTL model (host/ft_video_snap.py) showed:
 //
-// This is a pad-to-pad path (ft_txe pad -> 1 LUT -> ft_wr pad). At 100 MHz on the
-// Artix-7 it closes comfortably; the top-level XDC adds the FT601 set_input_delay
-// / set_output_delay so the tool checks it against the datasheet window.
+//     errors by byte lane (x mod 4):  {0: 0, 1: 0, 2: 11419, 3: 25120}
+//
+// ft_data[15:0] was PERFECT; ft_data[31:16] was corrupt. Those upper 16 bits are
+// the ones placed in the far bank (G4/H3/G3/P5/P4/P6/N5/M6/M5/L5/L4/K6/J6/E2/
+// D2/M3) -- a longer launch path, so they missed the FT601's ~1 ns setup window
+// while the near half made it. WR# (E3) is in that same far bank but never
+// glitched: with s_valid tied high it goes low once and stays low, so it has no
+// per-cycle edge to violate. DATA toggles every cycle, and DATA is what broke.
+//
+// Two things were wrong and both are fixed:
+//   1. The bus is now launched from IOB flip-flops (IOB="TRUE"), so clock-to-out
+//      is a fixed Tco + a short pad route instead of ROM-lookup + adder + routing.
+//   2. The top-level XDC now actually carries the set_output_delay /
+//      set_input_delay this header always claimed it did. It did NOT -- the
+//      interface was completely unconstrained, so the tool never checked, never
+//      warned, and happily shipped a bus that misses setup on half its bits.
+//
+// Registering the outputs costs one cycle of latency, which means WR# can no
+// longer be a combinational echo of TXE#. The handshake below restores exactness.
+//
+//------------------------------------------------------------------------------
+// THE REGISTERED HANDSHAKE (no word ever lost or duplicated)
+//------------------------------------------------------------------------------
+// The output register holds the word currently being PRESENTED to the FT601.
+// At each rising edge we evaluate, from the very same signals the FT601 uses at
+// that edge, whether the presented word was taken:
+//
+//     accepted = ~wr_n_q & ~ft_txe
+//
+// wr_n_q is the WR# level that was driven throughout the cycle now ending, and
+// ft_txe is TXE# at this edge -- so master and bridge decide identically and can
+// never disagree. If accepted, we latch the next source word (and pop the
+// source). If NOT accepted -- TXE# went high, USB buffer full -- we simply hold,
+// re-presenting the same word until it is taken. That hold IS the skid buffer;
+// no extra storage is needed because the FWFT source has not been popped yet.
+//
+// Data still leaves at one word per clock while TXE# stays low, so the measured
+// FPS remains a clean link-rate number.
 //==============================================================================
 module ft601_sync_tx (
     input  wire        clk,          // = ft_clk (100 MHz, from the FT601)
+    input  wire        rst,          // synchronous, active-high
 
     // ---- FT601 245-sync-FIFO bus (active-low controls) ----
     input  wire        ft_txe,       // TXE#  : low = room to write
     output wire        ft_wr,        // WR#   : low = write this cycle
     output wire        ft_oe,        // OE#   : held high (TX only)
     output wire        ft_rd,        // RD#   : held high (TX only)
-    output wire [31:0] ft_dout,      // data to the FT601 (top tristates onto the bus)
-    output wire        bus_oe,       // 1 => FPGA drives DATA/BE (top-level tristates)
+    output wire [31:0] ft_dout,      // data to the FT601 (top drives the bus)
+    output wire [3:0]  ft_beout,     // byte enables, registered alongside data
+    output wire        bus_oe,       // 1 => FPGA drives DATA/BE
 
     // ---- stream source (FWFT: s_word valid while s_valid; s_adv pops it) ----
     input  wire [31:0] s_word,
     input  wire        s_valid,
     output wire        s_adv
 );
-    // TX only: we always own the bus, never let the FT601 drive it, never read.
-    // The shared bus (DATA + BE) is tristated at the top level from bus_oe; BE is a
-    // constant 0xF (all bytes valid) so it need not come through this module.
-    assign ft_oe  = 1'b1;
-    assign ft_rd  = 1'b1;
-    assign bus_oe = 1'b1;
-    assign ft_dout = s_word;
+    // Launch everything the FT601 samples per-cycle from IOB flops. The IOB
+    // attribute is only a request, so build/run_ftvideo.tcl inspects the PLACED
+    // design and hard-fails unless all 33 (32 data + WR#) landed in OLOGIC sites.
+    (* IOB = "TRUE" *) reg [31:0] dout_q   = 32'd0;
 
-    // Accept a word this cycle iff the FT has room AND the source has data.
-    wire ready = ~ft_txe & s_valid;
-    assign ft_wr = ~ready;   // WR# low exactly when we transfer
-    assign s_adv =  ready;   // and the source advances by the same term
+    // WR# needs TWO copies of the same flop, and this is not redundancy:
+    // a register packed into an IOB drives the pad ONLY -- its Q is not visible
+    // to the fabric. `accepted` below reads WR# back, so a single flop cannot be
+    // both IOB-packed and readable. wr_n_pad feeds the pin; wr_n_int feeds the
+    // logic. Identical next-state, so they are always equal -- but the tool would
+    // happily merge them back into one (and silently un-pack the IOB), hence
+    // EQUIVALENT_REGISTER_REMOVAL = "NO" on the pair.
+    (* IOB = "TRUE", EQUIVALENT_REGISTER_REMOVAL = "NO" *) reg wr_n_pad = 1'b1;
+    (*              EQUIVALENT_REGISTER_REMOVAL = "NO"  *) reg wr_n_int = 1'b1;
+
+    reg valid_q = 1'b0;                     // dout_q holds a real word
+
+    // TX only: we always own the bus, never let the FT601 drive it, never read.
+    // OE#/RD#/BE are static levels -- they never change after reset, so they have
+    // no per-cycle edge to violate and need no IOB flop (unlike DATA, which
+    // toggles every clock and is exactly what missed setup before this rewrite).
+    assign ft_oe    = 1'b1;
+    assign ft_rd    = 1'b1;
+    assign bus_oe   = 1'b1;
+    assign ft_beout = 4'hF;                 // all four bytes always valid
+
+    // Was the word presented during the cycle now ending actually taken? Both
+    // terms are evaluated at this edge -- exactly as the FT601 evaluates them.
+    wire accepted = ~wr_n_int & ~ft_txe;
+
+    // The output register is free when its word was taken (or never held one).
+    wire load = accepted | ~valid_q;
+
+    // WR# low whenever a valid word will be presented during the next cycle.
+    wire next_valid = load ? s_valid : valid_q;
+
+    // Pop the source in the same cycle we latch its word into the output reg.
+    assign s_adv = load & s_valid;
+
+    always @(posedge clk) begin
+        if (rst) begin
+            dout_q   <= 32'd0;
+            valid_q  <= 1'b0;
+            wr_n_pad <= 1'b1;
+            wr_n_int <= 1'b1;
+        end else begin
+            if (load) begin
+                dout_q  <= s_word;
+                valid_q <= s_valid;
+            end
+            wr_n_pad <= ~next_valid;
+            wr_n_int <= ~next_valid;
+        end
+    end
+
+    assign ft_dout = dout_q;
+    assign ft_wr   = wr_n_pad;
 endmodule

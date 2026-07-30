@@ -9,6 +9,42 @@ set_property IOSTANDARD LVCMOS33 [get_ports {ft_clk}]
 create_clock -period 10.0 -name ft_clk_top -waveform {0.000 5.0} [get_ports ft_clk]
 set_clock_groups -asynchronous -group [get_clocks -include_generated_clocks ft_clk_top]
 
+# -----------------------------------------------------------------------------
+# FT601 245-sync-FIFO interface timing.  ADDED 2026-07-30.
+#
+# These were MISSING, and their absence was a real bug, not a cosmetic one: with
+# no set_output_delay the tool never timed the bus at all, reported WNS >= 0, and
+# shipped a design whose upper 16 data bits missed the FT601's setup window.
+# ft_data[15:0] arrived perfect while ft_data[31:16] (far bank) was corrupt --
+# see the byte-lane histogram in rtl/ft601_sync_tx.v. Silent, because an
+# unconstrained path is not a failing path.
+#
+# FT601Q synchronous-FIFO AC spec (FTDI FT600Q/FT601Q datasheet):
+#   master -> FT601 : setup 1.0 ns, hold 1.0 ns  (DATA/BE/WR#/RD#/OE# to CLK^)
+#   FT601  -> master: TXE#/RXF#/data valid <= 7.0 ns after CLK^, >= 1.0 ns hold
+#
+# Output: -max = the FT601's setup requirement; -min = -(its hold requirement).
+# Input : -max = the FT601's clock-to-out max; -min = its clock-to-out min.
+# Board trace delay on the Ft+ stack connector is short (a few tens of ps) and is
+# folded into the margins above rather than modelled separately.
+# -----------------------------------------------------------------------------
+set ft_out_ports [get_ports {ft_data[*] ft_be[*] ft_wr ft_oe ft_rd}]
+set_output_delay -clock ft_clk_top -max  1.0 $ft_out_ports
+set_output_delay -clock ft_clk_top -min -1.0 $ft_out_ports
+
+set ft_in_ports [get_ports {ft_txe ft_rxf}]
+set_input_delay -clock ft_clk_top -max 7.0 $ft_in_ports
+set_input_delay -clock ft_clk_top -min 1.0 $ft_in_ports
+
+# ft_data is bidirectional; this design is TX-only (OE# tied high) so the input
+# side of those pads is never sampled. Constrain it anyway so a future read path
+# cannot inherit the same silent hole.
+set_input_delay -clock ft_clk_top -max 7.0 [get_ports {ft_data[*] ft_be[*]}]
+set_input_delay -clock ft_clk_top -min 1.0 [get_ports {ft_data[*] ft_be[*]}]
+
+# ft_reset/ft_wakeup are static level controls, not bus-timed signals.
+set_false_path -to [get_ports {ft_reset ft_wakeup}]
+
 set_property PACKAGE_PIN AB22 [get_ports {ft_wakeup}]
 set_property IOSTANDARD LVCMOS33 [get_ports {ft_wakeup}]
 

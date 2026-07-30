@@ -66,6 +66,77 @@ write_cfgmem -force -format bin -interface spix4 -size 16 \
 report_utilization    -file $out/util.rpt
 report_timing_summary -file $out/timing.rpt
 
+# -----------------------------------------------------------------------------
+# FT601 bus integrity checks. Both of these guard the bug found on 2026-07-30,
+# where ft_data[31:16] was silently corrupt on the wire: the bus was driven
+# combinationally AND was completely unconstrained, so the tool reported a clean
+# WNS for a design that missed the FT601 setup window on half its data bits.
+# A green WNS means nothing if the path was never in the timing graph.
+# -----------------------------------------------------------------------------
+
+# (1) Every per-cycle-toggling signal the FT601 samples must launch from an IOB
+#     (OLOGIC) flop: the 32 data bits and WR#. BE/OE#/RD# are static levels driven
+#     from constants -- no per-cycle edge to violate -- so they are correctly
+#     absent here.
+#
+#     WR# is the subtle one. `accepted` reads it back, and an IOB flop's Q is not
+#     visible to the fabric, so ONE flop cannot serve both. Vivado resolves this
+#     itself by replicating (wr_n_pad_reg stays in a SLICE for the logic,
+#     wr_n_pad_reg_rep goes to OLOGIC and drives the pin). We therefore assert on
+#     placement, not on names: all 32 data flops must be in OLOGIC, and at least
+#     one WR# copy must be too. Counting cells by name would fail purely because
+#     the tool chose to replicate.
+set data_ffs [get_cells -hier -filter {NAME =~ *u_tx/dout_q_reg*}]
+if {[llength $data_ffs] != 32} {
+    error "expected 32 FT601 data flops, found [llength $data_ffs] -- did the RTL change?"
+}
+set stragglers {}
+foreach c $data_ffs {
+    if {![string match "OLOGIC*" [get_property LOC $c]]} {
+        lappend stragglers "[get_property NAME $c] @ [get_property LOC $c]"
+    }
+}
+set wr_iob 0
+foreach c [get_cells -hier -filter {NAME =~ *u_tx/wr_n_pad*}] {
+    if {[string match "OLOGIC*" [get_property LOC $c]]} { incr wr_iob }
+}
+puts "=== FT601 IOB packing: [expr {32 - [llength $stragglers]}]/32 data flops + \
+$wr_iob WR# copy in OLOGIC ==="
+if {[llength $stragglers] > 0 || $wr_iob < 1} {
+    puts "!!! FT601 OUTPUTS NOT IOB-PACKED -- the setup-window bug can return."
+    foreach s $stragglers { puts "      $s" }
+    if {$wr_iob < 1} { puts "      WR# has no OLOGIC copy driving the pad" }
+    error "FT601 output flops not packed into IOBs"
+}
+
+# (2) The bus must actually BE IN THE TIMING GRAPH. This is the check that would
+#     have caught the original bug: with set_output_delay missing, there are no
+#     max-delay paths to these pins at all, so the tool has nothing to fail on and
+#     happily reports a clean WNS. Zero paths here is the smoking gun, so treat
+#     "no paths" as an error rather than as "nothing to check".
+report_timing -to [get_ports {ft_data[*] ft_wr}] -delay_type max \
+              -max_paths 10 -file $out/ft_bus_timing.rpt
+set ft_paths [get_timing_paths -quiet -to [get_ports {ft_data[*] ft_wr}] \
+                               -delay_type max -max_paths 1]
+if {[llength $ft_paths] == 0} {
+    error "FT601 bus has NO max-delay timing paths -- set_output_delay is missing \
+and the interface is untimed (this is the 2026-07-30 bug)"
+}
+set ft_wns [get_property SLACK [lindex $ft_paths 0]]
+puts "=== FT601 bus setup slack (clock-to-out vs FT601 window) = $ft_wns ns ==="
+if {$ft_wns < 0} {
+    puts "!!! FT601 BUS MISSES SETUP -- expect corrupt bytes on the far-bank bits."
+    error "FT601 output timing not met ($ft_wns ns)"
+}
+
+set ft_hold [get_timing_paths -quiet -to [get_ports {ft_data[*] ft_wr}] \
+                              -delay_type min -max_paths 1]
+if {[llength $ft_hold] > 0} {
+    set ft_whs [get_property SLACK [lindex $ft_hold 0]]
+    puts "=== FT601 bus hold slack = $ft_whs ns ==="
+    if {$ft_whs < 0} { error "FT601 output hold not met ($ft_whs ns)" }
+}
+
 set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
 puts "=== TIMING: setup WNS = $wns ns ==="
 puts "==== FT601 USB-3 VIDEO BUILD DONE ===="

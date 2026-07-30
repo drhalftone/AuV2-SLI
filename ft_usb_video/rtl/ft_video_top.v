@@ -75,25 +75,32 @@ module ft_video_top (
 
     // --- FT601 245-sync-FIFO write master ---
     wire [31:0] ft_dout;
+    wire [3:0]  ft_beout;
     wire        bus_oe;
 
     ft601_sync_tx u_tx (
-        .clk     (ft_clk),
-        .ft_txe  (ft_txe),
-        .ft_wr   (ft_wr),
-        .ft_oe   (ft_oe),
-        .ft_rd   (ft_rd),
-        .ft_dout (ft_dout),
-        .bus_oe  (bus_oe),
-        .s_word  (gen_word),
-        .s_valid (gen_valid),
-        .s_adv   (gen_adv)
+        .clk      (ft_clk),
+        .rst      (rst),
+        .ft_txe   (ft_txe),
+        .ft_wr    (ft_wr),
+        .ft_oe    (ft_oe),
+        .ft_rd    (ft_rd),
+        .ft_dout  (ft_dout),
+        .ft_beout (ft_beout),
+        .bus_oe   (bus_oe),
+        .s_word   (gen_word),
+        .s_valid  (gen_valid),
+        .s_adv    (gen_adv)
     );
 
     // TX-only: the FPGA drives the shared FT601 bus (OE# is held high inside the
-    // master, so the FT601 never contends). Tristate is nominal / future-proofing.
-    assign ft_data = bus_oe ? ft_dout : 32'bz;
-    assign ft_be   = bus_oe ? 4'hF    : 4'bz;
+    // master, so the FT601 never contends). bus_oe is a constant 1, so the tool
+    // collapses the tristate to a plain OBUF -- which is what lets DATA/BE pack
+    // into IOB output flops. Do NOT make bus_oe dynamic without re-checking the
+    // IOB packing report; losing those flops reintroduces the setup-window bug
+    // documented in ft601_sync_tx.v.
+    assign ft_data = bus_oe ? ft_dout  : 32'bz;
+    assign ft_be   = bus_oe ? ft_beout : 4'bz;
 
     // -------------------------------------------------------------------------
     // Diagnostic LED panel. Deliberately split across BOTH clock domains so the
