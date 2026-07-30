@@ -34,6 +34,18 @@ HDR_BYTES = 32                  # 8 x uint32
 DEFAULT_PIPE = 0x82             # FT601 245-sync-FIFO channel-0 IN pipe
 
 
+def unpack_raw10(payload, width, height):
+    """MIPI RAW10 -> uint16 array (h, w). 4 pixels per 5 bytes: four bytes of
+    bits[9:2], then one byte holding the four [1:0] pairs with p0 in the low bits."""
+    import numpy as np
+    b = np.frombuffer(payload, dtype=np.uint8).reshape(-1, 5).astype(np.uint16)
+    lo = b[:, 4]
+    px = np.empty((b.shape[0], 4), dtype=np.uint16)
+    for k in range(4):
+        px[:, k] = (b[:, k] << 2) | ((lo >> (2 * k)) & 0x3)
+    return px.reshape(height, width)
+
+
 # --------------------------------------------------------------------------
 # D3XX device wrapper -- tolerant of the ftd3xx wrapper's version drift.
 # --------------------------------------------------------------------------
@@ -120,12 +132,23 @@ class FrameAssembler:
         self.buf = bytearray()
         self.width = 0
         self.height = 0
+        self.fmt = 0                    # 1 = 8bpp mono, 3 = packed 10-bit RAW10
         self.frame_bytes = 0            # header + pixels
         self.pix_bytes = 0
         self.locked = False
         self.last_idx = None
         self.dropped = 0
         self.frames = 0
+
+    # Bytes of packed pixel payload per frame, by format code. Format 3 is MIPI
+    # RAW10: 4 pixels per 5 bytes, i.e. exactly 10 bits/px with no padding.
+    @staticmethod
+    def payload_bytes(fmt, width, height):
+        if fmt == 1:
+            return width * height
+        if fmt == 3:
+            return width * height * 10 // 8
+        return 0
 
     def _try_header(self, off):
         """Parse the 8-word header at self.buf[off:]; set geometry. Return True if valid."""
@@ -135,10 +158,12 @@ class FrameAssembler:
         width = w[2] & 0xFFFF
         height = (w[2] >> 16) & 0xFFFF
         fmt = w[6]
-        if not (256 <= width <= 8192 and 256 <= height <= 8192) or fmt != 1:
+        if not (256 <= width <= 8192 and 256 <= height <= 8192) or fmt not in (1, 3):
             return False
-        self.width, self.height = width, height
-        self.pix_bytes = width * height
+        if fmt == 3 and width % 16:
+            return False            # RAW10 groups 16 px / 5 words; must divide
+        self.width, self.height, self.fmt = width, height, fmt
+        self.pix_bytes = self.payload_bytes(fmt, width, height)
         self.frame_bytes = HDR_BYTES + self.pix_bytes
         return True
 
@@ -192,7 +217,8 @@ class Stats:
         self.dropped = 0
         self.width = 0
         self.height = 0
-        self.frame = None       # latest pixels (bytes)
+        self.fmt = 0
+        self.frame = None       # latest pixels (bytes, still packed)
         self.running = True
 
 
@@ -214,6 +240,7 @@ def reader_loop(dev, stats, chunk, parse=True):
                         stats.frame = pixels
                         stats.width = asm.width
                         stats.height = asm.height
+                        stats.fmt = asm.fmt
                         stats.dropped = asm.dropped
             now = time.perf_counter()
             dt = now - t0
@@ -233,15 +260,17 @@ def run_headless(dev, chunk, parse):
     stats = Stats()
     th = threading.Thread(target=reader_loop, args=(dev, stats, chunk, parse), daemon=True)
     th.start()
-    hdr = "  MB/s     Gbps    FPS     res         dropped" if parse else "  MB/s     Gbps"
+    hdr = "  MB/s     Gbps    FPS     res        fmt      dropped" if parse else "  MB/s     Gbps"
     print(hdr)
     try:
         while stats.running:
             time.sleep(1.0)
             with stats.lock:
                 mbps, fps, drop, w, h = stats.mbps, stats.fps, stats.dropped, stats.width, stats.height
+                fmt = stats.fmt
             if parse:
-                print(f"  {mbps:7.1f}  {mbps*8/1000:5.2f}  {fps:6.1f}  {w}x{h}   {drop}")
+                tag = {1: "8b mono", 3: "10b RAW10"}.get(fmt, f"fmt{fmt}")
+                print(f"  {mbps:7.1f}  {mbps*8/1000:5.2f}  {fps:6.1f}  {w}x{h}  {tag:>9}   {drop}")
             else:
                 print(f"  {mbps:7.1f}  {mbps*8/1000:5.2f}")
     except KeyboardInterrupt:
@@ -276,13 +305,20 @@ def run_gui(dev, chunk):
     def tick():
         with stats.lock:
             mbps, fps, drop = stats.mbps, stats.fps, stats.dropped
-            w, h, frame = stats.width, stats.height, stats.frame
+            w, h, frame, fmt = stats.width, stats.height, stats.frame, stats.fmt
+        tag = {1: "8b mono", 3: "10b RAW10"}.get(fmt, f"fmt{fmt}")
         info.setText(
             f"{fps:6.1f} fps   {mbps:7.1f} MB/s ({mbps*8/1000:.2f} Gbps)   "
-            f"{w}x{h}   dropped: {drop}"
+            f"{w}x{h} {tag}   dropped: {drop}"
         )
-        if frame and w and h and len(frame) >= w * h:
-            arr = np.frombuffer(frame, dtype=np.uint8, count=w * h).reshape(h, w)
+        need = FrameAssembler.payload_bytes(fmt, w, h)
+        if frame and w and h and need and len(frame) >= need:
+            if fmt == 3:
+                # unpack, then >>2 to 8 bits purely for display
+                arr = (unpack_raw10(frame[:need], w, h) >> 2).astype(np.uint8)
+            else:
+                arr = np.frombuffer(frame, dtype=np.uint8, count=w * h).reshape(h, w)
+            arr = np.ascontiguousarray(arr)
             img = QtGui.QImage(arr.data, w, h, w, QtGui.QImage.Format_Grayscale8)
             pm = QtGui.QPixmap.fromImage(img).scaled(
                 view.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation

@@ -15,7 +15,22 @@
 // Port names and I/O standards come verbatim from Alchitry's own constraint files
 // (pt_base.xdc + pt_ft_plus_bottom.xdc), the same ones the stack I/O check placed.
 //==============================================================================
-module ft_video_top (
+module ft_video_top #(
+    // PIX_FMT selects the stream source. Set it at build time:
+    //   vivado -mode batch -source run_ftvideo.tcl -tclargs 1   (or 3)
+    //
+    //   1 = sli_frame_gen  -- 8-bit mono SLI cosine fringes, 4 px/word.
+    //       1,310,752 B/frame. A real *picture*; use it when you want to SEE the
+    //       link work. Costs ~800 LUTs of cosine ROM.
+    //   3 = raw10_test_gen -- packed 10-bit (MIPI RAW10), 16 px / 5 words.
+    //       1,638,432 B/frame. A pixel-index counter, so every data bit toggles
+    //       at full rate: a much harder signal-integrity test, and far cheaper.
+    //       Use it to measure the link at real sensor density.
+    //
+    // Both saturate the FT601 (one word per clock), so the MB/s figure is the
+    // same either way -- only bytes/frame, and therefore FPS, differ.
+    parameter integer PIX_FMT = 1
+)(
     // ---- Pt V2 base (pt_base.xdc) ----
     input  wire        clk,        // 100 MHz board oscillator (unused datapath; see below)
     input  wire        rst_n,      // active-low reset button
@@ -64,14 +79,29 @@ module ft_video_top (
     wire        gen_adv;
     wire [31:0] frame_index;
 
-    sli_frame_gen u_gen (
-        .clk         (ft_clk),
-        .rst         (rst),
-        .adv         (gen_adv),
-        .word        (gen_word),
-        .valid       (gen_valid),
-        .frame_index (frame_index)
-    );
+    // Both sources share the same FWFT contract, so the master is unaware which
+    // one is wired in. Only the unselected generator's logic is elaborated away.
+    generate
+        if (PIX_FMT == 3) begin : g_raw10
+            raw10_test_gen u_gen (
+                .clk         (ft_clk),
+                .rst         (rst),
+                .adv         (gen_adv),
+                .word        (gen_word),
+                .valid       (gen_valid),
+                .frame_index (frame_index)
+            );
+        end else begin : g_sli8
+            sli_frame_gen u_gen (
+                .clk         (ft_clk),
+                .rst         (rst),
+                .adv         (gen_adv),
+                .word        (gen_word),
+                .valid       (gen_valid),
+                .frame_index (frame_index)
+            );
+        end
+    endgenerate
 
     // --- FT601 245-sync-FIFO write master ---
     wire [31:0] ft_dout;

@@ -2,7 +2,11 @@
 # run_ftvideo.tcl -- build the FT601 USB-3 video throughput bitstream for the Pt V2.
 #
 #   vivado -mode batch -source run_ftvideo.tcl \
-#          -log out/vivado.log -journal out/vivado.jou
+#          -log out/vivado.log -journal out/vivado.jou -tclargs <1|3>
+#
+# -tclargs picks the pixel format (default 1): 1 = 8-bit SLI cosine fringes,
+# 3 = packed 10-bit MIPI RAW10 counter. Outputs are named per format, so the two
+# bitstreams coexist in out/ and neither overwrites the other.
 #
 # Pure Verilog, no IP. Reuses Alchitry's own published constraint files (the same
 # pins the full-stack I/O check already placed):
@@ -14,6 +18,17 @@
 #-----------------------------------------------------------------------------
 set part xc7a100tfgg484-2
 set top  ft_video_top
+
+# Pixel format, selected with -tclargs (default 1). See ft_video_top.v.
+#   1 = 8-bit SLI cosine fringes   -> ft_video.bin        (1,310,752 B/frame)
+#   3 = packed 10-bit MIPI RAW10   -> ft_video_raw10.bin  (1,638,432 B/frame)
+set pix_fmt 1
+if {[llength $argv] > 0} { set pix_fmt [lindex $argv 0] }
+if {$pix_fmt != 1 && $pix_fmt != 3} {
+    error "PIX_FMT must be 1 (8-bit SLI) or 3 (packed RAW10), got '$pix_fmt'"
+}
+set name [expr {$pix_fmt == 3 ? "ft_video_raw10" : "ft_video"}]
+puts "==== building PIX_FMT=$pix_fmt -> $name ===="
 
 set here  [file normalize [file dirname [info script]]]
 set root  [file normalize $here/..]              ;# ft_usb_video/
@@ -42,7 +57,7 @@ set logf $out/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl                                 -generic PIX_FMT=$pix_fmt} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]
@@ -60,11 +75,11 @@ opt_design
 place_design
 route_design
 
-write_bitstream -force $out/ft_video.bit
+write_bitstream -force $out/$name.bit
 write_cfgmem -force -format bin -interface spix4 -size 16 \
-    -loadbit "up 0x0 $out/ft_video.bit" $out/ft_video.bin
-report_utilization    -file $out/util.rpt
-report_timing_summary -file $out/timing.rpt
+    -loadbit "up 0x0 $out/$name.bit" $out/$name.bin
+report_utilization    -file $out/$name.util.rpt
+report_timing_summary -file $out/$name.timing.rpt
 
 # -----------------------------------------------------------------------------
 # FT601 bus integrity checks. Both of these guard the bug found on 2026-07-30,
@@ -115,7 +130,7 @@ if {[llength $stragglers] > 0 || $wr_iob < 1} {
 #     happily reports a clean WNS. Zero paths here is the smoking gun, so treat
 #     "no paths" as an error rather than as "nothing to check".
 report_timing -to [get_ports {ft_data[*] ft_wr}] -delay_type max \
-              -max_paths 10 -file $out/ft_bus_timing.rpt
+              -max_paths 10 -file $out/$name.bus_timing.rpt
 set ft_paths [get_timing_paths -quiet -to [get_ports {ft_data[*] ft_wr}] \
                                -delay_type max -max_paths 1]
 if {[llength $ft_paths] == 0} {
@@ -140,5 +155,5 @@ if {[llength $ft_hold] > 0} {
 set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
 puts "=== TIMING: setup WNS = $wns ns ==="
 puts "==== FT601 USB-3 VIDEO BUILD DONE ===="
-puts "bit : $out/ft_video.bit"
-puts "bin : $out/ft_video.bin"
+puts "bit : $out/$name.bit"
+puts "bin : $out/$name.bin"

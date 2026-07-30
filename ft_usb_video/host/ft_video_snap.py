@@ -30,7 +30,7 @@ import sys
 import time
 import zlib
 
-from ft_video_grab import FtDevice, FrameAssembler
+from ft_video_grab import FtDevice, FrameAssembler, unpack_raw10
 
 COS_AW, COS_N = 12, 4096
 FRAC, ACC_W = 12, 24
@@ -86,6 +86,8 @@ def main():
 
     checked = bad_frames = 0
     worst = 0
+    exp10 = None                   # format-3 expected frame, built once
+    first_bad = None               # first few (y, x, got, exp) mismatches
     seen = {}                      # (frq, frm) -> pixels, for the PNG picks
     order = []
     t0 = time.perf_counter()
@@ -99,6 +101,34 @@ def main():
                 continue
             for idx, pixels in asm.feed(data):
                 w, h = asm.width, asm.height
+
+                # ---- format 3: packed 10-bit RAW10 from raw10_test_gen.v ----
+                # Every pixel is its own index, so the whole frame is predicted
+                # in closed form: pixel(y,x) == (y*w + x) & 0x3FF. No pattern
+                # matching needed, and any single flipped bit shows up.
+                if asm.fmt == 3:
+                    import numpy as np
+                    got = unpack_raw10(pixels, w, h)
+                    if exp10 is None:
+                        exp10 = ((np.arange(w * h, dtype=np.uint32) & 0x3FF)
+                                 .astype(np.uint16).reshape(h, w))
+                    bad = int(np.count_nonzero(got != exp10))
+                    if bad:
+                        bad_frames += 1
+                        worst = max(worst, int(np.abs(
+                            got.astype(np.int32) - exp10.astype(np.int32)).max()))
+                        if first_bad is None:
+                            ys, xs = np.nonzero(got != exp10)
+                            first_bad = [(int(y), int(x), int(got[y, x]), int(exp10[y, x]))
+                                         for y, x in zip(ys[:6], xs[:6])]
+                    seen.setdefault((0, 0), pixels)
+                    if (0, 0) not in order:
+                        order.append((0, 0))
+                    checked += 1
+                    if checked >= args.frames:
+                        break
+                    continue
+
                 # header word3 = {frq, 0, frm}: re-read it from the frame we kept
                 # (FrameAssembler hands back pixels only, so recover frq/frm by
                 # matching the first row against all 24 possibilities)
@@ -137,26 +167,39 @@ def main():
         dev.close()
 
     dt = time.perf_counter() - t0
+    fmt_tag = {1: "8-bit mono (SLI fringes)", 3: "packed 10-bit MIPI RAW10"}.get(
+        asm.fmt, f"format {asm.fmt}")
+    mb = asm.frame_bytes / 1e6
     print(f"checked {checked} frames in {dt:.1f}s  ({checked/dt:.0f} fps)")
+    print(f"  format                                : {fmt_tag}")
+    print(f"  frame on the wire                     : {asm.frame_bytes:,} B "
+          f"({mb:.3f} MB)  {asm.width}x{asm.height}")
     print(f"  frames matching the RTL byte-for-byte : {checked - bad_frames}")
     print(f"  frames with ANY mismatched pixel      : {bad_frames}")
     if bad_frames:
         print(f"  worst pixel error                     : {worst}")
-    print(f"  distinct (frq,frm) states seen        : {len(seen)}  {sorted(seen)}")
+        if first_bad:
+            print(f"  first mismatches (y,x,got,exp)        : {first_bad}")
+    if asm.fmt == 1:
+        print(f"  distinct (frq,frm) states seen        : {len(seen)}  {sorted(seen)}")
     print(f"  frame index gaps (dropped)            : {asm.dropped}")
 
     if not args.no_png and seen:
-        picks = order[:4]
-        for (q, m) in picks:
-            px, w, h = seen[(q, m)], asm.width, asm.height
-            s = max(1, args.scale)
+        w, h = asm.width, asm.height
+        s = max(1, args.scale)
+        for (q, m) in order[:4]:
+            px = seen[(q, m)]
+            if asm.fmt == 3:
+                import numpy as np
+                px = bytes((unpack_raw10(px, w, h) >> 2).astype(np.uint8).ravel())
+            pw, ph = w, h
             if s > 1:                                   # decimate rows AND cols
-                px = bytes(b for y in range(0, h, s)
-                           for b in px[y * w:(y + 1) * w:s])
-                w, h = len(range(0, w, s)), len(range(0, h, s))
-            name = f"snap_frq{q}_frm{m}.png"
-            write_png(name, px, w, h)
-            print(f"  wrote {name}  ({w}x{h})")
+                px = bytes(b for y in range(0, ph, s)
+                           for b in px[y * pw:(y + 1) * pw:s])
+                pw, ph = len(range(0, pw, s)), len(range(0, ph, s))
+            name = "snap_raw10.png" if asm.fmt == 3 else f"snap_frq{q}_frm{m}.png"
+            write_png(name, px, pw, ph)
+            print(f"  wrote {name}  ({pw}x{ph})")
     return 1 if bad_frames else 0
 
 

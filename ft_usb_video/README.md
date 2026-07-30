@@ -10,9 +10,10 @@ This is the first thing that moves **real data** across the Ft+. The stack I/O c
 nothing. Everything here reuses those exact, already-proven pins.
 
 ```
-  sli_frame_gen ──stream──▶ ft601_sync_tx ──245 sync FIFO──▶ FT601 ──USB3──▶ PC
-   1280×1024 SLI            (FPGA = master)                          ft_video_grab.py
-   8-bit mono, 4px/word                                             (PySide6 + ftd3xx)
+  sli_frame_gen  (PIX_FMT=1) ─┐
+   8-bit SLI fringes, 4px/word │──▶ ft601_sync_tx ──245 sync FIFO──▶ FT601 ──USB3──▶ PC
+  raw10_test_gen (PIX_FMT=3) ─┘     (FPGA = master,                    ft_video_grab.py
+   packed 10-bit, 16px/5words        IOB-registered bus)               ft_video_snap.py
 ```
 
 ## Files
@@ -21,7 +22,8 @@ nothing. Everything here reuses those exact, already-proven pins.
 |------|------|
 | `rtl/sli_frame_gen.v` | 1280×1024 cosine-fringe frame source, 8-bit mono, 4 px / 32-bit word, 8-word framing header |
 | `rtl/ft601_sync_tx.v` | FT601 **245-Synchronous-FIFO** write master (FPGA is the master, `ft_clk` = 100 MHz) |
-| `rtl/ft_video_top.v` | top: wires generator → master → FT601 pins; single `ft_clk` domain |
+| `rtl/raw10_test_gen.v` | packed 10-bit (MIPI RAW10) pixel-index counter, 16 px / 5 words — the bandwidth/integrity pattern |
+| `rtl/ft_video_top.v` | top: `PIX_FMT` selects the source, wires generator → master → FT601 pins; single `ft_clk` domain |
 | `build/run_ftvideo.tcl` | Vivado batch build → `out/ft_video.bit` + `out/ft_video.bin`, **+ FT601 IOB/timing assertions** |
 | `host/ft_video_grab.py` | D3XX grabber: GUI display + FPS/MB-s, or `--bench` / `--raw` headless |
 | `host/ft_video_snap.py` | **byte-exact verifier**: recomputes the RTL pattern and diffs every pixel; writes PNGs (stdlib only, no PySide6) |
@@ -45,6 +47,35 @@ this hardware does not reach):
     --bench        --chunk 0x100000   233 MB/s  ->  178 fps,  0 dropped
 ```
 
+### Packed 10-bit (format 3) — the density the sensor actually produces
+
+Built with `-tclargs 3`, measured the same day. **The MB/s is unchanged** (the link
+does not care what the bytes mean); only bytes/frame, and therefore FPS, differ:
+
+```
+  frame on the wire     = 32 B header + 1280*1024*10/8 = 1,638,432 B  (1.638 MB)
+
+    --raw --stream --chunk 0x400000   308 MB/s   ->  188 fps  (link ceiling)
+    --bench --stream --chunk 0x400000 255 MB/s   ->  156 fps,  0 dropped  (measured)
+```
+
+**This is the result that matters for the camera:** 156 fps *through the current
+un-optimized Python grabber* already clears the PYTHON 1300's 150 fps, and the link
+itself has 188 fps of headroom. Padding 10-bit into 16 (2 px/word) instead would
+give only ~118 fps — **below** the sensor — so the packing is what buys the margin.
+
+| | 8-bit mono (fmt 1) | packed 10-bit (fmt 3) |
+|---|---|---|
+| bytes/frame | 1,310,752 | 1,638,432 |
+| link-ceiling FPS | 236 | **188** |
+| measured framed FPS | 192 | **156** |
+| dropped | 0 | 0 |
+| LUTs | 980 | **230** |
+| build WNS | 0.075 ns | 0.514 ns |
+
+The 10-bit build is *smaller and faster to close* because it drops the 4096-entry
+cosine ROM (~800 LUTs, read 4× per word). See "Choosing a test pattern" below.
+
 Two things that matter when reading those:
 
 - **`--stream` is worth ~24 MB/s**, and it plateaus by a 4 MiB chunk (16 MiB buys
@@ -56,10 +87,6 @@ Two things that matter when reading those:
 So at 8-bit the **USB link is not the bottleneck for the sensor** (PYTHON 1300 tops out
 at 150 fps): 192 fps sustained leaves headroom. `--raw` gives the pure link rate;
 `--bench` gives the rate after framing/drop-checking; the GUI shows the moving fringes.
-
-> Switching the generator to 10-bit-in-16 (2 px/word) doubles the frame to 2.62 MB,
-> so expect **~95–118 fps** at the same MB/s — which *would* put you under the
-> sensor's 150 fps ceiling. The MB/s figure is format-independent.
 
 ## Verify correctness, not just speed
 
@@ -75,16 +102,37 @@ python ft_video_snap.py                # 400 frames, byte-exact vs the RTL model
 Expected output on healthy hardware:
 
 ```
-  frames matching the RTL byte-for-byte : 400
+  format                                : packed 10-bit MIPI RAW10
+  frame on the wire                     : 1,638,432 B (1.638 MB)  1280x1024
+  frames matching the RTL byte-for-byte : 300
   frames with ANY mismatched pixel      : 0
-  distinct (frq,frm) states seen        : 24
   frame index gaps (dropped)            : 0
 ```
+
+It auto-detects the format from the frame header, so the same command checks either
+bitstream.
 
 It also writes `snap_frq<q>_frm<m>.png` so the fringes can be eyeballed without any
 GUI toolkit installed. If frames *do* mismatch, run `python ft_diag_rows.py` — it
 prints an error histogram by byte lane (`x mod 4`) and by transfer offset, which is
 what localizes the failure to specific data bits.
+
+## Choosing a test pattern
+
+`PIX_FMT` (a `ft_video_top` parameter, set with `-tclargs`) picks the stream source:
+
+| | `1` — `sli_frame_gen` | `3` — `raw10_test_gen` |
+|---|---|---|
+| content | 8-bit SLI cosine fringes, 4 px/word | packed 10-bit RAW10, 16 px / 5 words |
+| pixel value | 4096-entry cosine ROM | `(y*1280 + x) & 0x3FF` |
+| use it to | *see* the link work (real picture) | measure the link at sensor density |
+
+**For a pure bandwidth/integrity test, prefer format 3** — and not only because it
+is smaller. A cosine is a *weak* signal-integrity pattern: adjacent samples differ
+by a few counts, so the high data bits seldom toggle, which is exactly why the
+`ft_data[31:16]` corruption stayed hidden. The counter sweeps all 1024 codes
+continuously, so every data bit toggles at its maximum rate, and every pixel is
+predictable in closed form.
 
 ## Build
 
@@ -93,10 +141,14 @@ single-threaded to dodge this host's `.tcl`-read race). From this folder:
 
 ```powershell
 cd build
+# 8-bit SLI fringes  -> out/ft_video.bin
 vivado -mode batch -source run_ftvideo.tcl -log out/vivado.log -journal out/vivado.jou
+# packed 10-bit RAW10 -> out/ft_video_raw10.bin
+vivado -mode batch -source run_ftvideo.tcl -log out/vivado.log -journal out/vivado.jou -tclargs 3
 ```
 
-Outputs `build/out/ft_video.bin`. The build prints, and **hard-fails on**, three things:
+Outputs are named per format, so both bitstreams coexist in `out/`. The build
+prints, and **hard-fails on**:
 
 ```
 === FT601 IOB packing: 32/32 data flops + 1 WR# copy in OLOGIC ===
