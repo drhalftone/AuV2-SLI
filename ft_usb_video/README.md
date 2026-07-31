@@ -83,6 +83,16 @@ Two things that matter when reading those:
 - **The raw→framed gap (~57 MB/s) is the Python parse loop, not the link.**
   `FrameAssembler.feed` concatenates into a `bytearray` and `del`-slices it per
   chunk. That is a host software limit; the FPGA and USB are not involved.
+- **⚠ 308 MB/s is this READER's ceiling, not proven to be the hardware's.** Every
+  number above was taken with *synchronous, one-at-a-time* reads: issue `readPipe`,
+  block, issue the next. The bus idles in the gap between transfers. FTDI's guidance
+  for maximum throughput is several **overlapped async** transfers in flight, and the
+  bundled `FTD3XX.dll` does export the API for it (`FT_InitializeOverlapped`,
+  `FT_ReadPipe` with an `OVERLAPPED`, `FT_GetOverlappedResult`) — it is simply not
+  what `ft_video_grab.py` does. A multi-transfer grabber could plausibly reach
+  350–380 MB/s, which would raise every FPS figure derived from 308. **Treat 308 as a
+  measured floor on the hardware, not its ceiling**, until an async reader is written
+  (deferred — see the roadmap note).
 
 So at 8-bit the **USB link is not the bottleneck for the sensor** (PYTHON 1300 tops out
 at 150 fps): 192 fps sustained leaves headroom. `--raw` gives the pure link rate;
