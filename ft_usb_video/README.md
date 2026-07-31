@@ -82,6 +82,40 @@ give only ~118 fps — **below** the sensor — so the packing is what buys the 
 The 10-bit build is *smaller and faster to close* because it drops the 4096-entry
 cosine ROM (~800 LUTs, read 4× per word). See "Choosing a test pattern" below.
 
+### Frame rate by pixel format, at the measured 348 MB/s (1280×1024)
+
+**MB/s is format-independent** — the FT601 moves 4 bytes per accepted word whatever
+they mean, confirmed empirically (309 MB/s for the 8-bit build vs 308 for the 10-bit
+build under identical conditions). So only bytes/frame changes, and FPS follows:
+
+| format | bytes/frame | FPS @ 348 MB/s | status |
+|---|---|---|---|
+| 8-bit mono (`PIX_FMT=1`) | 1,310,752 | **265** | measured |
+| packed 10-bit RAW10 (`PIX_FMT=3`) | 1,638,432 | **212** | measured |
+| 10-in-16 padded (**16 bpp**) | 2,621,472 | **133** | *derived* — no bitstream for it |
+
+**Padding 10 bits into 16 costs 37 % of the frame rate** (133 vs 212) purely because
+6 of every 16 bits on the wire are zeros. Same MB/s, less payload.
+
+What 16 bpp does and does not reach:
+
+| target | rate needed @16 bpp | fits in 348 MB/s? |
+|---|---|---|
+| **120 fps** (one exposure per 120 Hz HDMI frame) | 314.6 MB/s | **yes — ~10 % margin** |
+| 150 fps | 393.2 MB/s | no |
+| 210 fps (sensor max) | 550.5 MB/s | no |
+
+That 314.6 MB/s is the same figure `CAMERA_RTL_PLAN.md` already carries as the DDR
+*write* rate at 120 Hz — so at the 120 fps operating point the USB drain and the DDR
+fill are essentially matched.
+
+**Which packing to choose depends on the mode, not on this table:**
+- **Continuous streaming** — pack. 16 bpp caps at 133 fps; packed 10-bit clears 150 and
+  just touches 210.
+- **Burst-capture to DDR** — padding barely matters and 16-bit unpacked is arguably
+  right (see `CAMERA_RTL_PLAN.md`): you never stream at sensor rate, 32 frames × 2.5 MiB
+  = 80 MiB drains in **0.24 s**, and the packer disappears from the FPGA entirely.
+
 Two things that matter when reading those:
 
 - **`--stream` is worth ~24 MB/s**, and it plateaus by a 4 MiB chunk (16 MiB buys

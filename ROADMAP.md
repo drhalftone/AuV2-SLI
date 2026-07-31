@@ -176,7 +176,10 @@ No longer a future board. The FT601 datapath is written, built, flashed and
 - **FT601Q**, 32-bit 245-sync FIFO; ~**42 FPGA IO** (≈ a full bank's worth).
 - **Measured ceiling: 348 MB/s** (2.79 Gbps) sustained — **87 % of the 400 MB/s
   theoretical**. Use 348 for budgeting. At 1280×1024 that is **212 fps packed 10-bit**
-  / 265 fps 8-bit mono, with the data verified byte-exact at that rate.
+  / 265 fps 8-bit mono / **133 fps at 16 bpp** (10-in-16 padded), with the data verified
+  byte-exact at that rate. Padding 10 bits into 16 costs 37 % of the frame rate for no
+  extra information — but at a 120 fps operating point 16 bpp still fits, with ~10 %
+  margin (314.6 MB/s needed).
   > **Superseded number:** this said 308 MB/s until 2026-07-31. That figure was our own
   > host-side memcpy, not the link — the reader allocated, zero-filled and copied a
   > fresh buffer every transfer. A zero-copy reader gets 348. Notably, **queue depth
