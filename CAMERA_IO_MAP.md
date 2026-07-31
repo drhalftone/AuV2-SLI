@@ -175,7 +175,7 @@ conflict.** Machine-checked, not asserted:
 **Two caveats — implementation/hardware, not feasibility:**
 1. ~~The Ft+ FT601 USB3 datapath is not written in RTL.~~ **Written and working as of
    2026-07-30** — see [`ft_usb_video/`](ft_usb_video/): FT601 245-sync-FIFO write master,
-   built for the Pt V2, byte-exact verified at a measured **308 MB/s** (188 fps packed
+   built for the Pt V2, byte-exact verified at a measured **348 MB/s** (212 fps packed
    10-bit at 1280×1024). It is still a **separate build** from the camera design — the
    two have not been integrated into one bitstream yet, and the current control plane
    remains the onboard FT2232 UART, not the Ft+.

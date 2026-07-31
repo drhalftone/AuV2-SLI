@@ -28,13 +28,15 @@ nothing. Everything here reuses those exact, already-proven pins.
 | `host/ft_video_grab.py` | D3XX grabber: GUI display + FPS/MB-s, or `--bench` / `--raw` headless |
 | `host/ft_video_snap.py` | **byte-exact verifier**: recomputes the RTL pattern and diffs every pixel; writes PNGs (stdlib only, no PySide6) |
 | `host/ft_diag_rows.py` | corruption forensics: per-column consensus, error rate, byte-lane / offset histograms |
+| `host/ft_bench_async.py` | zero-copy / overlapped throughput bench — `--sweep` (size×depth), `--stall` (consumer freeze). **Found the 348 MB/s ceiling.** |
 | `host/requirements.txt` | `ftd3xx`, `numpy`, `PySide6` |
 
 ## The numbers to expect
 
-The FT601 in 245-sync FIFO mode clocks 32 bits at 100 MHz. **Measured 2026-07-30**
-on this Pt V2 + Ft+ + host (superseding the earlier 340–380 MB/s estimate, which
-this hardware does not reach):
+The FT601 in 245-sync FIFO mode clocks 32 bits at 100 MHz. Measured on this
+Pt V2 + Ft+ + host. **The headline number is 348 MB/s** (`ft_bench_async.py`,
+zero-copy); the `ft_video_grab.py` figures below are ~12 % lower because that
+reader copies every buffer — see the resolved note after the table:
 
 ```
   theoretical ceiling   = 4 B × 100 MHz            = 400 MB/s  (3.2 Gbps)
@@ -55,20 +57,24 @@ does not care what the bytes mean); only bytes/frame, and therefore FPS, differ:
 ```
   frame on the wire     = 32 B header + 1280*1024*10/8 = 1,638,432 B  (1.638 MB)
 
-    --raw --stream --chunk 0x400000   308 MB/s   ->  188 fps  (link ceiling)
-    --bench --stream --chunk 0x400000 255 MB/s   ->  156 fps,  0 dropped  (measured)
+    ft_bench_async.py, zero-copy      348 MB/s   ->  212 fps  (TRUE link ceiling)
+    --raw --stream --chunk 0x400000   308 MB/s   ->  188 fps  (simple reader)
+    --bench --stream --chunk 0x400000 255 MB/s   ->  156 fps,  0 dropped
 ```
 
 **This is the result that matters for the camera:** 156 fps *through the current
 un-optimized Python grabber* already clears the PYTHON 1300's 150 fps, and the link
-itself has 188 fps of headroom. Padding 10-bit into 16 (2 px/word) instead would
+itself has **212 fps** of headroom with a zero-copy reader — enough to cover even the
+sensor's full 210 fps, though by only ~1 %, so treat that as marginal rather than
+comfortable. Padding 10-bit into 16 (2 px/word) instead would
 give only ~118 fps — **below** the sensor — so the packing is what buys the margin.
 
 | | 8-bit mono (fmt 1) | packed 10-bit (fmt 3) |
 |---|---|---|
 | bytes/frame | 1,310,752 | 1,638,432 |
-| link-ceiling FPS | 236 | **188** |
-| measured framed FPS | 192 | **156** |
+| link-ceiling FPS @ 348 MB/s (zero-copy) | **265** | **212** |
+| link-ceiling FPS @ 308 MB/s (simple reader) | 236 | 188 |
+| measured framed FPS (`--bench`) | 192 | **156** |
 | dropped | 0 | 0 |
 | LUTs | 980 | **230** |
 | build WNS | 0.075 ns | 0.514 ns |
@@ -83,16 +89,22 @@ Two things that matter when reading those:
 - **The raw→framed gap (~57 MB/s) is the Python parse loop, not the link.**
   `FrameAssembler.feed` concatenates into a `bytearray` and `del`-slices it per
   chunk. That is a host software limit; the FPGA and USB are not involved.
-- **⚠ 308 MB/s is this READER's ceiling, not proven to be the hardware's.** Every
-  number above was taken with *synchronous, one-at-a-time* reads: issue `readPipe`,
-  block, issue the next. The bus idles in the gap between transfers. FTDI's guidance
-  for maximum throughput is several **overlapped async** transfers in flight, and the
-  bundled `FTD3XX.dll` does export the API for it (`FT_InitializeOverlapped`,
-  `FT_ReadPipe` with an `OVERLAPPED`, `FT_GetOverlappedResult`) — it is simply not
-  what `ft_video_grab.py` does. A multi-transfer grabber could plausibly reach
-  350–380 MB/s, which would raise every FPS figure derived from 308. **Treat 308 as a
-  measured floor on the hardware, not its ceiling**, until an async reader is written
-  (deferred — see the roadmap note).
+- **✅ RESOLVED 2026-07-31 — the real ceiling is 348 MB/s, and 308 was our own
+  memcpy.** The numbers above were suspected of being reader-limited; `ft_bench_async.py`
+  settled it. `FtDevice.read()` does three size-proportional memory passes per
+  transfer — `create_string_buffer` (allocate + zero-fill), `.raw` (copy whole
+  buffer), `[:n]` (copy again) — none overlapped with the DMA. Removing them:
+
+  | reader | MB/s | |
+  |---|---|---|
+  | fresh buffer + full copy per transfer (what `ft_video_grab.py` does) | 305 | baseline |
+  | preallocated buffer, zero copies | **348** | **+14 %** |
+  | + 8 transfers queued (async) | **349** | +14 % |
+
+  **Queue depth turned out to be irrelevant to peak throughput** — 342 MB/s at depth 1
+  with 256 KiB buffers, 348 at depth ≥2 with 4 MiB. The entire win was eliminating the
+  host-side memory churn, not pipelining. 348 MB/s is **87 % of the 400 MB/s
+  theoretical**, and data stays byte-exact at that rate (200/200 frames verified).
 
 So at 8-bit the **USB link is not the bottleneck for the sensor** (PYTHON 1300 tops out
 at 150 fps): 192 fps sustained leaves headroom. `--raw` gives the pure link rate;

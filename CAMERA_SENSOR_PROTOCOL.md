@@ -204,9 +204,10 @@ The `ratspi` table confirms it from the other side: 10-bit / 4 channels is `fin/
 
 > **The binding constraint is USB, not the sensor clock.** At the sensor's full 210 fps, packed
 > 10-bit is 1280 × 1024 × 210 × 1.25 B ≈ **344 MB/s**. The Ft+ was long assumed to do 350 MB/s;
-> it was actually measured on 2026-07-30 at **308 MB/s** (see `ft_usb_video/`), so 344 MB/s does
-> **not** fit — continuous streaming caps at **188 fps**. We are USB-limited well before the
-> clocking choice matters, and by a wider margin than this document previously assumed.
+> it was finally measured on 2026-07-31 at **348 MB/s** (see `ft_usb_video/`). So 344 MB/s does
+> fit — but with only ~1 % to spare, which is a proof of feasibility, not a usable margin.
+> USB is still the binding constraint, and it binds at essentially exactly the sensor's
+> full rate, so the clocking choice remains the lesser worry.
 
 ### 4.1 `clk_pll` requirements
 

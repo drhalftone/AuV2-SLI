@@ -430,9 +430,10 @@ against both.
   board-to-board parallel/LVDS link** — keep USB/Ft+ as the host link only.
 
 ### Host-link options recap
-- **Ft+ (FT601 USB 3.0):** turnkey, FTDI D3XX driver. **308 MB/s measured** 2026-07-30
-  (`ft_usb_video/`), not the ~400 MB/s theoretical this doc previously used. Still fits
-  720p120 (111 MB/s) and 1080p120 RAW8 (249 MB/s), so the conclusion is unchanged.
+- **Ft+ (FT601 USB 3.0):** turnkey, FTDI D3XX driver. **348 MB/s measured** 2026-07-31
+  (`ft_usb_video/`, zero-copy reader), vs the ~400 MB/s theoretical this doc previously
+  used. Still fits 720p120 (111 MB/s) and 1080p120 RAW8 (249 MB/s), so the conclusion is
+  unchanged.
 - **Pt GTP → PCIe 2.0 / SFP:** ~2 GB/s but **DIY** — needs a breakout connector (no known
   Alchitry PCIe/SFP element) + heavy host-side DMA/driver work. The Pt has the I/O room to
   keep the Ft+, so it's an upgrade path, not a replacement.

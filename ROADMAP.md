@@ -174,15 +174,18 @@ No longer a future board. The FT601 datapath is written, built, flashed and
 **byte-exact verified** on a Pt V2 + Ft+ — see [`ft_usb_video/`](ft_usb_video/).
 
 - **FT601Q**, 32-bit 245-sync FIFO; ~**42 FPGA IO** (≈ a full bank's worth).
-- **Measured ceiling: 308 MB/s** (2.46 Gbps) sustained — **77 % of the 400 MB/s
-  theoretical**, not the 400 previously assumed here. Use 308 for budgeting.
-  At 1280×1024 that is **188 fps packed 10-bit** / 236 fps 8-bit mono.
-  > **But budget it as a floor, not a ceiling.** 308 was measured with a *synchronous*
-  > reader (one blocking transfer at a time), so the bus idles between transfers. An
-  > overlapped/async grabber — the API is available, just unwritten — could plausibly
-  > reach 350–380 MB/s and raise every derived FPS. **Deferred until the image sensor
-  > and PCB are working** (2026-07-31 decision); revisit before any design commits to
-  > a rate between 308 and 380 MB/s, because the answer may change.
+- **Measured ceiling: 348 MB/s** (2.79 Gbps) sustained — **87 % of the 400 MB/s
+  theoretical**. Use 348 for budgeting. At 1280×1024 that is **212 fps packed 10-bit**
+  / 265 fps 8-bit mono, with the data verified byte-exact at that rate.
+  > **Superseded number:** this said 308 MB/s until 2026-07-31. That figure was our own
+  > host-side memcpy, not the link — the reader allocated, zero-filled and copied a
+  > fresh buffer every transfer. A zero-copy reader gets 348. Notably, **queue depth
+  > made no difference to peak** (342 at depth 1); the win was entirely in removing the
+  > memory churn. See `ft_usb_video/host/ft_bench_async.py`.
+  >
+  > 348 MB/s now *just* covers the sensor's full 210 fps packed 10-bit (344 MB/s
+  > needed) — about 1 % margin. That is enough to say the link is no longer the hard
+  > blocker, but too thin to design against without headroom.
 - Verified with a closed-form byte-exact check, not just a throughput number:
   300/300 frames, every pixel, zero drops.
 - Uses **Bank A low** (control + BE + D16–D31) and **Bank B low** (D0–D15); passes the high
