@@ -2,10 +2,22 @@
 //==============================================================================
 // ft_clk_probe.v -- non-invasive "where is the FT601 clock?" diagnostic.
 //
-// The ft_video design reports FTCLK=0: the FT601's 100 MHz CLKOUT is not
+// ANSWERED: TOP=1. CLKOUT arrives on H4, exactly as the TOP element map predicted,
+// so ft_video's pinout was right and the FTCLK=0 that prompted this probe was a
+// seating/config fault, not a wrong pin. ft_video has streamed at full rate on
+// that map ever since -- see ../../README.md.
+//
+// Kept because the question comes back every time the stack is re-seated or a
+// board changes connectors, and re-answering it costs one flash instead of a
+// scope. The original write-up follows.
+//
+//------------------------------------------------------------------------------
+// THE ORIGINAL QUESTION (2026-07-29)
+//------------------------------------------------------------------------------
+// The ft_video design reported FTCLK=0: the FT601's 100 MHz CLKOUT was not
 // reaching the FPGA on the pin the build assumed (H4, the TOP element map).
-// FT601 chip config, the bitstream, and the H4 pin derivation are all verified
-// correct, and the board still reads FTCLK=0 -- so the open question is purely
+// FT601 chip config, the bitstream, and the H4 pin derivation all verified
+// correct, and the board still read FTCLK=0 -- so the open question was purely
 // PHYSICAL: on which connector does CLKOUT actually arrive?
 //
 // This design watches BOTH candidate clock pins at once, as INPUTS only:

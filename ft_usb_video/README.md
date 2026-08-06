@@ -281,9 +281,17 @@ python ft_video_grab.py --bench --stream --chunk 0x100000   # streaming pipe, 1 
 ## Assumptions / gotchas
 
 - **FT601 mode.** The Ft+ must be configured for **245 Synchronous FIFO @ 100 MHz**
-  (that's why `ft_clk` is 100 MHz in `pt_ft_plus_bottom.xdc`). Alchitry ships it this
-  way; if `ft_clk` is a different rate or the chip is in multi-channel mode, reconfigure
-  with FTDI's **FT60x Chip Configuration Programmer**. Read pipe is `0x82` (channel 0 IN).
+  (that's why `ft_clk` is constrained to 100 MHz in `build/alchitry_pt_ft_plus_top.xdc`).
+  Alchitry ships it this way; if `ft_clk` is a different rate or the chip is in
+  multi-channel mode, reconfigure with FTDI's **FT60x Chip Configuration Programmer**.
+  Read pipe is `0x82` (channel 0 IN).
+- **Which connector the Ft+ is on decides the pin map.** In this stack the Ft+ sits on
+  **top** of the Pt, so the build reads `build/alchitry_pt_ft_plus_top.xdc` (`ft_clk` =
+  H4). The Pt's top and bottom connectors are independent banks with different FPGA
+  pins: Alchitry's published `pt_ft_plus_bottom.xdc` maps the same element pin to D17,
+  so using it with the board on top leaves `ft_clk` unconnected and everything reads
+  FTCLK=0. If you ever move the Ft+ to the bottom, swap the XDC — and
+  `build/diag/ft_clk_probe.v` will tell you which pin is live without a scope.
 - **`ft_data` output timing — this WAS broken; see below.** The bus is now launched
   from IOB flops and the interface is constrained. `run_ftvideo.tcl` hard-fails the
   build if either regresses, so this should stay fixed.
