@@ -9191,7 +9191,7 @@
 				)
 			)
 		)
-		(property "Value" "TLV803SDBZT"
+		(property "Value" "TLV803SDBZR"
 			(at 0 2.4 0)
 			(layer "F.Fab")
 			(uuid "e21315f5-a653-4305-9060-3fd6fb651187")
@@ -9224,7 +9224,7 @@
 				)
 			)
 		)
-		(property "MPN" "TLV803SDBZT"
+		(property "MPN" "TLV803SDBZR"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -9237,7 +9237,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C702125"
+		(property "LCSC" "C132016"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -10063,7 +10063,7 @@
 				)
 			)
 		)
-		(property "Value" "TLV803SDBZT"
+		(property "Value" "TLV803SDBZR"
 			(at 0 2.4 0)
 			(layer "F.Fab")
 			(uuid "635109d8-7c5f-4ade-b2b6-8fa710e5a8a6")
@@ -10096,7 +10096,7 @@
 				)
 			)
 		)
-		(property "MPN" "TLV803SDBZT"
+		(property "MPN" "TLV803SDBZR"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -10109,7 +10109,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C702125"
+		(property "LCSC" "C132016"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")

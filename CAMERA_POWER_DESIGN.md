@@ -412,6 +412,37 @@ Neither workaround rescues it:
 **Use one supervisor per enable node.** Each then has its own open-drain and they are genuinely
 independent. Cost: $0.09.
 
+### ⚠️ Ordering: use `C132016`, not `C702125`. Same chip, different reel.
+
+**The first assembly order shipped without U6/U7** because the BOM named `C702125`
+(TLV803SDBZ**T**) and LCSC had none. The **T** and **R** suffixes are *only* reel size —
+250-piece tape vs 3000-piece reel — so `C132016` (TLV803SDBZ**R**) is the identical die:
+same 2.93 V threshold, same open-drain RESET, same SOT-23-3, same 200 ms delay. It is in
+JLCPCB's assembly library (Economic and Standard) and stocked in the thousands. **Switching
+costs nothing** — no footprint, pinout, schematic or layout change, and the gerbers are
+untouched. Reel is also the format the feeders want.
+
+**Approved alternates**, if `C132016` ever runs dry. TI states the TLV803 is pin-for-pin
+compatible with **MAX803**, and the TLV803E with MAX803/809/810 and APX803/809/810, so that
+whole clone family is the fallback pool.
+
+| Part | Trip | Note |
+|---|---|---|
+| TLV803S (`C132016`) | 2.93 V | the design point |
+| TLV803R (`C702124`) | 2.64 V | same pinout, same family. **Better** false-trip margin (529 mV vs 239 mV) and still ~690 mV above U2's ~1.95 V dropout — but it asserts later, so **re-run the §7.5 power-down sim** before trusting the sequence |
+
+**Two traps when substituting** — both silent, both from the TI datasheet (SBVS157E §5–6):
+
+1. **TLV853 and TLV863 are functionally identical to the TLV803 but have DIFFERENT PINOUTS.**
+   TLV803 is `1 GND, 2 RESET, 3 VDD`; TLV853 is `1 RESET, 2 GND, 3 VDD`; TLV863 is
+   `1 RESET, 2 VDD, 3 GND`. "Same family" is exactly the wrong heuristic here.
+2. **TLV809 and TLV810 are push-pull, not open-drain.** A push-pull output drives `U5.EN`
+   from its own supply and destroys the `vdd_33` interlock this whole section is built on
+   (see the enable network below). Any substitute **must** be open-drain.
+
+Of the threshold options (Z 2.25 V, R 2.64 V, S 2.93 V, M 4.38 V), only **S** and **R** are
+usable — M never releases on a 3.3 V rail.
+
 ### The enable network
 
 | Node | Circuit |
@@ -475,7 +506,7 @@ JLCPCB's format. **Every part except the socket is sourced and assembled by JLCP
 | **U3** | Boost, 3.3 → 4.45 V | TPS61023DRLR | **C919459** | SOT-563 | Extended |
 | **U4, U5** | LDO 3.3 V (`vdd_33`, `vdd_pix`) | TPS7A2033PDBVR | **C2862740** | SOT-23-5 | Extended |
 | **U2** | LDO 1.8 V (`vdd_18`) | TPS7A2018PDBVR | **C963430** | SOT-23-5 | Extended |
-| **U6, U7** | Supervisor 2.93 V, open-drain (**two — §6**) | TLV803SDBZT | **C702125** | SOT-23-3 | Extended |
+| **U6, U7** | Supervisor 2.93 V, open-drain (**two — §6**) | TLV803SDBZ**R** | **C132016** | SOT-23-3 | Extended |
 | **L1** | 2.2 µH, **Isat 3.4 A**, DCR 46 mΩ, shielded, 4×4×2 mm | SMNR4020-2.2UH | **C135262** | 4×4 mm | Extended |
 
 > ### ⚠️ L1 IS SIZED FOR THE STARTUP INRUSH, NOT THE STEADY-STATE CURRENT.

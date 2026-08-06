@@ -582,7 +582,7 @@ directions are **SPICE-verified** with manufacturer models (`CAMERA_POWER_DESIGN
 | **`U2`** | `TPS7A2018PDBVR` — LDO 3.3 → 1.8 V, SOT-23-5. Accuracy below 2.8 V out is **±40 mV**, not ±1.5 % — do not write "±1.5 %" next to this rail. |
 | **`U3`** | `TPS61023DRLR` — synchronous boost, SOT-563. **EN V<sub>IH</sub> 1.2 V max, absolute not ratiometric.** True input-to-output disconnect in shutdown — which the power-down ordering depends on. |
 | **`U4`, `U5`** | `TPS7A2033PDBVR` — **same part number for both.** 150 Ω auto-discharge; `U5` relies on it. |
-| **`U6`, `U7`** | `TLV803SDBZT` — 2.93 V threshold. **Two of them.** |
+| **`U6`, `U7`** | `TLV803SDBZR` (`C132016`) — 2.93 V threshold, open-drain. **Two of them.** Order the **R** (reel) code, not the `T` — see `CAMERA_POWER_DESIGN.md` §6. |
 | **`L1`** | 2.2 µH, **I<sub>sat</sub> ≥ 1.2 A** (peak is 584 mA worst-case → 2.05× margin). |
 
 #### Decoupling
@@ -1635,10 +1635,19 @@ Three things to get right, in decreasing order of how much they will cost you:
    is doubly unsuppliable: the footprint is the Andon *socket* land pattern while the Comment names
    the *sensor*. You solder the socket yourself, then drop the sensor in (§10 — and read the
    not-mechanically-keyed warning before you do).
-2. **Check LCSC stock before committing** — above all `C294544` (DF40C-80DP, **×2 per board**) and
-   `C424645` (DF40C-50DP). **No substitutions on the DF40s**: they are what mates with the Pt V2.
-   Several parts are LCSC *Extended*, each carrying a feeder fee — that is a cost driver, not a
-   blocker, and §6.5 already avoided one Extended part (649 kΩ) for exactly this reason.
+2. **Check LCSC stock before committing — on every Extended line, not just the connectors.**
+   Above all `C294544` (DF40C-80DP, **×2 per board**) and `C424645` (DF40C-50DP): **no
+   substitutions on the DF40s**, they are what mates with the Pt V2. Several parts are LCSC
+   *Extended*, each carrying a feeder fee — a cost driver, not a blocker, and §6.5 already
+   avoided one Extended part (649 kΩ) for exactly this reason.
+
+   > **This bit us once.** The first order shipped **without `U6`/`U7`** — the BOM named
+   > `C702125`, LCSC had zero, and the supervisors were simply dropped, leaving them to be
+   > hand-soldered. The chip was never unavailable: `C132016` is the same die on a different
+   > reel and is stocked in the thousands. The BOM now names `C132016`
+   > (`CAMERA_POWER_DESIGN.md` §6, which also lists approved alternates). **A part number
+   > going quietly out of stock is a different failure from a part being unobtainable, and
+   > only the order-time check distinguishes them.**
 3. **Check every rotation in the placement preview.** Rotation errors on SOT-23-5 / SOT-563 are the
    most common assembly failure mode, and this board has five: `U2`/`U4`/`U5` (LDOs, SOT-23-5),
    `U3` (boost, SOT-563), `U6`/`U7` (supervisors, SOT-23). The CPL exports with **negative Y** —
@@ -1713,7 +1722,7 @@ refill before believing a single one.
 |---|---|---|---|
 | **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. **How: §15.1.** | Nothing — do it now | **You** |
 | 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. **Default to `-0`** (§15.1) — the fix for `-1` is a thicker board, which changes the stack height. | Item 1 | Andon (one email), or default to `-0` |
-| ~~3~~ | ✅ **CLOSED.** Superseded by the boost + 3-LDO + 2-supervisor tree (§6.5). There is no load switch and no ferrite: `U3` = `TPS61023DRLR`, `U4`/`U5` = `TPS7A2033PDBVR`, `U2` = `TPS7A2018PDBVR`, `U6`/`U7` = `TLV803SDBZT`. **Every part is a JLCPCB part number in `production/LauPythonCamera_Pt_Stack_bom.csv`** — the BOM is orderable. | — | — |
+| ~~3~~ | ✅ **CLOSED.** Superseded by the boost + 3-LDO + 2-supervisor tree (§6.5). There is no load switch and no ferrite: `U3` = `TPS61023DRLR`, `U4`/`U5` = `TPS7A2033PDBVR`, `U2` = `TPS7A2018PDBVR`, `U6`/`U7` = `TLV803SDBZR`. **Every part is a JLCPCB part number in `production/LauPythonCamera_Pt_Stack_bom.csv`** — the BOM is orderable. | — | — |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
 | ~~5~~ | ✅ **CLOSED.** The area-scoped exceptions exist in `LauPythonCamera_Pt_Stack.kicad_dru` — rules *"DF40 land pattern — 0.4mm pitch, intra-connector only"* and *"TPS61023 SOT-563 land pattern"*. They relax clearance **only between pads of the same component**; the global minimum and the LVDS rules are untouched. | — | — |
 | 6 | **Impedance geometry is an IPC-2141 approximation (±10%)**, not a field solver. Confirm in KiCad's stackup calculator and **tick "impedance controlled" when ordering** so JLC verifies it. | Signal integrity | At layout |

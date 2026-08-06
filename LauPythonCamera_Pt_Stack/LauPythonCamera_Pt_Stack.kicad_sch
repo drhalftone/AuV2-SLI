@@ -19543,7 +19543,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "TLV803SDBZT"
+		(property "Value" "TLV803SDBZR"
 			(at 382.54 521.27 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -19585,7 +19585,7 @@
 				)
 			)
 		)
-		(property "MPN" "TLV803SDBZT"
+		(property "MPN" "TLV803SDBZR"
 			(at 380 520 0)
 			(hide yes)
 			(show_name no)
@@ -19596,7 +19596,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C702125"
+		(property "LCSC" "C132016"
 			(at 380 520 0)
 			(hide yes)
 			(show_name no)
@@ -32706,7 +32706,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "TLV803SDBZT"
+		(property "Value" "TLV803SDBZR"
 			(at 142.54 521.27 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -32748,7 +32748,7 @@
 				)
 			)
 		)
-		(property "MPN" "TLV803SDBZT"
+		(property "MPN" "TLV803SDBZR"
 			(at 140 520 0)
 			(hide yes)
 			(show_name no)
@@ -32759,7 +32759,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C702125"
+		(property "LCSC" "C132016"
 			(at 140 520 0)
 			(hide yes)
 			(show_name no)
