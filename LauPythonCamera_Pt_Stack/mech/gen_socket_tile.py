@@ -217,6 +217,11 @@ def build(args):
     report = []
     w = report.append
     w("wrote %s  (%d entities, %.1f kB)" % (out, step.entity_count, len(text) / 1024.0))
+    if args.stl:
+        stl = out[:-5] + ".stl" if args.stl is True else args.stl
+        ntri, _ = step.write_stl(stl)
+        w("wrote %s  (%d triangles; tile and pins are separate shells, union to print)"
+          % (stl, ntri))
     w("")
     if pcb_ok:
         w("  board geometry            re-derived from %s" % os.path.basename(args.pcb))
@@ -306,6 +311,9 @@ def main():
                    help="how far the pins enter the board, mm (the PCB is 1.6 thick)")
     p.add_argument("--pin-segments", type=int, default=32, help="facets per pin")
     p.add_argument("--out", help="output .step path")
+    p.add_argument("--stl", nargs="?", const=True, default=None, metavar="PATH",
+                   help="also write a binary STL (millimetres), for tools that cannot "
+                        "read STEP; defaults to the .step path with a .stl extension")
     p.add_argument("--pcb", default=os.path.join(board, "LauPythonCamera_Pt_Stack.kicad_pcb"))
     p.add_argument("--no-check", dest="check", action="store_false",
                    help="skip re-deriving the board geometry")

@@ -144,6 +144,31 @@ cannot use them while the socket is fitted. Three ways out, none of them chosen 
 `gen_socket_tile.py` prints this interference every run rather than quietly emitting a
 part that cannot be assembled.
 
+## STL, for tools that will not read STEP
+
+`--stl` writes a binary STL alongside the STEP. **These models are already polyhedra**, so
+the STL is exact — nothing is tessellated or approximated on the way out, and the mesh
+volume matches the B-rep solid to the last decimal.
+
+```
+python gen_socket_tile.py --stl
+python gen_sensor_step.py --stl --no-reference
+```
+
+STL carries no units; everything here is **millimetres**, so say so on import.
+
+Committed STLs: `camera_socket_tile.stl` (472 triangles) and `NOIP1SN1300A_LCC48.stl`
+(856 triangles, built with `--no-reference`).
+
+**SketchUp** cannot import STEP without a paid extension, and it discards geometry below
+about 0.001 inch — which is why the sensor STL is generated without reference geometry.
+The `active_area_REF` plate is 0.02 mm thick and would not survive; the generator warns
+when any solid is under 0.1 mm. The optical axis is in the datums table above if you need
+to place it by hand.
+
+The tile's STL contains the plate and both pins as **separate shells**. That is what a
+slicer expects and will union, but union them explicitly if you are modelling with it.
+
 ## Validation
 
 `check_step.py` re-reads the STEP independently of the code that wrote it and checks that
@@ -153,6 +178,10 @@ that every inner bound winds opposite its outer loop (which is what makes a wind
 rather than a second region), and that the enclosed volume integrated over the faces
 matches the volume computed analytically from the design dimensions. The volume test is
 the one that catches an inside-out solid, which every purely topological check passes.
+
+STL export applies the same two tests to the triangle soup before writing — every
+half-edge matched exactly once, positive enclosed volume — because a triangulation bug in
+a non-convex cap would otherwise stay invisible until it printed.
 
 It reports **genus** rather than asserting a fixed Euler characteristic — the sensor's
 bodies are genus 0, the tile is genus 1 because the window goes all the way through.

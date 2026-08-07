@@ -14,6 +14,7 @@ outer outline for you, but hole winding is load-bearing -- see `planar_face`.
 """
 
 import math
+import struct
 
 __all__ = ["StepFile", "signed_area", "dedupe", "arc", "rect", "rounded_rect", "circle"]
 
@@ -78,6 +79,77 @@ def reverse(pts):
 
 
 # --------------------------------------------------------------------------------------
+# Triangulation, for STL export
+# --------------------------------------------------------------------------------------
+
+def _cross2(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _in_triangle(p, a, b, c):
+    d1, d2, d3 = _cross2(a, b, p), _cross2(b, c, p), _cross2(c, a, p)
+    return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+
+
+def ear_clip(poly):
+    """Triangulate a simple counter-clockwise polygon. Handles reflex vertices, which a
+    fan from vertex 0 does not -- the sensor's package outline has 48 notches in it."""
+    idx = list(range(len(poly)))
+    tris = []
+    guard = 0
+    while len(idx) > 3 and guard <= len(poly) * len(poly):
+        guard += 1
+        for k in range(len(idx)):
+            a, b, c = poly[idx[k - 1]], poly[idx[k]], poly[idx[(k + 1) % len(idx)]]
+            if _cross2(a, b, c) <= 0:
+                continue                                     # reflex or collinear
+            others = [poly[idx[t]] for t in range(len(idx))
+                      if t not in (k - 1 if k else len(idx) - 1, k, (k + 1) % len(idx))]
+            if any(_in_triangle(p, a, b, c) for p in others):
+                continue                                     # not an ear
+            tris.append((a, b, c))
+            idx.pop(k)
+            break
+        else:
+            break
+    if len(idx) == 3:
+        tris.append(tuple(poly[i] for i in idx))
+    return tris
+
+
+def ring_triangles(outer, inner):
+    """Triangulate the region between two nested counter-clockwise loops.
+
+    Greedy shortest-diagonal strip. Valid for nested convex-ish rings, which is what the
+    tile's cap is; it consumes every edge of both loops exactly once, so the result is
+    watertight.
+    """
+    n, m = len(outer), len(inner)
+    d2 = lambda p, q: (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2
+    j0 = min(range(m), key=lambda j: d2(outer[0], inner[j]))
+    tris, i, j = [], 0, 0
+    while i < n or j < m:
+        o0, o1 = outer[i % n], outer[(i + 1) % n]
+        i0, i1 = inner[(j0 + j) % m], inner[(j0 + j + 1) % m]
+        if j >= m or (i < n and d2(o1, i0) <= d2(o0, i1)):
+            tris.append((o0, o1, i0))
+            i += 1
+        else:
+            tris.append((o0, i1, i0))
+            j += 1
+    return tris
+
+
+def cap_triangles(outer, holes):
+    """Triangles filling a cap face, as 2D point triples wound counter-clockwise."""
+    if not holes:
+        return ear_clip(outer)
+    if len(holes) == 1:
+        return ring_triangles(outer, reverse(holes[0]))
+    raise NotImplementedError("cap with %d holes" % len(holes))
+
+
+# --------------------------------------------------------------------------------------
 # STEP
 # --------------------------------------------------------------------------------------
 
@@ -112,6 +184,7 @@ class StepFile:
         self._verts = {}
         self._edges = {}
         self.solids = []      # (entity id, name, rgb)
+        self.meshes = []      # (name, outline CCW, holes CW, z0, z1) -- for STL export
 
     @property
     def entity_count(self):
@@ -226,7 +299,72 @@ class StepFile:
         shell = self._e("CLOSED_SHELL('',(%s))" % ",".join("#%d" % f for f in faces))
         solid = self._e("MANIFOLD_SOLID_BREP('%s',#%d)" % (name, shell))
         self.solids.append((solid, name, rgb))
+        self.meshes.append((name, pts, hs, z0, z1))
         return solid
+
+    # -- STL ---------------------------------------------------------------------------
+    def stl_triangles(self, skip=()):
+        """Every solid as a flat triangle list. Exact: these models are already
+        polyhedra, so nothing is approximated on the way out."""
+        tris = []
+        for name, outer, holes, z0, z1 in self.meshes:
+            if name in skip:
+                continue
+            cap = cap_triangles(outer, holes)
+            for a, b, c in cap:
+                tris.append(((a[0], a[1], z1), (b[0], b[1], z1), (c[0], c[1], z1)))
+                tris.append(((c[0], c[1], z0), (b[0], b[1], z0), (a[0], a[1], z0)))
+            for loop in [outer] + list(holes):
+                for i in range(len(loop)):
+                    ax, ay = loop[i]
+                    bx, by = loop[(i + 1) % len(loop)]
+                    if math.hypot(bx - ax, by - ay) < 1e-9:
+                        continue
+                    tris.append(((ax, ay, z0), (bx, by, z0), (bx, by, z1)))
+                    tris.append(((ax, ay, z0), (bx, by, z1), (ax, ay, z1)))
+        return tris
+
+    def write_stl(self, path, skip=(), header=None):
+        """Write a binary STL, after checking it is watertight and correctly oriented.
+
+        STL carries no units. Everything here is millimetres; say so on import.
+        """
+        tris = self.stl_triangles(skip)
+
+        # Every edge must appear exactly twice, in opposite directions, and the enclosed
+        # volume must come out positive -- the same two tests check_step.py applies to the
+        # B-rep, because a triangulation bug would otherwise be invisible until it printed.
+        edges = {}
+        vol = 0.0
+        for t in tris:
+            for i in range(3):
+                a = tuple(round(c, 9) for c in t[i])
+                b = tuple(round(c, 9) for c in t[(i + 1) % 3])
+                edges[(a, b)] = edges.get((a, b), 0) + 1
+            vol += (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
+                    - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
+                    + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0
+        bad = [e for e, n in edges.items() if n != 1 or edges.get((e[1], e[0]), 0) != 1]
+        if bad:
+            raise SystemExit("STL is not watertight: %d half-edges unmatched, e.g. %s"
+                             % (len(bad), bad[0]))
+        if vol <= 0:
+            raise SystemExit("STL is inside-out (volume %.4f)" % vol)
+
+        with open(path, "wb") as fh:
+            fh.write((header or ("AuV2-SLI %s -- millimetres" % self.product))
+                     .encode("ascii", "replace")[:80].ljust(80, b"\0"))
+            fh.write(struct.pack("<I", len(tris)))
+            for t in tris:
+                u = [t[1][i] - t[0][i] for i in range(3)]
+                v = [t[2][i] - t[0][i] for i in range(3)]
+                n = _cross(u, v)
+                m = math.sqrt(sum(c * c for c in n)) or 1.0
+                fh.write(struct.pack("<3f", *[c / m for c in n]))
+                for p in t:
+                    fh.write(struct.pack("<3f", *p))
+                fh.write(struct.pack("<H", 0))
+        return len(tris), vol
 
     # -- assembly ----------------------------------------------------------------------
     def dumps(self):

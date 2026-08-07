@@ -318,6 +318,15 @@ def build(args):
     report = []
     w = report.append
     w("wrote %s  (%d entities, %.1f kB)" % (out, step.entity_count, len(text) / 1024.0))
+    if args.stl:
+        stl = out[:-5] + ".stl" if args.stl is True else args.stl
+        ntri, _ = step.write_stl(stl)
+        w("wrote %s  (%d triangles)" % (stl, ntri))
+        thin = [n for n, _, _, a, b in step.meshes if abs(b - a) < 0.1]
+        if thin:
+            w("     note: %s %s under 0.1 mm thick. SketchUp drops geometry below about"
+              % (", ".join(thin), "is" if len(thin) == 1 else "are"))
+            w("     0.001 inch, so use --no-reference for an STL destined for SketchUp.")
     w("")
     w("  tolerance case            %s" % tol)
     if checked is not None:
@@ -371,6 +380,9 @@ def main():
                    help="which end of the datasheet tolerance band to model "
                         "(use 'max' for pockets and clearances)")
     p.add_argument("--out", help="output .step path")
+    p.add_argument("--stl", nargs="?", const=True, default=None, metavar="PATH",
+                   help="also write a binary STL (millimetres), for tools that cannot "
+                        "read STEP; defaults to the .step path with a .stl extension")
     p.add_argument("--pcb", default=os.path.join(board, "LauPythonCamera_Pt_Stack.kicad_pcb"),
                    help="board file to cross-check the pin ring against")
     p.add_argument("--no-check", dest="check", action="store_false",
