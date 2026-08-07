@@ -710,6 +710,12 @@ X = -179 µm      Y = +1367 µm     (i.e. ~1.37 mm in Y — large)
 **Center the lens mount on the optical axis, not on the package or the socket.** This offset
 is identical on PYTHON and VITA.
 
+> **A solid model of the sensor exists** — `mech/gen_sensor_step.py` writes
+> `3dmodels/NOIP1SN1300A_LCC48.step` from the datasheet's package drawing, with the optical
+> axis, the image plane and the worst-case envelope all carried through. Start bracket work
+> from `mech/README.md`; it also records the one dimension nobody publishes — **the height
+> of the sensor's seating plane above the PCB** — as still needing a caliper.
+
 ---
 
 ## 8. Mechanical — the Alchitry element standard
