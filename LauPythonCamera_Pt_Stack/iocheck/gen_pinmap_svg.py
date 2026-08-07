@@ -8,10 +8,14 @@ Revision 2 (2026-08-07) — updated against bench measurements:
   * Readings are shown as the bench meter displays them: it has a measured
     +3.3 % gain error (scale factor 1.033), established against TP1/TP3/TP4/TP5.
 """
-import re, io
+import re, io, os
 
-PCB = r"C:\Users\dllau\Developer\AuV2-SLI\LauPythonCamera_Pt_Stack\LauPythonCamera_Pt_Stack.kicad_pcb"
-OUT = r"C:\Users\dllau\Developer\AuV2-SLI\LauPythonCamera_Pt_Stack\BRINGUP_PIN_VOLTAGE_MAP.svg"
+# This script lives in LauPythonCamera_Pt_Stack/iocheck/; both the board it reads
+# and the SVG it writes sit one level up, so resolve them from here rather than
+# from the working directory or a machine-specific absolute path.
+BOARD = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PCB = os.path.join(BOARD, "LauPythonCamera_Pt_Stack.kicad_pcb")
+OUT = os.path.join(BOARD, "BRINGUP_PIN_VOLTAGE_MAP.svg")
 
 src = open(PCB, encoding="utf-8").read()
 
