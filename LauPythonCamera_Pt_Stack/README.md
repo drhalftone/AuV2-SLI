@@ -36,7 +36,7 @@ sensor in a **socketed 48-pin LCC**, for the AuV2-SLI structured-light system.
 | Schematic | ⚠️ Complete and audited — but the **power tree was rebuilt from scratch** after an audit found it architecturally wrong (§6.5). **Deserves a human read before fab.** |
 | Socket footprint | ✅ Built and verified (§12) — **no longer blocked** |
 | Stackup / netclasses / DRC rules | ✅ Written (§11), and **calibrated against a real DRC run** (§14.7) |
-| **Layout** | ⚠️ **Routed, reviewed (§14) and DRC-clean — 0 errors, 0 unconnected.** But **three Tier 1 defects DRC cannot see are still open** (§14.1): U1 decoupling distance, power-section stitching, single-via `+3V3_SYS` feed. **Not fab-ready.** |
+| **Layout** | ✅ **Routed, reviewed (§14), DRC-clean (0 errors, 0 unconnected), and all three Tier 1 defects are FIXED** — re-verified against the board 2026-08-06. U1 decoupling closed by moving ten caps to the underside beneath the pins; power-section stitching now 13 GND vias; `+3V3_SYS` widened to 0.6 mm with the J3 pins fanned out. Six test points added. **Fab-ready** — two optional single-via redundancy items remain (§15.0), neither a blocker. |
 | **Sensor + socket ordered** | ❌ **27-week factory lead if the in-stock units go. Do this first** — §15.1. |
 
 **Eleven bugs have been found and fixed in this design so far**, including two that would have
@@ -1228,6 +1228,14 @@ Coordinates are **KiCad page coordinates**. Subtract (100, 60) for board-relativ
 
 ### 14.1 Tier 1 — fix before fab
 
+> ### ✅ ALL THREE ARE FIXED — verified against the board 2026-08-06.
+>
+> Kept in full because *how* they were found matters more than that they are closed: none was a DRC
+> error, and a clean DRC run reported nothing about any of them (§14.7). Item 1 was closed by
+> **moving ten existing caps to B.Cu beneath U1's pins** rather than adding the `C42`–`C51` the work
+> order proposed — same result, no new part, no BOM change. As-built detail and the two remaining
+> optional single-via items: [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md).
+
 **1. Five of U1's eleven supply pins have no usable decoupling.**
 Found independently by two passes. Every `vdd_33` / `vdd_18` cap sits west (x ≈ 120–123) or
 north (y ≈ 67.5–69.4) of the socket. The east-column pins are naked:
@@ -1290,11 +1298,17 @@ under the part.
 
 **3. The whole board is powered through 0.2 mm trace and a single via.** — ✅ **MOSTLY FIXED 2026-07-28**
 
-> ✅ The riser and the run into the boost are now **0.8 mm** (necking to 0.3 mm only for the last
-> 1.6 mm, where U3's pads sit 0.3745 mm off the centreline and 0.5 mm would be illegal), and the
-> single transition via is now **three**. ⬜ **Still open: fan the eight J3 power pins** instead of
-> daisy-chaining them — that is inside the 0.4 mm connector fanout and is routing.
-> [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md) job 3.
+> ✅ **The J3 fan-out is DONE** (verified 2026-08-06). The eight power pins each get their own
+> 0.2 mm stub off y = 65.355 into a shared **0.6 mm B.Cu bus** at y = 66.850 spanning x 111.7–114.5,
+> then a **0.6 mm riser** — so no segment carries the aggregate at 0.2 mm any more. The daisy-chain
+> described below is gone.
+>
+> ⬜ **Still open, and the claim above it was wrong:** an earlier revision of this note said "the
+> single transition via is now **three**." The re-route removed them — the current board has
+> **exactly one** 0.8/0.4 via at **(111.725, 69.875)**, and every milliamp the board draws still
+> crosses it. Widened copper on both sides of a single via does not remove the single point of
+> failure. Cheap to fix if KiCad is open; **not a fab blocker**, since DC current through one
+> 0.4 mm via at ~320 mA is comfortable. [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md) job 3.
 `+3V3_SYS` daisy-chains J3 pins 1–15 odd along y = 65.355 on **0.2 mm B.Cu**, then rises into
 **one via at (111.70, 69.90)**. Cut analysis confirms removing it isolates `L1.1`, `U3.3` and
 `U2.1` — everything.
@@ -1375,9 +1389,11 @@ L1/VIN node and connect at 0.5 mm.
   practical result is fragmented designators — but not on the socket pads.
 - **J1/J2/J3 refdes are hidden**, leaving two physically identical DF40C-80DP connectors
   unlabeled on the blind side. B_Silkscreen has 101 coordinate points vs 4341 on F.
-- **No test points anywhere** — including `+3V3_PIX`, the rail whose 3.25–3.35 V window §6.5
-  says to measure the day the board arrives. `+1V8_CAM` and `IBIAS_MASTER` have zero vias, so
-  there is not even an accidental probe target. Recommend 5 rails + GND; x 0–3, y 30–45 is empty.
+- ~~**No test points anywhere**~~ — ✅ **FIXED, verified on the board 2026-08-06.** Six 1.5 mm pads
+  now exist on F.Cu, exactly the "5 rails + GND" this item recommended: `TP1` `+3V3_SYS`,
+  `TP2` `+4V5`, `TP3` `+1V8_CAM`, `TP4` `+3V3_CAM`, `TP5` `+3V3_PIX`, `TP6` `GND`. That includes
+  `+3V3_PIX`, the rail whose 3.25–3.35 V window §6.5 says to measure the day the board arrives.
+  They carry no LCSC part and are excluded from the BOM and CPL by construction (§15.3).
 - **U1 index hole is 0.317 mm from the `+3V3_PIX` via** at (142.625, 73.825). NPTH tolerance is
   ±0.1 mm with no annular ring — right at the fab's 0.3 mm floor. Shift the via ~0.3 mm.
 - **R6 ↔ U5 courtyards are 0.030 mm apart** — inside pick-and-place repeatability. Nudge R6
@@ -1554,8 +1570,13 @@ and the schematic agree.
 #### What DRC does *not* clear
 
 **0 errors ≠ ready to fab.** DRC cannot see decoupling *distance*, stitching *density*, or a rail
-fed through a single via — the three Tier 1 items in §14.1 are all invisible to it and all still
-open. A clean DRC and an unbuildable power delivery are perfectly compatible.
+fed through a single via — the three Tier 1 items in §14.1 were all invisible to it, and all three
+survived a clean DRC run untouched. A clean DRC and an unbuildable power delivery are perfectly
+compatible.
+
+> They have **since been fixed** (2026-08-06 verification, §15.0) — but the lesson stands, and it is
+> the reason §14 exists as a separate review from §14.7's DRC run. **The clean DRC never once
+> flagged them, before or after.**
 
 ---
 
@@ -1568,24 +1589,33 @@ them if the board changes — §15.6 says how.
 
 > **Order the sensor today. Do not order the PCB yet.**
 
-The sensor has a **~27-week factory lead** and is blocked on nothing. The board has three known
-defects that DRC cannot see (§14.1) and *is* blocked on a KiCad session. Doing these in the
-intuitive order — board first, parts later — gets you fabbed hardware with the defects baked in,
-and then a six-month wait for the sensor anyway.
+The sensor has a **~27-week factory lead** and is blocked on nothing. Doing these in the intuitive
+order — board first, parts later — gets you a six-month wait for the sensor after the boards land.
+
+> **Step 2 is now closed** (re-verified 2026-08-06), so the board is no longer blocked on a KiCad
+> session. What remains is **two optional single-via redundancy items** — `+3V3_SYS`'s entry from
+> J3 at (111.725, 69.875), and `+3V3_CAM` at (124.425, 89.200) — each carrying its rail through
+> one via. Neither is a DRC error, a DC current problem, or a fab blocker; both are
+> single-point-of-failure insurance, and both are cheap **if** you happen to open KiCad again.
+> They are itemised in [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md). **Do not hold the order for
+> them.**
 
 | Step | Do | Blocked on |
 |---|---|---|
 | **1** | Order `NOIP1SN1300A-QTI` + the Andon socket (§15.1) | **Nothing — do it now** |
-| **2** | Apply §14.1 Tier 1 + item 12, re-run DRC, regenerate `production/` (§15.6) — **step-by-step with coordinates: [`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md)** | A KiCad PC |
-| **3** | Order the PCB (§15.2) and assembly (§15.3) | Step 2 |
+| ~~**2**~~ | ✅ **DONE — all four Tier 1 jobs are in the board**, re-verified against the `.kicad_pcb` on 2026-08-06. Job 1 was solved by *moving* ten existing caps to the underside rather than adding new ones, which is why no `C42`–`C51` appear. Six test points were added too. **[`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md) has the as-built detail** and the two optional items below. | — |
+| **3** | Order the PCB (§15.2) and assembly (§15.3) | **Nothing — the board is orderable** |
 | **4** | Power-tree bring-up on arrival (§15.5) | Step 3 |
 
-**Also settle the order that is already open.** JLCPCB flagged L1's footprint on order
-`SMT026071660032_Y5`; the fix is in (commit `63ddffb`, §14.6 / closed items) but **whether that
-order is still parked awaiting a reply or was cancelled is not recorded here.** If it is still
-open, upload the revised files *against it* — you keep the queue position and the engineering-review
-thread. That flag was a genuine catch (~40 % too little solder area on the highest-current part), so
-when production review comes back with questions, answer them rather than clicking through.
+**The previously-open order was CANCELLED (2026-08-06).** JLCPCB had flagged L1's footprint on
+order `SMT026071660032_Y5`; the fix landed anyway (commit `63ddffb`, §14.6 / closed items), but the
+order itself is gone. **So step 3 is a fresh upload** — there is no queue position or
+engineering-review thread to preserve, and nothing to revise against. Order fresh once step 2 is
+done, and use the current `production/` files: they already carry the L1 fix, the §14 re-route, and
+the `C132016` supervisor correction.
+
+That L1 flag was a genuine catch (~40 % too little solder area on the highest-current part), so
+**when production review comes back with questions, answer them rather than clicking through.**
 
 ### 15.1 The two parts JLCPCB cannot supply
 
@@ -1663,7 +1693,9 @@ The only BOM line without an LCSC part number is `U1`, per §15.3.
 **Meter the power tree with no FPGA involved.** `vdd_18` must come up **before** `vdd_33`, and
 `vdd_pix` must sit in **3.25–3.35 V**. This section was rebuilt from scratch after an audit found it
 architecturally wrong (§6.5) and **has only ever been validated in SPICE** — it has never existed as
-copper. There are also no test points anywhere (§14.3), so plan your probe targets before power-up.
+copper. **Probe targets exist** — `TP1`–`TP6` on the top side, one per rail plus GND: `TP1`
+`+3V3_SYS`, `TP2` `+4V5`, `TP3` `+1V8_CAM`, `TP4` `+3V3_CAM`, `TP5` `+3V3_PIX`, `TP6` `GND`.
+(§14.3's "no test points anywhere" was closed by the 2026-07-28 layout pass.)
 
 Then: the 30-second pass-through check (`CAMERA_IO_MAP.md` §7), then the chip-ID read — milestone 5
 in `CAMERA_RTL_PLAN.md`, which proves the power tree, the DF40 pin map, the stack pass-through and
@@ -1732,7 +1764,7 @@ refill before believing a single one.
 | 10 | **AND9362/D — PYTHON Developer's Guide** is NDA-gated on the onsemi Image Sensor Portal. It holds the trigger→integration latency, jitter, FOT/ROT clock counts, and the `trigger1`/`trigger2` definitions — **none of which are in the public datasheet**. | Tight trigger synchronisation | Request portal access |
 
 | **11** | **🔴 Finish the §14 Tier 1 fixes — two of three are done.** ✅ GND stitching (8 vias) and ✅ the `+3V3_SYS` widening + 3 parallel vias were applied 2026-07-28, board re-verified **0 errors / 0 unconnected**. ⬜ **Left: (a) local decoupling for U1 pins 19/22/26/29/36 — schematic + placement, on B.Cu since §14.1's east strip is off-board; (b) fan the eight J3 power pins.** Both worked out in **[`TIER1_WORK_ORDER.md`](TIER1_WORK_ORDER.md)**. **`production/` regenerated 2026-07-28 and verified (§15.6).** **The DRC half of this item is done (§14.7): 0 errors, 0 unconnected, and the two predicted violations (§14.2.3, §14.2.4) were false — withdrawn, do not act on them.** | Fab | **You** |
-| 13 | **What is the state of JLCPCB order `SMT026071660032_Y5`?** Still parked awaiting a reply to the L1 package-mismatch flag, or cancelled? Decides whether the next order revises it (keeping queue position + the review thread) or starts fresh. Not recorded anywhere in this repo — see §15.0. | Ordering | **You** |
+| ~~13~~ | ✅ **CLOSED 2026-08-06 — the order was cancelled.** `SMT026071660032_Y5` is gone, so there is no queue position or review thread to preserve: **the next order is a fresh upload** of the current `production/` files (§15.0). The L1 package-mismatch flag that stalled it was already fixed in `63ddffb`. | — | — |
 | 12 | **Nudge the silk refdes off the pads** — §14.7 lists them; `U1`'s own designator over socket pads 25–29/36/37 is the one that matters, because U1 is socketed. Cosmetic elsewhere (fabs auto-clip). | Nothing | At layout, with item 11 |
 
 **Closed:** socket land pattern (§12) · bank-13 pin map (§5.1) · P/N polarity (§13.1) ·
@@ -1740,7 +1772,8 @@ stack compatibility (§13.2) · regulators + sequencing (§6.5) · DF40 connecto
 power part numbers (old item 3) · fine-pitch DRC exceptions (old item 5) ·
 power-section documentation drift (§14.6) · **DRC run and clean, DRU miscalibrations fixed (§14.7)** ·
 **L1 SMNR4020 land pattern — the JLCPCB package-mismatch flag on order `SMT026071660032_Y5`
-(commit `63ddffb`; F/G/H misread, not a wrong part)**
+(commit `63ddffb`; F/G/H misread, not a wrong part)** · **that order's disposition — cancelled
+2026-08-06, next order starts fresh (§15.0)**
 
 ---
 

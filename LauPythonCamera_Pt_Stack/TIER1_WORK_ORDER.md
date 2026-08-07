@@ -7,17 +7,64 @@ it in this order.
 
 ---
 
-## Status — jobs 2, 3 and 4 are DONE (2026-07-28)
+## Status — RE-VERIFIED against the board, 2026-08-06. All four jobs are DONE.
+
+> ⚠️ **The old status table here was stale and under-reported the work.** It said job 1 and the J3
+> fan-out were still outstanding; both are in the board. The board was re-routed after this work
+> order was written (the `.kicad_pcb` was substantially rewritten), so **trust the board, not the
+> coordinates below** — several specific via positions in §2 and §3 no longer match. The table
+> below was checked directly against the current `.kicad_pcb` and `production/`.
 
 | Job | State |
 |---|---|
-| **1 — U1 decoupling** | ⬜ **YOURS.** Schematic + placement. Everything below still applies. |
-| **2 — GND stitching** | ✅ **Done** — 8 vias placed, §2 records exactly where |
-| **3 — `+3V3_SYS` entry** | ✅ **Widened + 2 parallel vias.** ⬜ The **J3 pin fan-out is still yours.** |
+| **1 — U1 decoupling** | ✅ **DONE — by redistribution, not addition.** No `C42`–`C51`; instead ten *existing* caps were moved to **B.Cu directly under the pins**. Five 1 µF + 10 nF pairs, one per naked pin — see the table below. This is better than the plan: no new part, no new BOM line, no feeder fee, and the BOM stayed byte-identical. |
+| **2 — GND stitching** | ✅ **Done in substance.** The power section (x < 120, y < 95) now carries **13 GND vias**; the original complaint was that **exactly one** existed at x < 112. The eight specific coordinates in §2 no longer all match — the re-route moved them. |
+| **3 — `+3V3_SYS` entry** | ✅ **Widened, and the J3 fan-out is DONE.** ⬜ **One item genuinely open — see "What is actually left" below.** |
 | **4 — silk off U1's pads** | ✅ **Done** — U1, R1, R14 reference fields moved |
+| **Test points** | ✅ **DONE, and not in the original plan.** `TP1`–`TP6` exist on F.Cu, one per rail plus GND. |
 
-Board state after those: **0 errors, 0 unconnected, 70 warnings (all silkscreen), 110 benign parity
-warnings.** Zones were refilled and the board saved.
+### Job 1 as built — which cap pairs with which pin
+
+| Pin | Rail | 1 µF | 10 nF |
+|---|---|---|---|
+| 19 | `+3V3_CAM` | `C2` | `C15` |
+| 22 | `+1V8_CAM` | `C6` | `C17` |
+| 26 | `+1V8_CAM` | `C5` | `C16` |
+| 29 | `+3V3_CAM` | `C1` | `C12` |
+| 36 | `+3V3_CAM` | `C3` | `C13` |
+
+All ten are bottom-side, ~1–2 mm from their pin, against the 25–32 mm they had. **Do not add
+`C42`–`C51`** — the job is done, and adding them would double the decoupling and change the BOM.
+
+### Test points as built
+
+| | net | | net |
+|---|---|---|---|
+| `TP1` | `+3V3_SYS` | `TP4` | `+3V3_CAM` |
+| `TP2` | `+4V5` | `TP5` | `+3V3_PIX` |
+| `TP3` | `+1V8_CAM` | `TP6` | `GND` |
+
+Five rails + GND, which is exactly what §14.3 asked for and what §15.5 needs on bring-up day.
+They carry no LCSC part and are excluded from the BOM and CPL by construction.
+
+---
+
+## What is actually left
+
+Two items, both the same *kind* of thing — a rail reaching somewhere through a **single via**. Neither
+is a DRC error, neither is a DC current problem, and neither blocks fab. They are single-point-of-
+failure and AC-impedance insurance.
+
+| Where | Current state | Note |
+|---|---|---|
+| **`+3V3_SYS` entry from J3** at **(111.725, 69.875)** | **one** 0.8/0.4 via | §3 below claims two parallel vias were added at (112.35, 69.90) and (113.00, 69.90). **They are not in the current board** — the re-route removed them. Every milliamp the board consumes still crosses this one via. Cheapest fix on the list: add one or two more on the 0.6 mm stub. |
+| **`+3V3_CAM`** at **(124.425, 89.200)** | **one** 0.8/0.4 via | §14.2.2's "double both up". The `+4V5` half of that item now has two vias on the path — (109.675, 73.200) and (106.175, 78.050) — so only the `+3V3_CAM` half remains. |
+
+Optional, from §14.2.1 (EMI insurance, never a blocker): two GND stitches by `CAM_LVDSCLK`'s layer
+transition at (148.01, 84.84), and one near (140.2, 94.4) for D3.
+
+Board state as last recorded: **0 errors, 0 unconnected, 70 warnings (all silkscreen), 110 benign
+parity warnings.** Zones were refilled and the board saved.
 
 > **The "you must open KiCad to refill zones" caveat is withdrawn.**
 > `kicad-cli pcb drc --refill-zones --save-board` does it from the command line, and that is how the
@@ -26,8 +73,11 @@ warnings.** Zones were refilled and the board saved.
 > way mid-job and all 15 vanished on refill. If you see a wall of zone-clearance errors, refill
 > before believing any of them.
 >
-> **`production/` is now stale** — the board has changed since it was last exported. Regenerate per
-> README §15.6 before ordering, whether or not you do job 1 first.
+> **`production/` is CURRENT** (was: "now stale"). It was regenerated 2026-07-28 against the board
+> with job 1, the six test points and the J3 fan-out all in place — README §15.6 records the
+> verification. Only regenerate if you touch the board again, e.g. to close the two single-via
+> items above. The `production/` BOM was hand-corrected on 2026-08-06 for the `U6`/`U7` supervisor
+> part number (`C702125` → `C132016`), matching the schematic, so a regeneration will reproduce it.
 
 Coordinates are **KiCad page coordinates**, the same frame the `.kicad_pcb` uses. Subtract
 (100, 60) for board-relative.
