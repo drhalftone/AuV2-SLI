@@ -1,0 +1,337 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2200 1620" width="2200" height="1620" font-family="'Segoe UI', Inter, system-ui, -apple-system, sans-serif">
+<rect width="2200" height="1620" fill="#ffffff"/>
+<text x="46" y="54" font-size="31" font-weight="700" fill="#16202a">PYTHON 1300 socket — expected voltmeter readings</text>
+<text x="46" y="82" font-size="15" fill="#5c6b7a">LauPythonCamera_Pt_Stack · pin-to-net map read directly from the .kicad_pcb · rev 2, updated against the bench: §2 measured and passed, §4 resolved</text>
+<rect x="46" y="98" width="2108" height="56" rx="6" fill="#fff4e5" stroke="#f0b37e"/>
+<text x="62" y="120" font-size="14.5" fill="#8a5316" font-weight="600">CONDITIONS — socket EMPTY · board mated to the Pt V2 · Pt flash ERASED and power-cycled · FPGA unconfigured, and its configuration pull-ups MEASURED OFF (§4) · black lead on TP6</text>
+<text x="62" y="142" font-size="14.5" fill="#8a5316" font-weight="600">VOLTAGES BELOW ARE WHAT YOUR METER DISPLAYS — it has a measured +3.3 % gain error (×1.033). True design values are in the legend. A gain error does not affect 0.000 V.</text>
+<text x="46" y="190" font-size="18" font-weight="700" fill="#16202a">A · Board — all five rails measured, all in spec</text>
+<polygon points="64.0,210.0 688.0,210.0 706.0,228.0 706.0,288.0 688.0,306.0 658.0,306.0 640.0,324.0 640.0,636.0 658.0,654.0 688.0,654.0 706.0,672.0 706.0,732.0 688.0,750.0 64.0,750.0 46.0,732.0 46.0,228.0" fill="#eef3f7" stroke="#7d8fa0" stroke-width="1.8"/>
+<rect x="402.6" y="235.2" width="198.7" height="45.6" rx="3" fill="none" stroke="#9aa9b8" stroke-width="1.3" stroke-dasharray="6 4"/>
+<text x="502.0" y="262.0" font-size="12" fill="#7b8b9a" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">J1 · bottom</text>
+<rect x="402.6" y="679.2" width="198.7" height="45.6" rx="3" fill="none" stroke="#9aa9b8" stroke-width="1.3" stroke-dasharray="6 4"/>
+<text x="502.0" y="706.0" font-size="12" fill="#7b8b9a" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">J2 · bottom</text>
+<rect x="180.6" y="235.2" width="126.7" height="45.6" rx="3" fill="none" stroke="#9aa9b8" stroke-width="1.3" stroke-dasharray="6 4"/>
+<text x="244.0" y="262.0" font-size="12" fill="#7b8b9a" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">J3 · bottom</text>
+<rect x="359.1" y="355.1" width="237.7" height="237.7" rx="5" fill="#dde7ef" stroke="#4a5c6c" stroke-width="1.8"/>
+<rect x="425.2" y="421.2" width="105.6" height="105.6" rx="3" fill="#c3d3e0" stroke="#4a5c6c" stroke-width="1"/>
+<text x="478.0" y="469.2" font-size="14" font-weight="700" fill="#16202a" text-anchor="middle">U1</text>
+<text x="478.0" y="493.2" font-size="11" fill="#4a5c6c" text-anchor="middle">PYTHON 1300</text>
+<circle cx="359.1" cy="480.1" r="4" fill="#c62828"/>
+<text x="367.1" y="484.1" font-size="11.5" font-weight="700" fill="#c62828">pin 1</text>
+<rect x="112.0" y="456.0" width="36.0" height="36.0" rx="2" fill="#ffffff" stroke="#8b98a5" stroke-width="1.6"/>
+<text x="130.0" y="478.0" font-size="10.5" fill="#8b98a5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">U2</text>
+<rect x="112.0" y="348.0" width="36.0" height="36.0" rx="2" fill="#ffffff" stroke="#8b98a5" stroke-width="1.6"/>
+<text x="130.0" y="370.0" font-size="10.5" fill="#8b98a5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">U3</text>
+<rect x="112.0" y="516.0" width="36.0" height="36.0" rx="2" fill="#ffffff" stroke="#8b98a5" stroke-width="1.6"/>
+<text x="130.0" y="538.0" font-size="10.5" fill="#8b98a5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">U4</text>
+<rect x="352.0" y="282.0" width="36.0" height="36.0" rx="2" fill="#ffffff" stroke="#8b98a5" stroke-width="1.6"/>
+<text x="370.0" y="304.0" font-size="10.5" fill="#8b98a5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">U5</text>
+<rect x="169.3" y="379.8" width="48.0" height="48.0" rx="2" fill="#ffffff" stroke="#8b98a5" stroke-width="1.6"/>
+<text x="193.3" y="407.8" font-size="10.5" fill="#8b98a5" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">L1</text>
+<rect x="88.0" y="576.0" width="36.0" height="36.0" rx="2" fill="#ffffff" stroke="#0b6e4f" stroke-width="1.6"/>
+<text x="106.0" y="598.0" font-size="10.5" fill="#0b6e4f" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">U6</text>
+<rect x="88.0" y="630.0" width="36.0" height="36.0" rx="2" fill="#ffffff" stroke="#0b6e4f" stroke-width="1.6"/>
+<text x="106.0" y="652.0" font-size="10.5" fill="#0b6e4f" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">U7</text>
+<text x="136.0" y="652.0" font-size="11.5" font-weight="700" fill="#0b6e4f">U6, U7 — your SOT-23s ✓ both good</text>
+<circle cx="185.2" cy="702.0" r="8" fill="#ffffff" stroke="#0b6e4f" stroke-width="2.8"/>
+<circle cx="185.2" cy="702.0" r="2.6" fill="#0b6e4f"/>
+<text x="185.2" y="728.0" font-size="12.5" font-weight="700" fill="#0b6e4f" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">TP1 3.390 ✓</text>
+<circle cx="302.8" cy="300.0" r="8" fill="#ffffff" stroke="#0b6e4f" stroke-width="2.8"/>
+<circle cx="302.8" cy="300.0" r="2.6" fill="#0b6e4f"/>
+<text x="289.8" y="304.0" font-size="12.5" font-weight="700" fill="#0b6e4f" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">TP2 4.690 ✓</text>
+<circle cx="253.6" cy="527.8" r="8" fill="#ffffff" stroke="#ef6c00" stroke-width="2.8"/>
+<circle cx="253.6" cy="527.8" r="2.6" fill="#ef6c00"/>
+<text x="240.6" y="523.8" font-size="12.5" font-weight="700" fill="#ef6c00" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">TP3 1.863 ✓</text>
+<circle cx="230.3" cy="555.7" r="8" fill="#ffffff" stroke="#c62828" stroke-width="2.8"/>
+<circle cx="230.3" cy="555.7" r="2.6" fill="#c62828"/>
+<text x="217.3" y="575.7" font-size="12.5" font-weight="700" fill="#c62828" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">TP4 3.401 ✓</text>
+<circle cx="383.7" cy="278.5" r="8" fill="#ffffff" stroke="#ad1457" stroke-width="2.8"/>
+<circle cx="383.7" cy="278.5" r="2.6" fill="#ad1457"/>
+<text x="370.7" y="270.5" font-size="12.5" font-weight="700" fill="#ad1457" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">TP5 3.410 ✓</text>
+<circle cx="281.7" cy="483.5" r="8" fill="#ffffff" stroke="#37474f" stroke-width="2.8"/>
+<circle cx="281.7" cy="483.5" r="2.6" fill="#37474f"/>
+<text x="268.7" y="487.5" font-size="12.5" font-weight="700" fill="#37474f" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">TP6 0.000</text>
+<rect x="266.0" y="697.0" width="16" height="10" rx="1.5" fill="#ffffff" stroke="#b00020" stroke-width="2.2"/>
+<text x="274.0" y="686.0" font-size="11.5" font-weight="700" fill="#b00020" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">VBSEL_A</text>
+<rect x="302.0" y="697.0" width="16" height="10" rx="1.5" fill="#ffffff" stroke="#b00020" stroke-width="2.2"/>
+<text x="310.0" y="668.0" font-size="11.5" font-weight="700" fill="#b00020" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">VBSEL_B</text>
+<rect x="414.8" y="321.4" width="16" height="10" rx="1.5" fill="#ffffff" stroke="#2e7d32" stroke-width="2.2"/>
+<text x="436.8" y="330.4" font-size="11.5" font-weight="700" fill="#2e7d32" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">§4 ✓ 0.001 V — pull-ups OFF</text>
+<text x="46" y="776.0" font-size="12" fill="#5c6b7a">55 × 45 mm · dashed outlines = the bottom-side DF40 connectors facing the Pt · all six test points are on the TOP layer</text>
+<text x="820" y="190" font-size="18" font-weight="700" fill="#16202a">B · The 48-pin socket — looking DOWN into it, empty</text>
+<rect x="1161.8" y="491.8" width="556.4" height="556.4" rx="12" fill="#f4f7fa" stroke="#9fb0c0" stroke-width="1.8"/>
+<rect x="1222.1" y="552.1" width="435.8" height="435.8" rx="6" fill="#e3ebf2" stroke="#4a5c6c" stroke-width="2.2"/>
+<rect x="1320.4" y="668.6" width="239.2" height="202.8" rx="4" fill="#d6e4ef" stroke="#5f7a92" stroke-width="1.4"/>
+<rect x="1360.2" y="706.0" width="159.6" height="127.9" fill="#b9cfe0" stroke="#5f7a92" stroke-width="1"/>
+<text x="1440" y="736.0" font-size="18" font-weight="700" fill="#16202a" text-anchor="middle">PYTHON 1300</text>
+<text x="1440" y="758.0" font-size="12.5" fill="#4a5c6c" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">NOIP1SN1300A-QTI</text>
+<text x="1440" y="782.0" font-size="12" fill="#5f7a92" text-anchor="middle">1280 × 1024 global shutter · 4.8 µm pixel</text>
+<text x="1440" y="800.0" font-size="12" fill="#5f7a92" text-anchor="middle">6.14 × 4.92 mm active area</text>
+<text x="1440" y="890.0" font-size="11.5" fill="#7d8b98" text-anchor="middle" font-style="italic">pin 1 is mid-edge, not at a corner —</text>
+<text x="1440" y="907.0" font-size="11.5" fill="#7d8b98" text-anchor="middle" font-style="italic">orient from the SW / NE mech pads</text>
+<rect x="1210.1" y="969.3" width="24" height="24" rx="3" fill="#8b98a5" stroke="#4a5c6c" stroke-width="1.2"/>
+<rect x="1639.3" y="540.1" width="24" height="24" rx="3" fill="#8b98a5" stroke="#4a5c6c" stroke-width="1.2"/>
+<text x="1202.1" y="1001.3" font-size="11" fill="#5c6b7a" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">mech pad SW</text>
+<text x="1671.3" y="542.1" font-size="11" fill="#5c6b7a" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">mech pad NE</text>
+<rect x="1148.4" y="775.2" width="34" height="16" rx="2.5" fill="#c62828"/>
+<circle cx="1130.4" cy="783.2" r="6.6" fill="#c62828"/>
+<text x="830" y="787.7" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">1</text>
+<text x="842" y="787.7" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">+3V3_CAM</text>
+<text x="1103" y="787.7" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#c62828" font-weight="700" text-anchor="end">3.40 V</text>
+<rect x="1148.4" y="801.6" width="34" height="16" rx="2.5" fill="#2e7d32"/>
+<rect x="1124.6" y="803.8" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<text x="830" y="814.1" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">2</text>
+<text x="842" y="814.1" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_MOSI</text>
+<text x="1103" y="814.1" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#2e7d32" font-weight="700" text-anchor="end">0.000 V</text>
+<rect x="1148.4" y="828.0" width="34" height="16" rx="2.5" fill="#00838f"/>
+<circle cx="1130.4" cy="836.0" r="6.6" fill="#ffffff" stroke="#00838f" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<text x="830" y="840.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">3</text>
+<text x="842" y="840.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_MISO</text>
+<text x="1103" y="840.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#00838f" font-weight="700" text-anchor="end">floats</text>
+<rect x="1148.4" y="854.5" width="34" height="16" rx="2.5" fill="#2e7d32"/>
+<rect x="1124.6" y="856.7" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<text x="830" y="867.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">4</text>
+<text x="842" y="867.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_SCK</text>
+<text x="1103" y="867.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#2e7d32" font-weight="700" text-anchor="end">0.000 V</text>
+<rect x="1148.4" y="880.9" width="34" height="16" rx="2.5" fill="#37474f"/>
+<rect x="1124.6" y="883.1" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="830" y="893.4" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">5</text>
+<text x="842" y="893.4" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">GND</text>
+<text x="1103" y="893.4" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700" text-anchor="end">0.000 V</text>
+<rect x="1148.4" y="907.3" width="34" height="16" rx="2.5" fill="#ef6c00"/>
+<circle cx="1130.4" cy="915.3" r="6.6" fill="#ef6c00"/>
+<text x="830" y="919.8" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">6</text>
+<text x="842" y="919.8" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">+1V8_CAM</text>
+<text x="1103" y="919.8" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#ef6c00" font-weight="700" text-anchor="end">1.86 V</text>
+<rect x="1286.7" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1294.7" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1294.7,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">7</tspan>  CAM_CLKOUT_N  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1313.1" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1321.1" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1321.1,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">8</tspan>  CAM_CLKOUT_P  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1339.5" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1347.5" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1347.5,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">9</tspan>  CAM_D0_N  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1366.0" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1374.0" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1374.0,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">10</tspan>  CAM_D0_P  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1392.4" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1400.4" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1400.4,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">11</tspan>  CAM_D1_N  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1418.8" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1426.8" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1426.8,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">12</tspan>  CAM_D1_P  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1445.2" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1453.2" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1453.2,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">13</tspan>  CAM_D2_N  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1471.6" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1479.6" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1479.6,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">14</tspan>  CAM_D2_P  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1498.0" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1506.0" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1506.0,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">15</tspan>  CAM_D3_N  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1524.5" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1532.5" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1532.5,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">16</tspan>  CAM_D3_P  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1550.9" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1558.9" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1558.9,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">17</tspan>  CAM_SYNC_N  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1577.3" y="1027.6" width="16" height="34" rx="2.5" fill="#1565c0"/>
+<circle cx="1585.3" cy="1079.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<g transform="translate(1585.3,1093.6) rotate(90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">18</tspan>  CAM_SYNC_P  <tspan fill="#1565c0" font-weight="700">floats</tspan></text></g>
+<rect x="1697.6" y="907.3" width="34" height="16" rx="2.5" fill="#c62828"/>
+<circle cx="1749.6" cy="915.3" r="6.6" fill="#c62828"/>
+<text x="2144" y="919.8" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">19</text>
+<text x="2110" y="919.8" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">+3V3_CAM</text>
+<text x="1777" y="919.8" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#c62828" font-weight="700">3.40 V</text>
+<rect x="1697.6" y="880.9" width="34" height="16" rx="2.5" fill="#37474f"/>
+<rect x="1743.8" y="883.1" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="2144" y="893.4" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">20</text>
+<text x="2110" y="893.4" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">GND</text>
+<text x="1777" y="893.4" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700">0.000 V</text>
+<rect x="1697.6" y="854.5" width="34" height="16" rx="2.5" fill="#37474f"/>
+<rect x="1743.8" y="856.7" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="2144" y="867.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">21</text>
+<text x="2110" y="867.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">GND</text>
+<text x="1777" y="867.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700">0.000 V</text>
+<rect x="1697.6" y="828.0" width="34" height="16" rx="2.5" fill="#ef6c00"/>
+<circle cx="1749.6" cy="836.0" r="6.6" fill="#ef6c00"/>
+<text x="2144" y="840.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">22</text>
+<text x="2110" y="840.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">+1V8_CAM</text>
+<text x="1777" y="840.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#ef6c00" font-weight="700">1.86 V</text>
+<rect x="1697.6" y="801.6" width="34" height="16" rx="2.5" fill="#1565c0"/>
+<circle cx="1749.6" cy="809.6" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<text x="2144" y="814.1" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">23</text>
+<text x="2110" y="814.1" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">CAM_LVDSCLK_N</text>
+<text x="1777" y="814.1" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#1565c0" font-weight="700">floats</text>
+<rect x="1697.6" y="775.2" width="34" height="16" rx="2.5" fill="#1565c0"/>
+<circle cx="1749.6" cy="783.2" r="6.6" fill="#ffffff" stroke="#1565c0" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<text x="2144" y="787.7" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">24</text>
+<text x="2110" y="787.7" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">CAM_LVDSCLK_P</text>
+<text x="1777" y="787.7" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#1565c0" font-weight="700">floats</text>
+<rect x="1697.6" y="748.8" width="34" height="16" rx="2.5" fill="#2e7d32"/>
+<rect x="1743.8" y="751.0" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<text x="2144" y="761.3" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">25</text>
+<text x="2110" y="761.3" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">CAM_CLK_PLL</text>
+<text x="1777" y="761.3" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#2e7d32" font-weight="700">0.000 V</text>
+<rect x="1697.6" y="722.4" width="34" height="16" rx="2.5" fill="#ef6c00"/>
+<circle cx="1749.6" cy="730.4" r="6.6" fill="#ef6c00"/>
+<text x="2144" y="734.9" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">26</text>
+<text x="2110" y="734.9" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">+1V8_CAM</text>
+<text x="1777" y="734.9" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#ef6c00" font-weight="700">1.86 V</text>
+<rect x="1697.6" y="696.0" width="34" height="16" rx="2.5" fill="#37474f"/>
+<rect x="1743.8" y="698.2" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="2144" y="708.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">27</text>
+<text x="2110" y="708.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">GND</text>
+<text x="1777" y="708.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700">0.000 V</text>
+<rect x="1697.6" y="669.5" width="34" height="16" rx="2.5" fill="#6d4c41"/>
+<rect x="1743.8" y="671.7" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#6d4c41" stroke-width="2.5"/>
+<text x="2144" y="682.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">28</text>
+<text x="2110" y="682.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">IBIAS_MASTER</text>
+<text x="1777" y="682.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#6d4c41" font-weight="700">0.000 V</text>
+<rect x="1697.6" y="643.1" width="34" height="16" rx="2.5" fill="#c62828"/>
+<circle cx="1749.6" cy="651.1" r="6.6" fill="#c62828"/>
+<text x="2144" y="655.6" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">29</text>
+<text x="2110" y="655.6" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">+3V3_CAM</text>
+<text x="1777" y="655.6" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#c62828" font-weight="700">3.40 V</text>
+<rect x="1697.6" y="616.7" width="34" height="16" rx="2.5" fill="#37474f"/>
+<rect x="1743.8" y="618.9" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="2144" y="629.2" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">30</text>
+<text x="2110" y="629.2" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a" text-anchor="end">GND</text>
+<text x="1777" y="629.2" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700">0.000 V</text>
+<rect x="1577.3" y="478.4" width="16" height="34" rx="2.5" fill="#ad1457"/>
+<circle cx="1585.3" cy="460.4" r="6.6" fill="#ad1457"/>
+<g transform="translate(1585.3,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">31</tspan>  +3V3_PIX  <tspan fill="#ad1457" font-weight="700">3.41 V</tspan></text></g>
+<rect x="1550.9" y="478.4" width="16" height="34" rx="2.5" fill="#37474f"/>
+<rect x="1553.1" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<g transform="translate(1558.9,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">32</tspan>  GND  <tspan fill="#37474f" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1524.5" y="478.4" width="16" height="34" rx="2.5" fill="#ad1457"/>
+<circle cx="1532.5" cy="460.4" r="6.6" fill="#ad1457"/>
+<g transform="translate(1532.5,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">33</tspan>  +3V3_PIX  <tspan fill="#ad1457" font-weight="700">3.41 V</tspan></text></g>
+<rect x="1498.0" y="478.4" width="16" height="34" rx="2.5" fill="#37474f"/>
+<rect x="1500.2" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<g transform="translate(1506.0,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">34</tspan>  GND  <tspan fill="#37474f" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1471.6" y="478.4" width="16" height="34" rx="2.5" fill="#37474f"/>
+<rect x="1473.8" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<g transform="translate(1479.6,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">35</tspan>  GND  <tspan fill="#37474f" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1445.2" y="478.4" width="16" height="34" rx="2.5" fill="#c62828"/>
+<circle cx="1453.2" cy="460.4" r="6.6" fill="#c62828"/>
+<g transform="translate(1453.2,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">36</tspan>  +3V3_CAM  <tspan fill="#c62828" font-weight="700">3.40 V</tspan></text></g>
+<rect x="1418.8" y="478.4" width="16" height="34" rx="2.5" fill="#37474f"/>
+<rect x="1421.0" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<g transform="translate(1426.8,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">37</tspan>  GND  <tspan fill="#37474f" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1392.4" y="478.4" width="16" height="34" rx="2.5" fill="#ad1457"/>
+<circle cx="1400.4" cy="460.4" r="6.6" fill="#ad1457"/>
+<g transform="translate(1400.4,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">38</tspan>  +3V3_PIX  <tspan fill="#ad1457" font-weight="700">3.41 V</tspan></text></g>
+<rect x="1366.0" y="478.4" width="16" height="34" rx="2.5" fill="#37474f"/>
+<rect x="1368.2" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<g transform="translate(1374.0,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">39</tspan>  GND  <tspan fill="#37474f" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1339.5" y="478.4" width="16" height="34" rx="2.5" fill="#ad1457"/>
+<circle cx="1347.5" cy="460.4" r="6.6" fill="#ad1457"/>
+<g transform="translate(1347.5,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">40</tspan>  +3V3_PIX  <tspan fill="#ad1457" font-weight="700">3.41 V</tspan></text></g>
+<rect x="1313.1" y="478.4" width="16" height="34" rx="2.5" fill="#2e7d32"/>
+<rect x="1315.3" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<g transform="translate(1321.1,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">41</tspan>  CAM_TRIG0  <tspan fill="#2e7d32" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1286.7" y="478.4" width="16" height="34" rx="2.5" fill="#2e7d32"/>
+<rect x="1288.9" y="454.6" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<g transform="translate(1294.7,446.4) rotate(-90)"><text x="0" y="4.5" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a"><tspan fill="#5c6b7a">42</tspan>  CAM_TRIG1  <tspan fill="#2e7d32" font-weight="700">0.000 V</tspan></text></g>
+<rect x="1148.4" y="616.7" width="34" height="16" rx="2.5" fill="#2e7d32"/>
+<rect x="1124.6" y="618.9" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<text x="830" y="629.2" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">43</text>
+<text x="842" y="629.2" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_TRIG2</text>
+<text x="1103" y="629.2" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#2e7d32" font-weight="700" text-anchor="end">0.000 V</text>
+<rect x="1148.4" y="643.1" width="34" height="16" rx="2.5" fill="#00838f"/>
+<circle cx="1130.4" cy="651.1" r="6.6" fill="#ffffff" stroke="#00838f" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<text x="830" y="655.6" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">44</text>
+<text x="842" y="655.6" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_MON0</text>
+<text x="1103" y="655.6" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#00838f" font-weight="700" text-anchor="end">floats</text>
+<rect x="1148.4" y="669.5" width="34" height="16" rx="2.5" fill="#00838f"/>
+<circle cx="1130.4" cy="677.5" r="6.6" fill="#ffffff" stroke="#00838f" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<text x="830" y="682.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">45</text>
+<text x="842" y="682.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_MON1</text>
+<text x="1103" y="682.0" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#00838f" font-weight="700" text-anchor="end">floats</text>
+<rect x="1148.4" y="696.0" width="34" height="16" rx="2.5" fill="#2e7d32"/>
+<rect x="1124.6" y="698.2" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#2e7d32" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<text x="830" y="708.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">46</text>
+<text x="842" y="708.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_RESET_N</text>
+<text x="1103" y="708.5" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#2e7d32" font-weight="700" text-anchor="end">0.000 V</text>
+<rect x="1148.4" y="722.4" width="34" height="16" rx="2.5" fill="#6a1b9a"/>
+<circle cx="1130.4" cy="730.4" r="6.6" fill="#6a1b9a"/>
+<text x="830" y="734.9" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">47</text>
+<text x="842" y="734.9" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_SS_N</text>
+<text x="1103" y="734.9" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#6a1b9a" font-weight="700" text-anchor="end">3.40 V</text>
+<rect x="1148.4" y="748.8" width="34" height="16" rx="2.5" fill="#37474f"/>
+<rect x="1124.6" y="751.0" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="830" y="761.3" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a" text-anchor="end">48</text>
+<text x="842" y="761.3" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">GND</text>
+<text x="1103" y="761.3" font-size="13.5" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700" text-anchor="end">0.000 V</text>
+<circle cx="1130.4" cy="783.2" r="12.5" fill="none" stroke="#c62828" stroke-width="2.4"/>
+<text x="804.0" y="787.7" font-size="13" font-weight="700" fill="#c62828" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace">PIN 1 ▶</text>
+<text x="1238.7" y="448.4" font-size="13" font-weight="700" fill="#8493a2" text-anchor="end" letter-spacing="2">N · 31–42</text>
+<text x="1238.7" y="1097.6" font-size="13" font-weight="700" fill="#8493a2" text-anchor="end" letter-spacing="2">S · 7–18 · all LVDS</text>
+<text x="1161.8" y="475.8" font-size="13" font-weight="700" fill="#8493a2" letter-spacing="2">W · 43–48, 1–6</text>
+<text x="1718.2" y="475.8" font-size="13" font-weight="700" fill="#8493a2" text-anchor="end" letter-spacing="2">E · 19–30</text>
+<text x="46" y="800" font-size="18" font-weight="700" fill="#16202a">C · What can a voltmeter actually settle?</text>
+<rect x="46" y="816" width="730" height="196" rx="8" fill="#f7fafc" stroke="#c8d2dc"/>
+<circle cx="78.0" cy="844.0" r="6.6" fill="#37474f"/>
+<text x="104" y="848" font-size="13.5" font-weight="700" fill="#16202a"><tspan fill="#5c6b7a">12 pins</tspan>  READS A REAL VOLTAGE</text>
+<text x="104" y="867" font-size="12.5" fill="#5c6b7a">Verified. Must match its test point exactly.</text>
+<rect x="72.2" y="885.2" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5"/>
+<text x="104" y="895" font-size="13.5" font-weight="700" fill="#16202a"><tspan fill="#5c6b7a">12 pins</tspan>  HARD 0.000 V</text>
+<text x="104" y="914" font-size="12.5" fill="#5c6b7a">Verified. Eleven grounds, plus IBIAS through R1.</text>
+<rect x="72.2" y="932.2" width="11.6" height="11.6" rx="1.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5" stroke-dasharray="3 2.4"/>
+<text x="104" y="942" font-size="13.5" font-weight="700" fill="#16202a"><tspan fill="#5c6b7a">7 pins</tspan>  READS 0.000 V — BUT PROVES LITTLE</text>
+<text x="104" y="961" font-size="12.5" fill="#5c6b7a">The pull-down gives 0.000 V whether or not the FPGA link is intact.</text>
+<circle cx="78.0" cy="985.0" r="6.6" fill="#ffffff" stroke="#37474f" stroke-width="2.5" stroke-dasharray="3.2 2.7"/>
+<text x="104" y="989" font-size="13.5" font-weight="700" fill="#16202a"><tspan fill="#5c6b7a">17 pins</tspan>  FLOATS — NO VERDICT</text>
+<text x="104" y="1008" font-size="12.5" fill="#5c6b7a">Needs the §6 resistance walk, or a walking-ones bitstream.</text>
+<text x="46" y="1052" font-size="15" font-weight="700" fill="#16202a">Net colours — what your meter should show</text>
+<rect x="46" y="1084" width="28" height="15" rx="2.5" fill="#c62828"/>
+<text x="86" y="1096" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">+3V3_CAM  rail</text>
+<text x="368" y="1096" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#c62828" font-weight="700">3.40 V</text>
+<text x="476" y="1096" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">true 3.293 V · must equal TP4</text>
+<rect x="46" y="1112" width="28" height="15" rx="2.5" fill="#ad1457"/>
+<text x="86" y="1124" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">+3V3_PIX  rail</text>
+<text x="368" y="1124" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#ad1457" font-weight="700">3.41 V</text>
+<text x="476" y="1124" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">true 3.301 V · must equal TP5</text>
+<rect x="46" y="1140" width="28" height="15" rx="2.5" fill="#ef6c00"/>
+<text x="86" y="1152" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">+1V8_CAM  rail</text>
+<text x="368" y="1152" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#ef6c00" font-weight="700">1.86 V</text>
+<text x="476" y="1152" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">true 1.804 V · must equal TP3</text>
+<rect x="46" y="1168" width="28" height="15" rx="2.5" fill="#6a1b9a"/>
+<text x="86" y="1180" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">CAM_SS_N  10k pull-UP</text>
+<text x="368" y="1180" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#6a1b9a" font-weight="700">3.40 V</text>
+<text x="476" y="1180" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">the ONLY control pin that is high</text>
+<rect x="46" y="1196" width="28" height="15" rx="2.5" fill="#37474f"/>
+<text x="86" y="1208" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">GND</text>
+<text x="368" y="1208" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#37474f" font-weight="700">0.000 V</text>
+<text x="476" y="1208" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">11 pins · also &lt; 1 Ω to TP6, power off</text>
+<rect x="46" y="1224" width="28" height="15" rx="2.5" fill="#6d4c41"/>
+<text x="86" y="1236" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">IBIAS_MASTER</text>
+<text x="368" y="1236" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#6d4c41" font-weight="700">0.000 V</text>
+<text x="476" y="1236" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">also 47 kΩ to TP6 through R1</text>
+<rect x="46" y="1252" width="28" height="15" rx="2.5" fill="#2e7d32"/>
+<text x="86" y="1264" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">control, 10k pull-DOWN</text>
+<text x="368" y="1264" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#2e7d32" font-weight="700">0.000 V</text>
+<text x="476" y="1264" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">reads zero even if the FPGA link is open</text>
+<rect x="46" y="1280" width="28" height="15" rx="2.5" fill="#1565c0"/>
+<text x="86" y="1292" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">LVDS ↔ FPGA bank 13</text>
+<text x="368" y="1292" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#1565c0" font-weight="700">floats</text>
+<text x="476" y="1292" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">drifts · a meter returns no verdict</text>
+<rect x="46" y="1308" width="28" height="15" rx="2.5" fill="#00838f"/>
+<text x="86" y="1320" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#16202a">sensor output → FPGA</text>
+<text x="368" y="1320" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#00838f" font-weight="700">floats</text>
+<text x="476" y="1320" font-size="12" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" fill="#5c6b7a">drifts · a meter returns no verdict</text>
+<rect x="820" y="1330" width="1334" height="222" rx="8" fill="#f7fafc" stroke="#c8d2dc"/>
+<text x="842" y="1362" font-size="15" font-weight="700" fill="#16202a">D · Reading the drawing</text>
+<text x="842" y="1390" font-size="12.5" fill="#5c6b7a"><tspan font-weight="700" fill="#16202a">§4 is answered — the Pt leaves its I/Os in high-Z.</tspan>  R5 pad 1 measured 0.001 V against a hard 0.000 V on its ground pad, so the FPGA's configuration pull-ups are off. That fixes every value on this</text>
+<text x="842" y="1406" font-size="12.5" fill="#5c6b7a">drawing, but it also means 17 pins no longer have anything driving them and cannot be resolved by voltage at all.</text>
+<text x="842" y="1429" font-size="12.5" fill="#5c6b7a"><tspan font-weight="700" fill="#16202a">Eight pins read correctly even when they are broken.</tspan>  The seven dashed-square control pins and pin 47 all sit on on-board pull resistors. Their reading proves the resistor and the copper between it and</text>
+<text x="842" y="1445" font-size="12.5" fill="#5c6b7a">the socket — not the link onward through J1 to the FPGA. Only a walking-ones bitstream proves that, because only it catches pin swaps.</text>
+<text x="842" y="1468" font-size="12.5" fill="#5c6b7a"><tspan font-weight="700" fill="#16202a">Voltage alone cannot prove a socket joint.</tspan>  A contact merely resting near its pad still reads correctly through a 10 MΩ meter. Follow with the power-off resistance walk in §6 of</text>
+<text x="842" y="1484" font-size="12.5" fill="#5c6b7a">BRINGUP_DMM_CHECKLIST.md — that is now where most of the remaining proof lives. Pin 23 to pin 24 = 100 Ω through R2 is the one differential check a</text>
+<text x="842" y="1500" font-size="12.5" fill="#5c6b7a">meter can make.</text>
+<text x="842" y="1523" font-size="12.5" fill="#5c6b7a"><tspan font-weight="700" fill="#16202a">The gain error does not invalidate the comparisons.</tspan>  Rail pins matching their test point, the eleven grounds at zero, and the control pins agreeing with each other are all ratios or zeros — immune to a</text>
+<text x="842" y="1539" font-size="12.5" fill="#5c6b7a">scale error. Swapping the meter battery is still worth doing before any absolute measurement matters.</text>
+</svg>
