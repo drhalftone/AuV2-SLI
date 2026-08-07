@@ -1,14 +1,24 @@
-# Mechanical model — PYTHON 1300 in its 48-pin LCC
+# Mechanical models — camera sensor and bracket
 
-`gen_sensor_step.py` writes `../3dmodels/NOIP1SN1300A_LCC48.step`, a solid model of the
-sensor package intended as the reference body for a 3D-printed lens / retention bracket.
-`check_step.py` validates the result. Regenerate; do not hand-edit the STEP.
+| | writes | |
+|---|---|---|
+| `gen_sensor_step.py` | `../3dmodels/NOIP1SN1300A_LCC48.step` | the PYTHON 1300 package — the reference body everything else is designed around |
+| `gen_socket_tile.py` | `../3dmodels/camera_socket_tile.step` | iteration 0 of the bracket: the contact tile |
+| `step_writer.py` | — | shared AP214 writer and 2D helpers |
+| `check_step.py` | — | validates any of the above |
+
+Regenerate; do not hand-edit a STEP. Output is byte-reproducible, so a regenerated file
+that differs is a real change.
 
 ```
 python gen_sensor_step.py                    # typical dimensions
 python gen_sensor_step.py --tolerance max    # worst-case envelope
+python gen_socket_tile.py
 python check_step.py
 ```
+
+The first section below covers the sensor; [the socket tile](#the-socket-tile-iteration-0)
+is further down.
 
 Every dimension comes from `docs/datasheets/NOIP1SN1300A.pdf` — **Table 31** (Mechanical
 Specification), **Figure 50** (Package Drawing), **Table 32 / Figures 51–52** (Optical
@@ -86,15 +96,67 @@ board's.
 - Corner radius R0.20, faceted in 4 segments.
 - The header timestamp is fixed, so regenerating produces a byte-identical file.
 
+## The socket tile (iteration 0)
+
+A square halo that covers the socket's exposed contact ring, with a window in the middle
+for the sensor and two locating pins underneath. Deliberately nothing else yet.
+
+**Different Z datum.** The tile is referenced to the **PCB top surface** (z = 0), because
+that is what it mounts to; the sensor model is referenced to its **seating plane** inside
+the socket. X and Y agree. The two cannot be stacked in Z until the seating height is
+measured — the same open item as above.
+
+| | default | |
+|---|---|---|
+| Outer | 23.00 mm square, R0.8 | socket pads reach ±11.176, so this covers them by 0.32 |
+| Window | 14.80 mm square, R0.4 | 0.19 mm/side over the sensor's worst-case 14.42 body |
+| Thickness | 1.50 mm | |
+| Underside | z = 2.90 | resting on the socket, whose height is 2.90 REF |
+| Locating pins | 2 × Ø1.40, 1.20 deep | in the Ø1.60 index holes; PCB is 1.6 mm thick |
+
+Every one of those is a first guess a test print will move — they are all flags.
+
+The generator re-derives the index holes, the socket body rectangle and the pad reach from
+the `.kicad_pcb` on each run and fails if any has moved, so the tile cannot silently drift
+away from the board it mounts to.
+
+**The tile clears everything on the board.** Ten footprints fall under it, all on the
+bottom layer — the U1 decoupling caps moved to the underside per README §14. Nothing on
+the top layer is in the way.
+
+### The locating pins do not fit, and this is not a modelling artefact
+
+Both index holes sit **exactly on the socket body outline** — one at x = −8.382, one at
+y = +8.382, and the body is ±8.382. A round pin centred in either hole has half its
+section inside the socket's footprint.
+
+That is by construction: those holes exist to take the **Andon part's own index pins**
+(the `-1` suffix), so they are underneath its body by definition. A separate bracket
+cannot use them while the socket is fitted. Three ways out, none of them chosen here:
+
+- order the **`-0`** socket (no index pins — which §7 already leans toward, because the
+  `-1` pins protrude ~1.66 mm into a 1.6 mm board) and relieve the tile's pins to a **D
+  section**, keeping only the outer half of each hole;
+- **locate off something else** — the socket body itself, or the board outline — and drop
+  the pins;
+- add **two dedicated mounting holes** on the next board spin.
+
+`gen_socket_tile.py` prints this interference every run rather than quietly emitting a
+part that cannot be assembled.
+
 ## Validation
 
 `check_step.py` re-reads the STEP independently of the code that wrote it and checks that
 every edge is used exactly twice per solid (once in each direction), that V − E + F = 2,
 that each face loop winds counter-clockwise about the outward normal its plane declares,
-and that the enclosed volume integrated over the faces matches the volume computed
-analytically from the datasheet dimensions. The volume test is the one that catches an
-inside-out solid, which every purely topological check passes.
+that every inner bound winds opposite its outer loop (which is what makes a window a hole
+rather than a second region), and that the enclosed volume integrated over the faces
+matches the volume computed analytically from the design dimensions. The volume test is
+the one that catches an inside-out solid, which every purely topological check passes.
 
-The output was additionally imported with OCCT (`cadquery`), which reports all four solids
-valid, with volumes and bounding boxes matching the table above. `check_step.py` needs no
+It reports **genus** rather than asserting a fixed Euler characteristic — the sensor's
+bodies are genus 0, the tile is genus 1 because the window goes all the way through.
+
+Both models were additionally imported with OCCT (`cadquery`), which reports every solid
+valid with volumes and bounding boxes matching the tables above. `check_step.py` needs no
 third-party packages; the OCCT pass was a one-off confirmation.
