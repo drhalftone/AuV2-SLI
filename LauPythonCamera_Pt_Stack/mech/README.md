@@ -113,8 +113,34 @@ measured — the same open item as above.
 | Thickness | 1.50 mm | |
 | Underside | z = 2.90 | resting on the socket, whose height is 2.90 REF |
 | Locating pins | 2 × Ø1.40, 1.20 deep | in the Ø1.60 index holes; PCB is 1.6 mm thick |
+| Wire slots | 48 × 0.51 wide | on the sensor's own 1.016 mm pitch |
 
 Every one of those is a first guess a test print will move — they are all flags.
+
+### The wire slots
+
+Each slot runs the full height of the window wall as a 0.40 mm deep groove, then turns
+onto the bottom face and runs out to r = 10.00 as a 0.40 mm deep channel. Slot positions
+come from `gen_sensor_step.pin_ring()` rather than being re-derived, so they line up with
+the sensor's castellations by construction and inherit that ring's cross-check against
+U1's footprint.
+
+The turn is why the tile is **two stacked solids**, `tile_upper` and `tile_lower`, split at
+z = 3.30. A prism has vertical walls and cannot change profile with height; stacking two is
+what lets the groove change direction. Union them to print.
+
+Three things about the slots worth knowing before printing:
+
+- **The ribs between slots are 0.506 mm** — 1.016 pitch less 0.51 slot. That is at or under
+  a single FDM extrusion. Print this on a resin machine, or slot every second pin to get
+  1.52 mm of pitch. The generator warns about it.
+- **The channels reach r = 10.00**, clearing the socket body edge at 8.382 by 1.62, so a
+  wire escapes into the open space under the overhang instead of being trapped between the
+  tile and the socket. 1.50 mm of rim is left at the outer edge, which keeps the lower
+  layer a single connected ring.
+- **The corner is a square step, not a radius.** Give the wire its own bend relief.
+
+`--no-slots` gives the plain tile back.
 
 The generator re-derives the index holes, the socket body rectangle and the pad reach from
 the `.kicad_pcb` on each run and fails if any has moved, so the tile cannot silently drift
@@ -157,8 +183,12 @@ python gen_sensor_step.py --stl --no-reference
 
 STL carries no units; everything here is **millimetres**, so say so on import.
 
-Committed STLs: `camera_socket_tile.stl` (472 triangles) and `NOIP1SN1300A_LCC48.stl`
+Committed STLs: `camera_socket_tile.stl` (2232 triangles) and `NOIP1SN1300A_LCC48.stl`
 (856 triangles, built with `--no-reference`).
+
+Caps are triangulated by ear clipping, not a fan from vertex 0 — neither the sensor
+outline nor the tile's cap is remotely convex. Caps with a hole are first merged into one
+simple polygon by the standard keyhole bridge.
 
 **SketchUp** cannot import STEP without a paid extension, and it discards geometry below
 about 0.001 inch — which is why the sensor STL is generated without reference geometry.
@@ -179,9 +209,13 @@ rather than a second region), and that the enclosed volume integrated over the f
 matches the volume computed analytically from the design dimensions. The volume test is
 the one that catches an inside-out solid, which every purely topological check passes.
 
-STL export applies the same two tests to the triangle soup before writing — every
-half-edge matched exactly once, positive enclosed volume — because a triangulation bug in
-a non-convex cap would otherwise stay invisible until it printed.
+STL export applies the same two tests to the triangles before writing — every half-edge
+matched exactly once, positive enclosed volume — because a triangulation bug in a
+non-convex cap would otherwise stay invisible until it printed. It checks **per solid**,
+not across the model: stacked solids share edges on their common plane quite legitimately,
+and checking globally rejects them. (It did, the first time the tile grew slots. The check
+was wrong, not the geometry — but it was the check finding the disagreement that made that
+worth looking at.)
 
 It reports **genus** rather than asserting a fixed Euler characteristic — the sensor's
 bodies are genus 0, the tile is genus 1 because the window goes all the way through.

@@ -35,12 +35,14 @@ Usage
 """
 
 import argparse
+import math
 import os
 import re
 import sys
 
 import step_writer as sw
 import check_step
+import gen_sensor_step as sensor
 
 MM = "mm"
 
@@ -60,6 +62,66 @@ COLORS = {
     "tile": (0.35, 0.55, 0.80),
     "pin": (0.25, 0.40, 0.62),
 }
+
+
+# --------------------------------------------------------------------------------------
+# The wire slots
+# --------------------------------------------------------------------------------------
+
+def slot_offsets():
+    """Along-edge slot positions per side, taken from the sensor's own pin ring.
+
+    Reusing `gen_sensor_step.pin_ring` rather than re-deriving the pitch is the point:
+    the slots then line up with the sensor's castellations by construction, and inherit
+    the cross-check that ring already carries against U1's footprint.
+    """
+    sides = {}
+    for _, (side, along) in sorted(sensor.pin_ring().items()):
+        sides.setdefault(side, []).append(along)
+    for side in sides:
+        sides[side].sort()
+    assert sum(len(v) for v in sides.values()) == 48, sides
+    return sides
+
+
+def window_outline(half, sides, depth, width, corner_r, corner_segments=6):
+    """The window, counter-clockwise, with a slot cut at each sensor pin position.
+
+    Slots protrude OUTWARD -- away from the window centre, into the tile's material -- by
+    `depth`. Depth is what distinguishes the two layers of the tile: a shallow groove down
+    the window wall above, and a channel running out across the bottom face below.
+    """
+    def edge(side, reverse_):
+        pts, d = [], half + depth
+        for along in sides.get(side, []):
+            a, b = along - width / 2.0, along + width / 2.0
+            if side == "S":
+                pts += [(a, -half), (a, -d), (b, -d), (b, -half)]
+            elif side == "N":
+                pts += [(a, half), (a, d), (b, d), (b, half)]
+            elif side == "W":
+                pts += [(-half, a), (-d, a), (-d, b), (-half, b)]
+            else:
+                pts += [(half, a), (d, a), (d, b), (half, b)]
+        if reverse_:
+            pts.reverse()
+        return pts
+
+    c = half - corner_r
+    out = [(-c, -half)]
+    out += edge("S", False)
+    out += [(c, -half)]
+    out += sw.arc(c, -c, corner_r, -math.pi / 2, 0.0, corner_segments)
+    out += edge("E", False)
+    out += [(half, c)]
+    out += sw.arc(c, c, corner_r, 0.0, math.pi / 2, corner_segments)
+    out += edge("N", True)
+    out += [(-c, half)]
+    out += sw.arc(-c, c, corner_r, math.pi / 2, math.pi, corner_segments)
+    out += edge("W", True)
+    out += [(-half, -c)]
+    out += sw.arc(-c, -c, corner_r, math.pi, 1.5 * math.pi, corner_segments)
+    return sw.dedupe(out)
 
 
 # --------------------------------------------------------------------------------------
@@ -189,8 +251,25 @@ def build(args):
                        args.timestamp, tool="gen_socket_tile.py")
 
     ring_outer = sw.rounded_rect(0, 0, args.outer, args.outer, args.corner_r)
-    window = sw.rounded_rect(0, 0, args.window, args.window, args.window_r)
-    step.prism(ring_outer, z0, z1, "tile", COLORS["tile"], holes=[window])
+    win_half = args.window / 2.0
+    z_mid = z0 + args.channel_depth
+
+    if args.no_slots:
+        window = sw.rounded_rect(0, 0, args.window, args.window, args.window_r)
+        layers = [(window, z0, z1, "tile")]
+    else:
+        sides = slot_offsets()
+        # Upper: a shallow groove down the window wall. Lower: the same slot carried out
+        # across the bottom face. Stacking the two is what makes the groove turn the
+        # corner -- a single prism has vertical walls and cannot.
+        groove = window_outline(win_half, sides, args.slot_depth, args.slot_width,
+                                args.window_r)
+        channel = window_outline(win_half, sides, args.channel_reach - win_half,
+                                 args.slot_width, args.window_r)
+        layers = [(groove, z_mid, z1, "tile_upper"), (channel, z0, z_mid, "tile_lower")]
+
+    for hole, a, b, name in layers:
+        step.prism(ring_outer, a, b, name, COLORS["tile"], holes=[hole])
 
     pins = []
     for i, (hx, hy) in enumerate(holes):
@@ -206,9 +285,10 @@ def build(args):
         fh.write(text)
 
     # ----------------------------------------------------------------------------------
-    expected = {
-        "tile": (abs(sw.signed_area(ring_outer)) - abs(sw.signed_area(window))) * args.thickness,
-    }
+    expected = {}
+    for hole, a, b, name in layers:
+        expected[name] = (abs(sw.signed_area(ring_outer))
+                          - abs(sw.signed_area(hole))) * (b - a)
     for i in range(len(holes)):
         expected["locating_pin_%d" % (i + 1)] = \
             abs(sw.signed_area(sw.circle(0, 0, pin_r, args.pin_segments))) \
@@ -229,6 +309,34 @@ def build(args):
       % (args.outer, args.thickness, args.corner_r))
     w("  underside / top           z = %.2f -> %.2f %s above the PCB" % (z0, z1, MM))
     w("  window                    %.2f square, R%.1f" % (args.window, args.window_r))
+    if not args.no_slots:
+        pitch = sensor.PIN_PITCH
+        rib = pitch - args.slot_width
+        roof = z1 - z_mid
+        w("  wire slots                48, %.2f wide on the sensor's %.3f pitch"
+          % (args.slot_width, pitch))
+        w("     down the wall         %.2f deep, z = %.2f -> %.2f (full height)"
+          % (args.slot_depth, z0, z1))
+        w("     across the bottom     %.2f deep, out to r = %.2f from centre"
+          % (args.channel_depth, args.channel_reach))
+        w("     roof over the channel %.2f %s of the %.2f thickness remains"
+          % (roof, MM, args.thickness))
+        w("     rib between slots     %.3f %s" % (rib, MM))
+        if rib < 0.6:
+            w("     ** %.3f mm ribs are at or under one FDM extrusion. Print this on a"
+              % rib)
+            w("        resin machine, or widen the pitch by slotting every 2nd pin. **")
+        if args.channel_reach <= body_half:
+            w("     ** channels stop at r = %.2f, inside the socket body edge at %.3f --"
+              % (args.channel_reach, body_half))
+            w("        wires would be trapped between the tile and the socket. **")
+        else:
+            w("     wires clear the socket body (%.3f) by %.3f, then run free under the"
+              % (body_half, args.channel_reach - body_half))
+            w("     overhang; %.2f %s of rim is left at the outer edge."
+              % (outer_half - args.channel_reach, MM))
+        w("     the slots meet the bottom face as a square step, not a radius -- give")
+        w("     the wire its own bend relief when routing.")
     w("  locating pins             2 x dia %.2f, z = %+.2f -> %+.2f  (%.2f into the board)"
       % (args.pin_dia, -args.pin_engage, z0, args.pin_engage))
     for i, (hx, hy) in enumerate(holes):
@@ -305,6 +413,18 @@ def main():
                         "(default 2.90, resting on the socket)")
     p.add_argument("--corner-r", type=float, default=0.80, help="outer corner radius, mm")
     p.add_argument("--window-r", type=float, default=0.40, help="window corner radius, mm")
+    p.add_argument("--no-slots", action="store_true",
+                   help="plain window, without the 48 wire slots")
+    p.add_argument("--slot-width", type=float, default=0.51,
+                   help="wire slot width, mm (default 0.51, the sensor's own "
+                        "castellation width, on a 1.016 pitch)")
+    p.add_argument("--slot-depth", type=float, default=0.40,
+                   help="how far each slot cuts into the window wall, mm")
+    p.add_argument("--channel-depth", type=float, default=0.40,
+                   help="how deep the slot runs into the bottom face, mm")
+    p.add_argument("--channel-reach", type=float, default=10.00,
+                   help="radius from centre the bottom channels run out to, mm "
+                        "(must clear the socket body at 8.382 for wires to escape)")
     p.add_argument("--pin-dia", type=float, default=1.40,
                    help="locating pin diameter, mm (default 1.40 in a 1.60 hole)")
     p.add_argument("--pin-engage", type=float, default=1.20,

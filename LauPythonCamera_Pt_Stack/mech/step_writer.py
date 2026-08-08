@@ -86,26 +86,34 @@ def _cross2(o, a, b):
     return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 
 
-def _in_triangle(p, a, b, c):
-    d1, d2, d3 = _cross2(a, b, p), _cross2(b, c, p), _cross2(c, a, p)
-    return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+_EPS = 1e-12
+
+
+def _strictly_inside(p, a, b, c):
+    return (_cross2(a, b, p) > _EPS and _cross2(b, c, p) > _EPS and _cross2(c, a, p) > _EPS)
 
 
 def ear_clip(poly):
-    """Triangulate a simple counter-clockwise polygon. Handles reflex vertices, which a
-    fan from vertex 0 does not -- the sensor's package outline has 48 notches in it."""
+    """Triangulate a simple counter-clockwise polygon.
+
+    Handles reflex vertices, which a fan from vertex 0 does not -- the sensor's package
+    outline has 48 notches in it and the tile's cap has 48 wire channels. Containment uses
+    a strict test so that the duplicated vertices left by `bridge_holes` sit on a triangle
+    edge without blocking an otherwise valid ear.
+    """
     idx = list(range(len(poly)))
     tris = []
-    guard = 0
-    while len(idx) > 3 and guard <= len(poly) * len(poly):
+    guard, limit = 0, 2 * len(poly) * len(poly) + 16
+    while len(idx) > 3 and guard < limit:
         guard += 1
-        for k in range(len(idx)):
-            a, b, c = poly[idx[k - 1]], poly[idx[k]], poly[idx[(k + 1) % len(idx)]]
-            if _cross2(a, b, c) <= 0:
+        m = len(idx)
+        for k in range(m):
+            ia, ib, ic = idx[(k - 1) % m], idx[k], idx[(k + 1) % m]
+            a, b, c = poly[ia], poly[ib], poly[ic]
+            if _cross2(a, b, c) <= _EPS:
                 continue                                     # reflex or collinear
-            others = [poly[idx[t]] for t in range(len(idx))
-                      if t not in (k - 1 if k else len(idx) - 1, k, (k + 1) % len(idx))]
-            if any(_in_triangle(p, a, b, c) for p in others):
+            if any(_strictly_inside(poly[t], a, b, c)
+                   for t in idx if t not in (ia, ib, ic)):
                 continue                                     # not an ear
             tris.append((a, b, c))
             idx.pop(k)
@@ -117,36 +125,45 @@ def ear_clip(poly):
     return tris
 
 
-def ring_triangles(outer, inner):
-    """Triangulate the region between two nested counter-clockwise loops.
+def bridge_holes(outer, holes):
+    """Merge holes into a counter-clockwise outer loop, giving one simple polygon.
 
-    Greedy shortest-diagonal strip. Valid for nested convex-ish rings, which is what the
-    tile's cap is; it consumes every edge of both loops exactly once, so the result is
-    watertight.
+    The classic keyhole: from each hole's rightmost vertex, cast a ray in +x, and split
+    the outer loop at the edge it hits, threading the hole through the cut. The hole is
+    traversed in its stored (clockwise) order, opposite the outer loop, which is what
+    makes the merged polygon simple.
+
+    Assumes `outer` is convex, which is true of every cap here -- it lets the bridge
+    target be the hit edge's rightmost endpoint without a visibility search.
     """
-    n, m = len(outer), len(inner)
-    d2 = lambda p, q: (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2
-    j0 = min(range(m), key=lambda j: d2(outer[0], inner[j]))
-    tris, i, j = [], 0, 0
-    while i < n or j < m:
-        o0, o1 = outer[i % n], outer[(i + 1) % n]
-        i0, i1 = inner[(j0 + j) % m], inner[(j0 + j + 1) % m]
-        if j >= m or (i < n and d2(o1, i0) <= d2(o0, i1)):
-            tris.append((o0, o1, i0))
-            i += 1
-        else:
-            tris.append((o0, i1, i0))
-            j += 1
-    return tris
+    poly = list(outer)
+    for hole in sorted(holes, key=lambda h: -max(p[0] for p in h)):
+        hi = max(range(len(hole)), key=lambda i: hole[i][0])
+        mx, my = hole[hi]
+        best_x, best_i, n = None, None, len(poly)
+        for i in range(n):
+            a, b = poly[i], poly[(i + 1) % n]
+            if (a[1] > my) == (b[1] > my):
+                continue
+            x = a[0] + (my - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+            if x < mx - _EPS:
+                continue
+            if best_x is None or x < best_x:
+                best_x, best_i = x, i
+        if best_i is None:
+            raise ValueError("hole is not inside the outer loop")
+        p = best_i if poly[best_i][0] >= poly[(best_i + 1) % n][0] else (best_i + 1) % n
+        m = len(hole)
+        poly = (poly[:p + 1] + [hole[(hi + k) % m] for k in range(m)]
+                + [hole[hi], poly[p]] + poly[p + 1:])
+    return poly
 
 
 def cap_triangles(outer, holes):
     """Triangles filling a cap face, as 2D point triples wound counter-clockwise."""
     if not holes:
         return ear_clip(outer)
-    if len(holes) == 1:
-        return ring_triangles(outer, reverse(holes[0]))
-    raise NotImplementedError("cap with %d holes" % len(holes))
+    return ear_clip(bridge_holes(outer, holes))
 
 
 # --------------------------------------------------------------------------------------
@@ -303,53 +320,64 @@ class StepFile:
         return solid
 
     # -- STL ---------------------------------------------------------------------------
-    def stl_triangles(self, skip=()):
-        """Every solid as a flat triangle list. Exact: these models are already
-        polyhedra, so nothing is approximated on the way out."""
+    @staticmethod
+    def _solid_triangles(outer, holes, z0, z1):
+        """One solid as a triangle list. Exact: these models are already polyhedra, so
+        nothing is approximated on the way out."""
         tris = []
-        for name, outer, holes, z0, z1 in self.meshes:
-            if name in skip:
-                continue
-            cap = cap_triangles(outer, holes)
-            for a, b, c in cap:
-                tris.append(((a[0], a[1], z1), (b[0], b[1], z1), (c[0], c[1], z1)))
-                tris.append(((c[0], c[1], z0), (b[0], b[1], z0), (a[0], a[1], z0)))
-            for loop in [outer] + list(holes):
-                for i in range(len(loop)):
-                    ax, ay = loop[i]
-                    bx, by = loop[(i + 1) % len(loop)]
-                    if math.hypot(bx - ax, by - ay) < 1e-9:
-                        continue
-                    tris.append(((ax, ay, z0), (bx, by, z0), (bx, by, z1)))
-                    tris.append(((ax, ay, z0), (bx, by, z1), (ax, ay, z1)))
+        for a, b, c in cap_triangles(outer, holes):
+            tris.append(((a[0], a[1], z1), (b[0], b[1], z1), (c[0], c[1], z1)))
+            tris.append(((c[0], c[1], z0), (b[0], b[1], z0), (a[0], a[1], z0)))
+        for loop in [outer] + list(holes):
+            for i in range(len(loop)):
+                ax, ay = loop[i]
+                bx, by = loop[(i + 1) % len(loop)]
+                if math.hypot(bx - ax, by - ay) < 1e-9:
+                    continue
+                tris.append(((ax, ay, z0), (bx, by, z0), (bx, by, z1)))
+                tris.append(((ax, ay, z0), (bx, by, z1), (ax, ay, z1)))
         return tris
+
+    def stl_solids(self, skip=()):
+        """[(name, triangles)], one entry per solid."""
+        return [(name, self._solid_triangles(outer, holes, z0, z1))
+                for name, outer, holes, z0, z1 in self.meshes if name not in skip]
+
+    def stl_triangles(self, skip=()):
+        return [t for _, tris in self.stl_solids(skip) for t in tris]
 
     def write_stl(self, path, skip=(), header=None):
         """Write a binary STL, after checking it is watertight and correctly oriented.
 
         STL carries no units. Everything here is millimetres; say so on import.
         """
-        tris = self.stl_triangles(skip)
+        solids = self.stl_solids(skip)
+        tris = [t for _, s in solids for t in s]
 
-        # Every edge must appear exactly twice, in opposite directions, and the enclosed
-        # volume must come out positive -- the same two tests check_step.py applies to the
-        # B-rep, because a triangulation bug would otherwise be invisible until it printed.
-        edges = {}
+        # Every edge of every solid must appear exactly twice, in opposite directions, and
+        # each enclosed volume must come out positive -- the same two tests check_step.py
+        # applies to the B-rep, because a triangulation bug would otherwise stay invisible
+        # until it printed. Checked per solid, not across the model: stacked solids share
+        # edges on their common plane quite legitimately.
         vol = 0.0
-        for t in tris:
-            for i in range(3):
-                a = tuple(round(c, 9) for c in t[i])
-                b = tuple(round(c, 9) for c in t[(i + 1) % 3])
-                edges[(a, b)] = edges.get((a, b), 0) + 1
-            vol += (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
-                    - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
-                    + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0
-        bad = [e for e, n in edges.items() if n != 1 or edges.get((e[1], e[0]), 0) != 1]
-        if bad:
-            raise SystemExit("STL is not watertight: %d half-edges unmatched, e.g. %s"
-                             % (len(bad), bad[0]))
-        if vol <= 0:
-            raise SystemExit("STL is inside-out (volume %.4f)" % vol)
+        for name, solid in solids:
+            edges = {}
+            v = 0.0
+            for t in solid:
+                for i in range(3):
+                    a = tuple(round(c, 9) for c in t[i])
+                    b = tuple(round(c, 9) for c in t[(i + 1) % 3])
+                    edges[(a, b)] = edges.get((a, b), 0) + 1
+                v += (t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
+                      - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
+                      + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0
+            bad = [e for e, n in edges.items() if n != 1 or edges.get((e[1], e[0]), 0) != 1]
+            if bad:
+                raise SystemExit("STL solid '%s' is not watertight: %d half-edges "
+                                 "unmatched, e.g. %s" % (name, len(bad), bad[0]))
+            if v <= 0:
+                raise SystemExit("STL solid '%s' is inside-out (volume %.4f)" % (name, v))
+            vol += v
 
         with open(path, "wb") as fh:
             fh.write((header or ("AuV2-SLI %s -- millimetres" % self.product))
