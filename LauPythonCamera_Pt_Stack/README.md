@@ -694,10 +694,27 @@ PYTHON and VITA datasheets.
   two Ø1.50 mm holes.
 - Socket height **2.90 mm (REF)**.
 
-> **Index-pin vs board thickness.** The index pins appear to protrude **~1.66 mm** below the
-> socket. On a standard **1.6 mm** PCB they would bottom out or protrude through. Either
-> order the **`-0`** (no index pins), specify a thicker board, or confirm the protrusion with
-> Andon. **Unresolved — see Open items.**
+> ### Index-pin vs board thickness — checked 2026-08-07, and it is not the problem it looked
+>
+> The pins appear to protrude **~1.66 mm** below the socket against a **1.6 mm** board. That
+> reads alarming, but the consequence is **0.06 mm** poking out the underside, and there is
+> nothing there to hit:
+>
+> - the index holes are **Ø1.6 mm NPTH straight through**, so nothing can bottom out in them;
+> - nearest bottom-side component to either hole is **C1, at 4.34 mm**;
+> - nearest `B.Cu` track edge is **1.267 mm from a hole centre**, ~0.47 mm clear of the hole;
+> - the board never rests on anything — it stands off on the DF40s, whose smallest stack
+>   height in that family is **1.5 mm**. A 0.06 mm protrusion disappears into that, and would
+>   still clear if the estimate were off by 10x.
+>
+> **So order the `-1`.** Three things say so: it is what onsemi's own reference BOM specifies
+> (`31000040 REV4`), it is the only variant anyone stocks (§15.1), and the asymmetric index
+> pins **key the socket's rotation** — on a 48-pin part where 90° out is a scrapped board and
+> a $139 sensor, that is insurance `-0` throws away.
+>
+> Still worth one line in the Andon email: **how far do the pins protrude, and what
+> diameter?** Only their drawing settles it. Unless the answer is wildly off 1.66 mm, `-1`
+> is fine.
 
 ### Optical center — do not center the lens on the package
 
@@ -1086,8 +1103,8 @@ stops a 90° error.
   column, middle** — matching onsemi's mid-left. The socket and the sensor agree.
 - **The socket's asymmetric index pins fix the board rotation** — but only if you order the
   **`-1`**. The **`-0`** has no index pins and therefore no keying to the board at all; you
-  would be relying on silkscreen alignment by eye. Prefer `-1` if the index-pin protrusion
-  (open item 2) can be resolved.
+  would be relying on silkscreen alignment by eye. **Order the `-1`** — the protrusion
+  worry that used to qualify this is resolved (§7, open item 2 closed).
 
 > **Pad uniformity is correct here.** onsemi's *direct-solder* land pattern gives pin 1 a
 > longer pad (2.54 mm vs 1.39 mm for the other 47) to match its longer castellation. **Our
@@ -1628,11 +1645,25 @@ That L1 flag was a genuine catch (~40 % too little solder area on the highest-cu
 **Sensor — `NOIP1SN1300A-QTI`.** The `-QDI` originally specified is discontinued; `-QTI` is the same
 sensor with a peel-off foil (§4, §12). This is the only genuinely time-critical item in the project.
 
-**Socket — Andon `680-48-SM-G10-R14`.** Ordering it requires settling open item 2 first: the **`-1`**
-variant's index pins protrude **~1.66 mm against a 1.6 mm board**. The footprint carries both Ø1.6 mm
-holes so either fits, but `-1` stands proud. **Default to `-0`** unless you specifically want the
-rotation keying — the fix for `-1` is a thicker board, which changes the stack height against the
-Pt / Hd / Ft+. **Buy two:** it is a 48-pad hand-soldered part and you may want a second attempt.
+**Socket — Andon `680-48-SM-G10-R14-1`. Order the `-1`.** This reversed on 2026-08-07; earlier
+revisions of this section said to default to `-0`.
+
+The `-1`'s index pins protrude ~1.66 mm against a 1.6 mm board, which leaves **0.06 mm** proud of the
+underside — into a gap the DF40s hold open by at least 1.5 mm, with no bottom-side component within
+4.34 mm and no `B.Cu` track within ~0.47 mm of a hole edge. §7 has the full check. It was never a
+real obstacle; it was an unverified estimate that read worse than it was.
+
+What settles it is sourcing. **`-0` has no visible inventory anywhere** — `680-48-SM-G10-R14-0`
+returns nothing on OEMsTrade — while `-1` shows **71 units** across two brokers (Perfect Parts 22,
+GlobalTek 49, both RFQ, no distributor stock). `-1` is also what onsemi's own reference BOM
+specifies, and its asymmetric pins **key the socket's rotation**, which on a 48-pad part is worth
+having. `-0` may simply be a catalogue option Andon builds to order.
+
+> **One line for the Andon email:** *how far do the index pins protrude, and what diameter?* Their
+> drawing is the only thing that settles the 1.66 mm figure. Unless it comes back wildly different,
+> `-1` is the part.
+
+**Buy two:** it is a 48-pad hand-soldered part and you may want a second attempt.
 
 ### 15.2 PCB fabrication
 
@@ -1759,7 +1790,7 @@ refill before believing a single one.
 | # | Item | Blocks | Owner |
 |---|---|---|---|
 | **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. **How: §15.1.** | Nothing — do it now | **You** |
-| 2 | **Socket variant: `-0` or `-1`?** The `-1`'s index pins are what key the socket's rotation, but they protrude ~1.66 mm against a 1.6 mm board. The footprint includes both Ø1.6 holes, so `-1` stays available. **Default to `-0`** (§15.1) — the fix for `-1` is a thicker board, which changes the stack height. | Item 1 | Andon (one email), or default to `-0` |
+| ~~2~~ | ✅ **CLOSED 2026-08-07 — order the `-1`.** This reversed: the section used to say default to `-0`. The ~1.66 mm index-pin protrusion against a 1.6 mm board leaves **0.06 mm** proud, into a gap the DF40s hold open by ≥1.5 mm, with no bottom-side part within 4.34 mm and no `B.Cu` track within ~0.47 mm of a hole edge (§7). And `-0` has **no visible inventory anywhere** while `-1` shows 71 broker units, is what onsemi's reference BOM specifies, and keys the socket's rotation. One line still worth putting in the Andon email: the actual pin protrusion and diameter. | — | — |
 | ~~3~~ | ✅ **CLOSED.** Superseded by the boost + 3-LDO + 2-supervisor tree (§6.5). There is no load switch and no ferrite: `U3` = `TPS61023DRLR`, `U4`/`U5` = `TPS7A2033PDBVR`, `U2` = `TPS7A2018PDBVR`, `U6`/`U7` = `TLV803SDBZR`. **Every part is a JLCPCB part number in `production/LauPythonCamera_Pt_Stack_bom.csv`** — the BOM is orderable. | — | — |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
 | ~~5~~ | ✅ **CLOSED.** The area-scoped exceptions exist in `LauPythonCamera_Pt_Stack.kicad_dru` — rules *"DF40 land pattern — 0.4mm pitch, intra-connector only"* and *"TPS61023 SOT-563 land pattern"*. They relax clearance **only between pads of the same component**; the global minimum and the LVDS rules are untouched. | — | — |
