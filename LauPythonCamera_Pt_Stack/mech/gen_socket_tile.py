@@ -58,10 +58,12 @@ SOCKET_HEIGHT = 2.90        # README section 7, Andon 680-48-SM, "2.90 mm (REF)"
 PAD_REACH = 11.176          # outer edge of the socket's solder pads
 PAD_LENGTH = 2.54           # pad length, so they run 8.636 .. 11.176 from centre
 SENSOR_BODY_MAX = 14.42     # NOIP1SN1300A body, 14.22 +0.20
+PCB_THICKNESS = 1.6         # README section 7 -- the index-pin protrusion question
 
 COLORS = {
     "tile": (0.35, 0.55, 0.80),
     "pin": (0.25, 0.40, 0.62),
+    "boss": (0.30, 0.47, 0.71),
 }
 
 
@@ -321,11 +323,22 @@ def build(args):
     for outline, hs, a, b, name in solids:
         step.prism(outline, a, b, name, COLORS["tile"], holes=hs)
 
-    pins = []
+    # The locating pin is only as tall as it needs to be to do its job; the rest of the
+    # drop to the tile is a wider shoulder. The tile's underside cannot come below the
+    # socket's 2.90, so a post that were 2 mm overall would stop short of the board
+    # entirely -- it is the inserting diameter that is 2 mm, not the whole column.
+    pin_top = min(-args.pin_engage + args.pin_length, z0)
+    boss_r = args.boss_dia / 2.0
+    has_boss = pin_top < z0 - 1e-9
+    posts = []
     for i, (hx, hy) in enumerate(holes):
-        pins.append(step.prism(sw.circle(hx, hy, pin_r, args.pin_segments),
-                               -args.pin_engage, z0, "locating_pin_%d" % (i + 1),
-                               COLORS["pin"]))
+        posts.append(("locating_pin_%d" % (i + 1), hx, hy, pin_r, -args.pin_engage,
+                      pin_top, "pin"))
+        if has_boss:
+            posts.append(("locating_boss_%d" % (i + 1), hx, hy, boss_r, pin_top, z0,
+                          "boss"))
+    for name, hx, hy, r, za, zb, kind in posts:
+        step.prism(sw.circle(hx, hy, r, args.pin_segments), za, zb, name, COLORS[kind])
 
     out = args.out or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                    "3dmodels", "camera_socket_tile.step")
@@ -339,10 +352,8 @@ def build(args):
     for outline, hs, a, b, name in solids:
         expected[name] = (abs(sw.signed_area(outline))
                           - sum(abs(sw.signed_area(h)) for h in hs)) * (b - a)
-    for i in range(len(holes)):
-        expected["locating_pin_%d" % (i + 1)] = \
-            abs(sw.signed_area(sw.circle(0, 0, pin_r, args.pin_segments))) \
-            * (z0 + args.pin_engage)
+    for name, hx, hy, r, za, zb, kind in posts:
+        expected[name] = abs(sw.signed_area(sw.circle(0, 0, r, args.pin_segments))) * (zb - za)
 
     report = []
     w = report.append
@@ -398,10 +409,29 @@ def build(args):
               % (body_half, reach - body_half, outer_half - reach, MM))
         w("     the slots meet the bottom face as a square step, not a radius -- give")
         w("     the wire its own bend relief when routing.")
-    w("  locating pins             2 x dia %.2f, z = %+.2f -> %+.2f  (%.2f into the board)"
-      % (args.pin_dia, -args.pin_engage, z0, args.pin_engage))
+    w("  locating pins             2 x dia %.2f, %.2f %s tall, z = %+.2f -> %+.2f"
+      % (args.pin_dia, pin_top + args.pin_engage, MM, -args.pin_engage, pin_top))
+    w("     %.2f into the %.1f %s board, %.2f proud of it, %.2f clearance in the "
+      "dia %.2f hole" % (args.pin_engage, PCB_THICKNESS, MM, pin_top,
+                         hole_dia - args.pin_dia, hole_dia))
+    if args.pin_engage > PCB_THICKNESS:
+        w("     ** %.2f of engagement in a %.1f %s board -- the pin punches through **"
+          % (args.pin_engage, PCB_THICKNESS, MM))
+    if has_boss:
+        w("  shoulder                  2 x dia %.2f, z = %+.2f -> %+.2f (%.2f tall)"
+          % (args.boss_dia, pin_top, z0, z0 - pin_top))
+        w("     carries the drop the pin no longer spans: the tile's underside is at")
+        w("     %.2f and cannot come lower, since the socket is %.2f tall."
+          % (z0, SOCKET_HEIGHT))
+        # The shoulder is the widest thing near the window; check it stays out of it.
+        gap = math.hypot(abs(holes[0][0]) - (args.window / 2 - args.window_r),
+                         abs(holes[0][1]) - (args.window / 2 - args.window_r)) \
+            - args.window_r - boss_r
+        w("     %.3f %s clear of the window opening at the corner" % (gap, MM))
+        if gap < 0:
+            w("     ** the shoulder intrudes into the window -- reduce --boss-dia **")
     for i, (hx, hy) in enumerate(holes):
-        w("     pin %d                 (%+.3f, %+.3f)" % (i + 1, hx, hy))
+        w("     post %d                (%+.3f, %+.3f)" % (i + 1, hx, hy))
     w("")
 
     # -- does it do the job it was asked to do? ----------------------------------------
@@ -421,15 +451,17 @@ def build(args):
     w("")
 
     # -- the thing that does not fit ----------------------------------------------------
+    widest = max(pin_r, boss_r if has_boss else 0.0)
     interference = [i + 1 for i, (hx, hy) in enumerate(holes)
-                    if abs(hx) - pin_r < body_half and abs(hy) - pin_r < body_half]
+                    if abs(hx) - widest < body_half and abs(hy) - widest < body_half]
     if interference:
-        w("  ! LOCATING PINS FOUL THE SOCKET BODY")
+        w("  ! LOCATING POSTS FOUL THE SOCKET BODY")
         w("    Both index holes sit exactly ON the socket body outline -- one at")
-        w("    x = -8.382 and one at y = +8.382, and the body is +-%.3f. A round pin"
+        w("    x = -8.382 and one at y = +8.382, and the body is +-%.3f. A round post"
           % body_half)
         w("    centred in either hole therefore has half its section inside the socket's")
-        w("    footprint, overlapping it by up to %.3f %s." % (pin_r, MM))
+        w("    footprint, overlapping it by up to %.3f %s%s." % (widest, MM,
+          " (the shoulder, not the pin -- it is the wider of the two)" if has_boss else ""))
         w("    This is real, not a modelling artefact: the holes exist to take the Andon")
         w("    part's OWN index pins, so they are under its body by construction.")
         w("    Options, none of which this iteration picks for you:")
@@ -495,6 +527,12 @@ def main():
                    help="locating pin diameter, mm (default 1.40 in a 1.60 hole)")
     p.add_argument("--pin-engage", type=float, default=1.20,
                    help="how far the pins enter the board, mm (the PCB is 1.6 thick)")
+    p.add_argument("--pin-length", type=float, default=2.00,
+                   help="height of the locating pin itself, mm (default 2.0); the drop "
+                        "from its top to the tile is taken up by the shoulder")
+    p.add_argument("--boss-dia", type=float, default=2.40,
+                   help="shoulder diameter above the pin, mm; must stay clear of the "
+                        "window opening at the corners")
     p.add_argument("--pin-segments", type=int, default=32, help="facets per pin")
     p.add_argument("--out", help="output .step path")
     p.add_argument("--stl", nargs="?", const=True, default=None, metavar="PATH",

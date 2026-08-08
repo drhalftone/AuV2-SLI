@@ -112,7 +112,8 @@ measured — the same open item as above.
 | Window | 14.80 mm square, R0.4 | 0.19 mm/side over the sensor's worst-case 14.42 body |
 | Thickness | 1.50 mm | |
 | Underside | z = 2.90 | resting on the socket, whose height is 2.90 REF |
-| Locating pins | 2 × Ø1.40, 1.20 deep | in the Ø1.60 index holes; PCB is 1.6 mm thick |
+| Locating pins | 2 × Ø1.40, **2.00 mm tall** | 1.20 into the Ø1.60 index holes, 0.80 proud |
+| Shoulder | 2 × Ø2.40, 2.10 mm tall | carries the rest of the drop to the tile |
 | Wire slots | 48 × 0.51 wide | on the sensor's own 1.016 mm pitch |
 
 **The outer size is derived, not chosen.** `--expose` says how much of each solder joint to
@@ -164,11 +165,32 @@ away from the board it mounts to.
 bottom layer — the U1 decoupling caps moved to the underside per README §14. Nothing on
 the top layer is in the way.
 
-### The locating pins do not fit, and this is not a modelling artefact
+### Why the post is in two parts
+
+The **pin** — the Ø1.40 feature that actually enters the board — is 2.00 mm tall: 1.20 into
+the hole, 0.80 proud of it. Everything above that is a Ø2.40 **shoulder**.
+
+The split is forced. The tile's underside sits at z = 2.90 and cannot come lower, because
+the socket is 2.90 tall and the tile's window is narrower than the socket body. So the
+total drop from tile to board is fixed at 2.90 plus the engagement — 4.10 mm. A post that
+were 2 mm *overall* would stop at z = 0.90 and never reach the board. Making only the
+inserting diameter 2 mm gets a short, stiff locating feature instead of a 4.1 mm needle,
+which is also far easier to print.
+
+`--pin-length` and `--boss-dia` control the two. Set `--pin-length 4.1` and the shoulder
+disappears, giving the original uniform post back.
+
+**The shoulder clears the window opening by 0.184 mm** at the corner, which is tight. The
+generator computes that clearance every run and flags it when `--boss-dia` grows past it
+(at Ø3.2 it reports −0.216). Since the shoulder stays outside the window entirely, it
+cannot touch the sensor.
+
+### The locating posts do not fit, and this is not a modelling artefact
 
 Both index holes sit **exactly on the socket body outline** — one at x = −8.382, one at
-y = +8.382, and the body is ±8.382. A round pin centred in either hole has half its
-section inside the socket's footprint.
+y = +8.382, and the body is ±8.382. A round post centred in either hole has half its
+section inside the socket's footprint. The shoulder makes this worse, not better: at
+Ø2.40 it is the wider of the two, so the overlap is 1.20 mm rather than 0.70.
 
 That is by construction: those holes exist to take the **Andon part's own index pins**
 (the `-1` suffix), so they are underneath its body by definition. A separate bracket
