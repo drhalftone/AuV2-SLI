@@ -273,6 +273,10 @@ def build(args):
         SOCKET_BODY_XY / 2, PAD_REACH
     if args.check:
         holes, hole_dia, body_half, pad_reach = check_against_pcb(args.pcb)
+        # The slots are placed from the sensor's pin ring; this asserts that same ring
+        # against the board's pads. Passing it is what proves a wire leaving pin N
+        # radially outward lands on pad N, which is the whole premise of a radial channel.
+        sensor.check_against_pcb(args.pcb, sensor.pin_ring())
         pcb_ok = True
 
     # The tile is sized by how much of each solder joint it must leave visible, not by a
@@ -327,7 +331,8 @@ def build(args):
     # drop to the tile is a wider shoulder. The tile's underside cannot come below the
     # socket's 2.90, so a post that were 2 mm overall would stop short of the board
     # entirely -- it is the inserting diameter that is 2 mm, not the whole column.
-    pin_top = min(-args.pin_engage + args.pin_length, z0)
+    pin_length = args.pin_length if args.pin_length else z0 + args.pin_engage
+    pin_top = min(-args.pin_engage + pin_length, z0)
     boss_r = args.boss_dia / 2.0
     has_boss = pin_top < z0 - 1e-9
     posts = []
@@ -374,8 +379,12 @@ def build(args):
         pitch = sensor.PIN_PITCH
         rib = pitch - args.slot_width
         roof = z1 - z_mid
+        sensor_edge = sensor.BODY_XY["typ"] / 2
         w("  wire slots                48, %.2f wide on the sensor's %.3f pitch"
           % (args.slot_width, pitch))
+        w("     pads share that pitch, so a wire running straight out from pin N lands")
+        w("     on pad N: %.3f (sensor edge) -> %.3f (pad starts), a %.3f %s run."
+          % (sensor_edge, pad_reach - PAD_LENGTH, pad_reach - PAD_LENGTH - sensor_edge, MM))
         w("     down the wall         %.2f deep, z = %.2f -> %.2f (full height)"
           % (args.slot_depth, z0, z1))
         w("     across the bottom     %.2f deep, out to r = %.3f from centre%s"
@@ -388,18 +397,21 @@ def build(args):
               % rib)
             w("        resin machine, or widen the pitch by slotting every 2nd pin. **")
         if through:
-            w("     wires exit at the tile edge, %.3f %s clear of the socket body, and"
-              % (outer_half - body_half, MM))
-            w("     land on the exposed %.3f %s of pad." % (args.expose, MM))
+            w("     wires exit at the tile edge and land on the exposed %.3f %s of pad."
+              % (args.expose, MM))
             w("     the bottom layer is severed into %d pieces -- see below."
               % (len(solids) - 1))
-            drop = math.degrees(math.atan2(z0, args.expose))
-            w("     ! the wire leaves the channel at z = %.2f and the pad it lands on"
-              % z0)
-            w("       ends %.3f %s further out, so it turns down through about %.0f deg"
-              % (args.expose, MM, drop))
-            w("       right at the rim. Chamfer the outer bottom edge, raise --expose,")
-            w("       or accept a tight bend in fine wire.")
+            if z0 > 0.05:
+                drop = math.degrees(math.atan2(z0, args.expose))
+                w("     ! the wire leaves the channel at z = %.2f and the pad it lands on"
+                  % z0)
+                w("       ends %.3f %s further out, so it turns down through about %.0f deg"
+                  % (args.expose, MM, drop))
+                w("       right at the rim. Chamfer the outer bottom edge, raise --expose,")
+                w("       or accept a tight bend in fine wire.")
+            else:
+                w("     the channel floor IS the board, so the wire runs flat from the")
+                w("     sensor's castellation onto its pad with no bend at the rim.")
         elif reach <= body_half:
             w("     ** channels stop at r = %.2f, inside the socket body edge at %.3f --"
               % (reach, body_half))
@@ -409,14 +421,22 @@ def build(args):
               % (body_half, reach - body_half, outer_half - reach, MM))
         w("     the slots meet the bottom face as a square step, not a radius -- give")
         w("     the wire its own bend relief when routing.")
-    w("  locating pins             2 x dia %.2f, %.2f %s tall, z = %+.2f -> %+.2f"
+    w("  locating legs             2 x dia %.2f, %.2f %s tall, z = %+.2f -> %+.2f"
       % (args.pin_dia, pin_top + args.pin_engage, MM, -args.pin_engage, pin_top))
-    w("     %.2f into the %.1f %s board, %.2f proud of it, %.2f clearance in the "
-      "dia %.2f hole" % (args.pin_engage, PCB_THICKNESS, MM, pin_top,
-                         hole_dia - args.pin_dia, hole_dia))
-    if args.pin_engage > PCB_THICKNESS:
-        w("     ** %.2f of engagement in a %.1f %s board -- the pin punches through **"
-          % (args.pin_engage, PCB_THICKNESS, MM))
+    w("     %.2f into the %.1f %s board, %.2f clearance in the dia %.2f hole"
+      % (args.pin_engage, PCB_THICKNESS, MM, hole_dia - args.pin_dia, hole_dia))
+    proud = args.pin_engage - PCB_THICKNESS
+    if proud > 0:
+        w("     breaks through the underside by %.2f %s" % (proud, MM))
+        if proud > 0.5:
+            w("     ** %.2f %s is a lot to leave hanging under the board -- the DF40s"
+              % (proud, MM))
+            w("        mate downward into the Pt. **")
+    elif proud > -0.2:
+        w("     stops %.2f %s short of the underside -- effectively flush" % (-proud, MM))
+    else:
+        w("     stops %.2f %s short of the underside; it does not pass through"
+          % (-proud, MM))
     if has_boss:
         w("  shoulder                  2 x dia %.2f, z = %+.2f -> %+.2f (%.2f tall)"
           % (args.boss_dia, pin_top, z0, z0 - pin_top))
@@ -440,10 +460,10 @@ def build(args):
       % (pad_reach - PAD_LENGTH, pad_reach, outer_half))
     w("                           -> %.3f %s of every joint left visible and solderable"
       % (pad_reach - outer_half, MM))
-    if outer_half <= body_half:
-        w("     ** the tile no longer reaches past the socket body at %.3f **" % body_half)
-    w("     inner edge            +-%.3f;  socket body edge +-%.3f  -> overlaps the "
-      "contact ring by %.3f" % (args.window / 2, body_half, body_half - args.window / 2))
+    w("     inner edge            +-%.3f, between the sensor at +-%.3f and the pads at"
+      " +-%.3f" % (args.window / 2, SENSOR_BODY_MAX / 2, pad_reach - PAD_LENGTH))
+    w("                           -> the whole %.3f %s wire run sits under the tile"
+      % (pad_reach - PAD_LENGTH - SENSOR_BODY_MAX / 2, MM))
     w("     sensor (max %.2f)     window clearance %.3f %s per side"
       % (SENSOR_BODY_MAX, (args.window - SENSOR_BODY_MAX) / 2, MM))
     if args.window <= SENSOR_BODY_MAX:
@@ -452,24 +472,36 @@ def build(args):
 
     # -- the thing that does not fit ----------------------------------------------------
     widest = max(pin_r, boss_r if has_boss else 0.0)
-    interference = [i + 1 for i, (hx, hy) in enumerate(holes)
-                    if abs(hx) - widest < body_half and abs(hy) - widest < body_half]
-    if interference:
-        w("  ! LOCATING POSTS FOUL THE SOCKET BODY")
-        w("    Both index holes sit exactly ON the socket body outline -- one at")
-        w("    x = -8.382 and one at y = +8.382, and the body is +-%.3f. A round post"
-          % body_half)
-        w("    centred in either hole therefore has half its section inside the socket's")
-        w("    footprint, overlapping it by up to %.3f %s%s." % (widest, MM,
-          " (the shoulder, not the pin -- it is the wider of the two)" if has_boss else ""))
-        w("    This is real, not a modelling artefact: the holes exist to take the Andon")
-        w("    part's OWN index pins, so they are under its body by construction.")
-        w("    Options, none of which this iteration picks for you:")
-        w("      - order the -0 socket (no index pins) and relieve the tile's pins to a D")
-        w("        section, keeping only the outer half of each hole;")
-        w("      - locate the tile off the socket body or the board outline instead, and")
-        w("        drop the pins entirely;")
-        w("      - move to two new mounting holes in the PCB on the next board spin.")
+    if z0 < SOCKET_HEIGHT - 1e-9:
+        w("  ! THIS TILE AND THE ANDON SOCKET CANNOT BOTH BE FITTED")
+        w("    The underside is at z = %.2f and the socket stands %.2f tall, and the"
+          % (z0, SOCKET_HEIGHT))
+        w("    window at +-%.3f is inside the socket body at +-%.3f -- so the tile would"
+          % (args.window / 2, body_half))
+        w("    have to pass through it. This is the socket-less build: the sensor sits")
+        w("    directly on the board and the wires do what the socket would have done.")
+        w("    Two things follow, both in your favour:")
+        w("      - the index holes are empty, so the post interference that blocked the")
+        w("        earlier iterations is moot;")
+        w("      - the wire leaves the channel at board level and lands on a pad at board")
+        w("        level, so there is no drop at the rim to bend around.")
+        w("    And one against: nothing retains the sensor vertically any more. The tile")
+        w("    surrounds it without covering it -- that is a separate part.")
+    else:
+        interference = [i + 1 for i, (hx, hy) in enumerate(holes)
+                        if abs(hx) - widest < body_half and abs(hy) - widest < body_half]
+        if interference:
+            w("  ! LOCATING POSTS FOUL THE SOCKET BODY")
+            w("    Both index holes sit exactly ON the socket body outline -- one at")
+            w("    x = -8.382 and one at y = +8.382, and the body is +-%.3f. A round post"
+              % body_half)
+            w("    centred in either hole has half its section inside the socket's")
+            w("    footprint, overlapping by up to %.3f %s%s." % (widest, MM,
+              " (the shoulder, the wider of the two)" if has_boss else ""))
+            w("    The holes exist to take the Andon part's OWN index pins, so they are")
+            w("    under its body by construction. Order the -0 socket and relieve the")
+            w("    posts to a D section, locate off something else, or add mounting holes")
+            w("    on the next board spin.")
     w("")
 
     if pcb_ok:
@@ -506,9 +538,9 @@ def main():
                    help="centre window square, mm (default 14.80, 0.19/side over the "
                         "sensor's worst-case 14.42 body)")
     p.add_argument("--thickness", type=float, default=1.50, help="tile thickness, mm")
-    p.add_argument("--standoff", type=float, default=SOCKET_HEIGHT,
-                   help="height of the tile's underside above the PCB, mm "
-                        "(default 2.90, resting on the socket)")
+    p.add_argument("--standoff", type=float, default=0.0,
+                   help="height of the tile's underside above the PCB, mm (default 0, "
+                        "flush on the board -- which means no socket, see the README)")
     p.add_argument("--corner-r", type=float, default=0.80, help="outer corner radius, mm")
     p.add_argument("--window-r", type=float, default=0.40, help="window corner radius, mm")
     p.add_argument("--no-slots", action="store_true",
@@ -525,11 +557,13 @@ def main():
                         "default runs them through the rim so wires exit at the edge")
     p.add_argument("--pin-dia", type=float, default=1.40,
                    help="locating pin diameter, mm (default 1.40 in a 1.60 hole)")
-    p.add_argument("--pin-engage", type=float, default=1.20,
-                   help="how far the pins enter the board, mm (the PCB is 1.6 thick)")
-    p.add_argument("--pin-length", type=float, default=2.00,
-                   help="height of the locating pin itself, mm (default 2.0); the drop "
-                        "from its top to the tile is taken up by the shoulder")
+    p.add_argument("--pin-engage", type=float, default=PCB_THICKNESS + 0.10,
+                   help="how far the legs enter the board, mm (default 1.70 -- just "
+                        "through a 1.6 mm PCB)")
+    p.add_argument("--pin-length", type=float, default=None,
+                   help="height of the locating leg itself, mm; defaults to the whole "
+                        "drop from the tile, so there is no shoulder. Set it shorter and "
+                        "the remainder becomes a --boss-dia shoulder")
     p.add_argument("--boss-dia", type=float, default=2.40,
                    help="shoulder diameter above the pin, mm; must stay clear of the "
                         "window opening at the corners")

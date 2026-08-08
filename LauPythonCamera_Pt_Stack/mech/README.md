@@ -96,24 +96,30 @@ board's.
 - Corner radius R0.20, faceted in 4 segments.
 - The header timestamp is fixed, so regenerating produces a byte-identical file.
 
-## The socket tile (iteration 0)
+## The socket tile
 
-A square halo that covers the socket's exposed contact ring, with a window in the middle
-for the sensor and two locating pins underneath. Deliberately nothing else yet.
+A square frame that sits **flush on the PCB**, with a window the sensor sits in, 48 wire
+slots on the sensor's pin pitch, and two legs through the board's index holes.
 
-**Different Z datum.** The tile is referenced to the **PCB top surface** (z = 0), because
-that is what it mounts to; the sensor model is referenced to its **seating plane** inside
-the socket. X and Y agree. The two cannot be stacked in Z until the seating height is
-measured — the same open item as above.
+**This is the socket-less build.** Sitting flush means the Andon socket is not fitted —
+the tile's window at ±7.400 is inside the socket body at ±8.382, so the two cannot both be
+there. That is not a compromise, it is the point: if the socket were fitted it would make
+the connections itself and there would be nothing to wire. Here the sensor sits directly on
+the board and 48 hand-soldered wires do the socket's job, with the tile holding the sensor
+in place and guiding each wire to its pad.
+
+**Both models now share one origin.** With the sensor sitting directly on the board, its
+seating plane *is* the PCB top surface, so `gen_sensor_step.py`'s z = 0 and this file's
+z = 0 are the same plane. Open the two STEPs together and they land correctly in all three
+axes. (The unmeasured socket seating height above only matters for a socketed build.)
 
 | | default | |
 |---|---|---|
 | Outer | **20.352 mm** square, R0.8 | derived: pads end at 11.176, less `--expose 1.0` |
 | Window | 14.80 mm square, R0.4 | 0.19 mm/side over the sensor's worst-case 14.42 body |
 | Thickness | 1.50 mm | |
-| Underside | z = 2.90 | resting on the socket, whose height is 2.90 REF |
-| Locating pins | 2 × Ø1.40, **2.00 mm tall** | 1.20 into the Ø1.60 index holes, 0.80 proud |
-| Shoulder | 2 × Ø2.40, 2.10 mm tall | carries the rest of the drop to the tile |
+| Underside | **z = 0** | flush on the board |
+| Locating legs | 2 × Ø1.40, **1.70 mm tall** | through the 1.6 mm board, 0.10 proud beneath |
 | Wire slots | 48 × 0.51 wide | on the sensor's own 1.016 mm pitch |
 
 **The outer size is derived, not chosen.** `--expose` says how much of each solder joint to
@@ -129,14 +135,20 @@ Every one of those is a first guess a test print will move — they are all flag
 
 ### The wire slots
 
-Each slot runs the full height of the window wall as a 0.40 mm deep groove, then turns
-onto the bottom face and runs out to r = 10.00 as a 0.40 mm deep channel. Slot positions
-come from `gen_sensor_step.pin_ring()` rather than being re-derived, so they line up with
-the sensor's castellations by construction and inherit that ring's cross-check against
-U1's footprint.
+Each slot runs the full height of the window wall as a 0.40 mm deep groove, then turns onto
+the bottom face and runs out through the rim as a 0.40 mm deep channel. Slot positions come
+from `gen_sensor_step.pin_ring()` rather than being re-derived, so they line up with the
+sensor's castellations by construction and inherit that ring's cross-check against U1's
+footprint.
+
+**The board's pads sit on that same pitch, at the same along-edge offsets — to 0.000000 mm.**
+So a wire leaving sensor pin N and running straight out lands on pad N, with no crossing and
+no fan-out: a 1.526 mm run from the sensor edge at 7.110 to where the pads start at 8.636.
+That is what makes a straight radial channel the right shape rather than a convenient one,
+and the generator asserts it against the board every run.
 
 The turn is why the tile is **two stacked solids**, `tile_upper` and `tile_lower`, split at
-z = 3.30. A prism has vertical walls and cannot change profile with height; stacking two is
+z = 0.40. A prism has vertical walls and cannot change profile with height; stacking two is
 what lets the groove change direction. Union them to print.
 
 Three things about the slots worth knowing before printing:
@@ -151,9 +163,9 @@ Three things about the slots worth knowing before printing:
   compromise: each piece hangs from the upper ring, which is what holds the tile together.
   They are separate solids (`tile_lower_01` … `48`); union everything to print.
 - **The corner is a square step, not a radius.** Give the wire its own bend relief.
-- **The exit is steep.** The wire leaves the channel at z = 2.90 and the pad it lands on
-  ends 1.0 mm further out, so it turns down through about 71° right at the rim. Chamfer the
-  outer bottom edge, raise `--expose`, or accept a tight bend in fine wire.
+- **The exit is flat.** With the tile flush, the channel floor *is* the board, so a wire
+  runs level from the castellation onto its pad with no bend at the rim. (Raise
+  `--standoff` and that stops being true; the generator reports the resulting bend angle.)
 
 `--no-slots` gives the plain tile back.
 
@@ -163,48 +175,32 @@ away from the board it mounts to.
 
 **The tile clears everything on the board.** Ten footprints fall under it, all on the
 bottom layer — the U1 decoupling caps moved to the underside per README §14. Nothing on
-the top layer is in the way.
+the top layer is in the way, which is what makes flush mounting possible at all.
 
-### Why the post is in two parts
+**What it does not do: retain the sensor.** The tile surrounds the sensor without covering
+it, so nothing holds the part down vertically. That wants a separate lid, and it is the
+obvious next iteration.
 
-The **pin** — the Ø1.40 feature that actually enters the board — is 2.00 mm tall: 1.20 into
-the hole, 0.80 proud of it. Everything above that is a Ø2.40 **shoulder**.
+### The legs
 
-The split is forced. The tile's underside sits at z = 2.90 and cannot come lower, because
-the socket is 2.90 tall and the tile's window is narrower than the socket body. So the
-total drop from tile to board is fixed at 2.90 plus the engagement — 4.10 mm. A post that
-were 2 mm *overall* would stop at z = 0.90 and never reach the board. Making only the
-inserting diameter 2 mm gets a short, stiff locating feature instead of a 4.1 mm needle,
-which is also far easier to print.
+Ø1.40 in the Ø1.60 index holes — 0.20 mm of diametral clearance — running 1.70 mm from the
+tile's underside, so they pass through the 1.6 mm board and stand 0.10 mm proud beneath it.
+Nothing on the bottom layer is near either leg; the ten underside caps are all elsewhere.
 
-`--pin-length` and `--boss-dia` control the two. Set `--pin-length 4.1` and the shoulder
-disappears, giving the original uniform post back.
+`--pin-engage` sets the depth. Shorten it below 1.6 and they stop inside the board, which
+the generator reports rather than leaves for you to notice.
 
-**The shoulder clears the window opening by 0.184 mm** at the corner, which is tight. The
-generator computes that clearance every run and flags it when `--boss-dia` grows past it
-(at Ø3.2 it reports −0.216). Since the shoulder stays outside the window entirely, it
-cannot touch the sensor.
+**The socket interference that blocked the earlier iterations is gone**, and worth recording
+why. Both index holes sit exactly on the socket body outline — one at x = −8.382, one at
+y = +8.382, against a body of ±8.382 — so any post centred in either had half its section
+inside the socket's footprint. The holes are there to take the Andon part's **own** index
+pins, so they were under its body by construction. With no socket fitted, they are simply
+empty, and the legs use them as intended. If you go back to a socketed build
+(`--standoff 2.9`), the interference returns and the generator says so again.
 
-### The locating posts do not fit, and this is not a modelling artefact
-
-Both index holes sit **exactly on the socket body outline** — one at x = −8.382, one at
-y = +8.382, and the body is ±8.382. A round post centred in either hole has half its
-section inside the socket's footprint. The shoulder makes this worse, not better: at
-Ø2.40 it is the wider of the two, so the overlap is 1.20 mm rather than 0.70.
-
-That is by construction: those holes exist to take the **Andon part's own index pins**
-(the `-1` suffix), so they are underneath its body by definition. A separate bracket
-cannot use them while the socket is fitted. Three ways out, none of them chosen here:
-
-- order the **`-0`** socket (no index pins — which §7 already leans toward, because the
-  `-1` pins protrude ~1.66 mm into a 1.6 mm board) and relieve the tile's pins to a **D
-  section**, keeping only the outer half of each hole;
-- **locate off something else** — the socket body itself, or the board outline — and drop
-  the pins;
-- add **two dedicated mounting holes** on the next board spin.
-
-`gen_socket_tile.py` prints this interference every run rather than quietly emitting a
-part that cannot be assembled.
+`--pin-length` shortens the leg itself and turns the remainder into a `--boss-dia`
+shoulder. That mattered when the tile stood 2.90 mm off the board and the post would
+otherwise have been a 4.1 mm needle. Flush, the leg is 1.70 mm and needs no shoulder.
 
 ## STL, for tools that will not read STEP
 
