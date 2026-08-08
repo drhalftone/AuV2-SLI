@@ -56,6 +56,7 @@ INDEX_HOLE_DIA = 1.60
 SOCKET_BODY_XY = 16.764
 SOCKET_HEIGHT = 2.90        # README section 7, Andon 680-48-SM, "2.90 mm (REF)"
 PAD_REACH = 11.176          # outer edge of the socket's solder pads
+PAD_LENGTH = 2.54           # pad length, so they run 8.636 .. 11.176 from centre
 SENSOR_BODY_MAX = 14.42     # NOIP1SN1300A body, 14.22 +0.20
 
 COLORS = {
@@ -82,6 +83,37 @@ def slot_offsets():
         sides[side].sort()
     assert sum(len(v) for v in sides.values()) == 48, sides
     return sides
+
+
+def _rot90(pts, n):
+    for _ in range(n % 4):
+        pts = [(-y, x) for x, y in pts]
+    return pts
+
+
+def lower_pieces(outer_half, outer_r, win_half, win_r, off, width, segments=6):
+    """The bottom layer, once the channels break out at the rim.
+
+    A channel that reaches the outer edge cuts the bottom layer clean through, so the layer
+    is not one ring but 48 separate pieces: eleven between the slots on each side, plus a
+    piece wrapping each corner. Built once for the bottom edge and its corner, then rotated
+    -- all four sides carry the same slot offsets, so one construction covers the part.
+    """
+    w = width / 2.0
+    oc, wc = outer_half - outer_r, win_half - win_r
+    canon = []
+    for k in range(len(off) - 1):                       # between adjacent slots
+        a, b = off[k] + w, off[k + 1] - w
+        canon.append([(a, -outer_half), (b, -outer_half), (b, -win_half), (a, -win_half)])
+
+    p = [(off[-1] + w, -outer_half), (oc, -outer_half)]  # around the corner
+    p += sw.arc(oc, -oc, outer_r, -math.pi / 2, 0.0, segments)
+    p += [(outer_half, off[0] - w), (win_half, off[0] - w), (win_half, -wc)]
+    p += sw.arc(wc, -wc, win_r, 0.0, -math.pi / 2, segments)
+    p += [(off[-1] + w, -win_half)]
+    canon.append(sw.dedupe(p))
+
+    return [_rot90(piece, n) for n in range(4) for piece in canon]
 
 
 def window_outline(half, sides, depth, width, corner_r, corner_segments=6):
@@ -241,7 +273,11 @@ def build(args):
         holes, hole_dia, body_half, pad_reach = check_against_pcb(args.pcb)
         pcb_ok = True
 
-    outer_half = args.outer / 2.0
+    # The tile is sized by how much of each solder joint it must leave visible, not by a
+    # remembered number: the pads end at `pad_reach`, so backing off by `--expose` puts the
+    # edge where the joint is still reachable with an iron.
+    outer = args.outer if args.outer else 2 * (pad_reach - args.expose)
+    outer_half = outer / 2.0
     z0 = args.standoff
     z1 = z0 + args.thickness
     pin_r = args.pin_dia / 2.0
@@ -250,13 +286,17 @@ def build(args):
                        "Andon 680-48-SM contact tile, iteration 0",
                        args.timestamp, tool="gen_socket_tile.py")
 
-    ring_outer = sw.rounded_rect(0, 0, args.outer, args.outer, args.corner_r)
+    ring_outer = sw.rounded_rect(0, 0, outer, outer, args.corner_r)
     win_half = args.window / 2.0
     z_mid = z0 + args.channel_depth
+    reach = args.channel_reach if args.channel_reach else outer_half
+    through = reach >= outer_half - 1e-9
 
+    # (outline, holes, z0, z1, name)
+    solids = []
     if args.no_slots:
         window = sw.rounded_rect(0, 0, args.window, args.window, args.window_r)
-        layers = [(window, z0, z1, "tile")]
+        solids.append((ring_outer, [window], z0, z1, "tile"))
     else:
         sides = slot_offsets()
         # Upper: a shallow groove down the window wall. Lower: the same slot carried out
@@ -264,12 +304,22 @@ def build(args):
         # corner -- a single prism has vertical walls and cannot.
         groove = window_outline(win_half, sides, args.slot_depth, args.slot_width,
                                 args.window_r)
-        channel = window_outline(win_half, sides, args.channel_reach - win_half,
-                                 args.slot_width, args.window_r)
-        layers = [(groove, z_mid, z1, "tile_upper"), (channel, z0, z_mid, "tile_lower")]
+        solids.append((ring_outer, [groove], z_mid, z1, "tile_upper"))
+        if through:
+            # Channels that break out at the rim sever the bottom layer into one piece
+            # per gap between slots. That is the geometry, not a modelling compromise --
+            # each piece hangs from the upper ring, which is what holds the tile together.
+            for i, piece in enumerate(lower_pieces(outer_half, args.corner_r, win_half,
+                                                   args.window_r, sides["S"],
+                                                   args.slot_width)):
+                solids.append((piece, [], z0, z_mid, "tile_lower_%02d" % (i + 1)))
+        else:
+            channel = window_outline(win_half, sides, reach - win_half,
+                                     args.slot_width, args.window_r)
+            solids.append((ring_outer, [channel], z0, z_mid, "tile_lower"))
 
-    for hole, a, b, name in layers:
-        step.prism(ring_outer, a, b, name, COLORS["tile"], holes=[hole])
+    for outline, hs, a, b, name in solids:
+        step.prism(outline, a, b, name, COLORS["tile"], holes=hs)
 
     pins = []
     for i, (hx, hy) in enumerate(holes):
@@ -286,9 +336,9 @@ def build(args):
 
     # ----------------------------------------------------------------------------------
     expected = {}
-    for hole, a, b, name in layers:
-        expected[name] = (abs(sw.signed_area(ring_outer))
-                          - abs(sw.signed_area(hole))) * (b - a)
+    for outline, hs, a, b, name in solids:
+        expected[name] = (abs(sw.signed_area(outline))
+                          - sum(abs(sw.signed_area(h)) for h in hs)) * (b - a)
     for i in range(len(holes)):
         expected["locating_pin_%d" % (i + 1)] = \
             abs(sw.signed_area(sw.circle(0, 0, pin_r, args.pin_segments))) \
@@ -305,8 +355,8 @@ def build(args):
     w("")
     if pcb_ok:
         w("  board geometry            re-derived from %s" % os.path.basename(args.pcb))
-    w("  tile                      %.2f square x %.2f thick, R%.1f corners"
-      % (args.outer, args.thickness, args.corner_r))
+    w("  tile                      %.3f square x %.2f thick, R%.1f corners"
+      % (outer, args.thickness, args.corner_r))
     w("  underside / top           z = %.2f -> %.2f %s above the PCB" % (z0, z1, MM))
     w("  window                    %.2f square, R%.1f" % (args.window, args.window_r))
     if not args.no_slots:
@@ -317,8 +367,8 @@ def build(args):
           % (args.slot_width, pitch))
         w("     down the wall         %.2f deep, z = %.2f -> %.2f (full height)"
           % (args.slot_depth, z0, z1))
-        w("     across the bottom     %.2f deep, out to r = %.2f from centre"
-          % (args.channel_depth, args.channel_reach))
+        w("     across the bottom     %.2f deep, out to r = %.3f from centre%s"
+          % (args.channel_depth, reach, " (through the rim)" if through else ""))
         w("     roof over the channel %.2f %s of the %.2f thickness remains"
           % (roof, MM, args.thickness))
         w("     rib between slots     %.3f %s" % (rib, MM))
@@ -326,15 +376,26 @@ def build(args):
             w("     ** %.3f mm ribs are at or under one FDM extrusion. Print this on a"
               % rib)
             w("        resin machine, or widen the pitch by slotting every 2nd pin. **")
-        if args.channel_reach <= body_half:
+        if through:
+            w("     wires exit at the tile edge, %.3f %s clear of the socket body, and"
+              % (outer_half - body_half, MM))
+            w("     land on the exposed %.3f %s of pad." % (args.expose, MM))
+            w("     the bottom layer is severed into %d pieces -- see below."
+              % (len(solids) - 1))
+            drop = math.degrees(math.atan2(z0, args.expose))
+            w("     ! the wire leaves the channel at z = %.2f and the pad it lands on"
+              % z0)
+            w("       ends %.3f %s further out, so it turns down through about %.0f deg"
+              % (args.expose, MM, drop))
+            w("       right at the rim. Chamfer the outer bottom edge, raise --expose,")
+            w("       or accept a tight bend in fine wire.")
+        elif reach <= body_half:
             w("     ** channels stop at r = %.2f, inside the socket body edge at %.3f --"
-              % (args.channel_reach, body_half))
+              % (reach, body_half))
             w("        wires would be trapped between the tile and the socket. **")
         else:
-            w("     wires clear the socket body (%.3f) by %.3f, then run free under the"
-              % (body_half, args.channel_reach - body_half))
-            w("     overhang; %.2f %s of rim is left at the outer edge."
-              % (outer_half - args.channel_reach, MM))
+            w("     wires clear the socket body (%.3f) by %.3f; %.2f %s of rim remains."
+              % (body_half, reach - body_half, outer_half - reach, MM))
         w("     the slots meet the bottom face as a square step, not a radius -- give")
         w("     the wire its own bend relief when routing.")
     w("  locating pins             2 x dia %.2f, z = %+.2f -> %+.2f  (%.2f into the board)"
@@ -345,10 +406,12 @@ def build(args):
 
     # -- does it do the job it was asked to do? ----------------------------------------
     w("  coverage")
-    w("     socket pads reach     +-%.3f %s;  tile reaches +-%.3f  -> %s"
-      % (pad_reach, MM, outer_half,
-         "covers them by %.3f" % (outer_half - pad_reach) if outer_half >= pad_reach
-         else "MISSES by %.3f" % (pad_reach - outer_half)))
+    w("     solder joints         pads span %.3f .. %.3f from centre; tile edge at %.3f"
+      % (pad_reach - PAD_LENGTH, pad_reach, outer_half))
+    w("                           -> %.3f %s of every joint left visible and solderable"
+      % (pad_reach - outer_half, MM))
+    if outer_half <= body_half:
+        w("     ** the tile no longer reaches past the socket body at %.3f **" % body_half)
     w("     inner edge            +-%.3f;  socket body edge +-%.3f  -> overlaps the "
       "contact ring by %.3f" % (args.window / 2, body_half, body_half - args.window / 2))
     w("     sensor (max %.2f)     window clearance %.3f %s per side"
@@ -402,8 +465,11 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     board = os.path.dirname(here)
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--outer", type=float, default=23.0,
-                   help="tile outer square, mm (default 23.0, covering the pads at 22.352)")
+    p.add_argument("--expose", type=float, default=1.0,
+                   help="how much of each solder joint to leave visible past the tile "
+                        "edge, mm (default 1.0); sets the outer size unless --outer is given")
+    p.add_argument("--outer", type=float, default=None,
+                   help="tile outer square, mm; overrides --expose")
     p.add_argument("--window", type=float, default=14.80,
                    help="centre window square, mm (default 14.80, 0.19/side over the "
                         "sensor's worst-case 14.42 body)")
@@ -422,9 +488,9 @@ def main():
                    help="how far each slot cuts into the window wall, mm")
     p.add_argument("--channel-depth", type=float, default=0.40,
                    help="how deep the slot runs into the bottom face, mm")
-    p.add_argument("--channel-reach", type=float, default=10.00,
-                   help="radius from centre the bottom channels run out to, mm "
-                        "(must clear the socket body at 8.382 for wires to escape)")
+    p.add_argument("--channel-reach", type=float, default=None,
+                   help="radius from centre the bottom channels run out to, mm; the "
+                        "default runs them through the rim so wires exit at the edge")
     p.add_argument("--pin-dia", type=float, default=1.40,
                    help="locating pin diameter, mm (default 1.40 in a 1.60 hole)")
     p.add_argument("--pin-engage", type=float, default=1.20,

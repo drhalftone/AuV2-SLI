@@ -108,12 +108,21 @@ measured — the same open item as above.
 
 | | default | |
 |---|---|---|
-| Outer | 23.00 mm square, R0.8 | socket pads reach ±11.176, so this covers them by 0.32 |
+| Outer | **20.352 mm** square, R0.8 | derived: pads end at 11.176, less `--expose 1.0` |
 | Window | 14.80 mm square, R0.4 | 0.19 mm/side over the sensor's worst-case 14.42 body |
 | Thickness | 1.50 mm | |
 | Underside | z = 2.90 | resting on the socket, whose height is 2.90 REF |
 | Locating pins | 2 × Ø1.40, 1.20 deep | in the Ø1.60 index holes; PCB is 1.6 mm thick |
 | Wire slots | 48 × 0.51 wide | on the sensor's own 1.016 mm pitch |
+
+**The outer size is derived, not chosen.** `--expose` says how much of each solder joint to
+leave visible past the tile edge; the pads run 8.636 → 11.176 from centre, so the default
+1.0 mm puts the edge at 10.176. Change `--expose` and the tile follows. `--outer` overrides
+it if you want a flat number.
+
+Note the trade-off that buys: the tile no longer shields the whole contact ring. It covers
+8.636 → 10.176 of each 2.54 mm pad and deliberately leaves the last millimetre open so an
+iron can reach it.
 
 Every one of those is a first guess a test print will move — they are all flags.
 
@@ -134,11 +143,16 @@ Three things about the slots worth knowing before printing:
 - **The ribs between slots are 0.506 mm** — 1.016 pitch less 0.51 slot. That is at or under
   a single FDM extrusion. Print this on a resin machine, or slot every second pin to get
   1.52 mm of pitch. The generator warns about it.
-- **The channels reach r = 10.00**, clearing the socket body edge at 8.382 by 1.62, so a
-  wire escapes into the open space under the overhang instead of being trapped between the
-  tile and the socket. 1.50 mm of rim is left at the outer edge, which keeps the lower
-  layer a single connected ring.
+- **The channels run through the rim**, so a wire exits at the tile edge and lands on the
+  exposed millimetre of pad. `--channel-reach` stops them short if you want a rim instead.
+- **Breaking through severs the bottom layer into 48 pieces** — eleven between the slots on
+  each side, plus one wrapping each corner. That is the geometry, not a modelling
+  compromise: each piece hangs from the upper ring, which is what holds the tile together.
+  They are separate solids (`tile_lower_01` … `48`); union everything to print.
 - **The corner is a square step, not a radius.** Give the wire its own bend relief.
+- **The exit is steep.** The wire leaves the channel at z = 2.90 and the pad it lands on
+  ends 1.0 mm further out, so it turns down through about 71° right at the rim. Chamfer the
+  outer bottom edge, raise `--expose`, or accept a tight bend in fine wire.
 
 `--no-slots` gives the plain tile back.
 
