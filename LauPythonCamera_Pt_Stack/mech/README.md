@@ -108,6 +108,13 @@ the connections itself and there would be nothing to wire. Here the sensor sits 
 the board and 48 hand-soldered wires do the socket's job, with the tile holding the sensor
 in place and guiding each wire to its pad.
 
+> **Check this is still the plan.** This part was drawn when the socket looked unobtainable.
+> As of 2026-08-07 it is not — Andon builds it to order in **6–8 weeks**, comfortably inside
+> the sensor's ~27-week lead, so the socket is off the critical path (board README §15.1).
+> Hand-soldering 48 nets is a lot of work to take on for a problem that turned out to be
+> smaller than it looked. The tile stays worth having as a fallback, and `--standoff 2.9`
+> returns the socketed geometry — but decide deliberately rather than by inertia.
+
 **Both models now share one origin.** With the sensor sitting directly on the board, its
 seating plane *is* the PCB top surface, so `gen_sensor_step.py`'s z = 0 and this file's
 z = 0 are the same plane. Open the two STEPs together and they land correctly in all three

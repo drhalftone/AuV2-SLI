@@ -580,8 +580,12 @@ JLCPCB's format. **Every part except the socket is sourced and assembled by JLCP
 > USED for 48 Pin Socket Assembly"* — the cap/spacer belongs only to the 84-pin PYTHON 5MP socket
 > (`686-84A-SM-G10-L14-1`).
 >
-> **Sourcing:** Andon direct, or brokers (Perfect Parts, GlobalTek — both RFQ, ~70 units visible
-> across all sources). **No distributor stocks it off the shelf. Buy spares.**
+> **Sourcing — there is no stock anywhere. Confirmed 2026-08-07.** Aggregators list ~70 units across
+> two brokers (Perfect Parts, GlobalTek); **both were contacted and both have nothing.** Those
+> listings are phantom — FindChips returns no results for the part at all, and the `-0` variant
+> returns nothing anywhere. **Andon builds to order, 6–8 weeks** (401-333-0388, Info@andonelect.com),
+> which sits well inside the sensor's ~27 weeks, so the socket is not the critical path. **Buy
+> spares**, and check MOQ.
 
 > ### onsemi's own headboard independently validates this power architecture.
 >

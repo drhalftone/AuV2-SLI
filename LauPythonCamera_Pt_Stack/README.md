@@ -37,7 +37,7 @@ sensor in a **socketed 48-pin LCC**, for the AuV2-SLI structured-light system.
 | Socket footprint | ✅ Built and verified (§12) — **no longer blocked** |
 | Stackup / netclasses / DRC rules | ✅ Written (§11), and **calibrated against a real DRC run** (§14.7) |
 | **Layout** | ✅ **Routed, reviewed (§14), DRC-clean (0 errors, 0 unconnected), and all three Tier 1 defects are FIXED** — re-verified against the board 2026-08-06. U1 decoupling closed by moving ten caps to the underside beneath the pins; power-section stitching now 13 GND vias; `+3V3_SYS` widened to 0.6 mm with the J3 pins fanned out. Six test points added. **Fab-ready** — two optional single-via redundancy items remain (§15.0), neither a blocker. |
-| **Sensor + socket ordered** | ❌ **27-week factory lead if the in-stock units go. Do this first** — §15.1. |
+| **Sensor + socket ordered** | ❌ **Do this first** — §15.1. Sensor: **~27-week** factory lead if distributor stock runs out — this is the critical path. Socket: **no stock anywhere**, Andon builds to order in **6–8 weeks**, so it is *not* the driver. |
 
 **Eleven bugs have been found and fixed in this design so far**, including two that would have
 destroyed the sensor and two that would have scrapped the board. Every one was a *boundary
@@ -707,14 +707,14 @@ PYTHON and VITA datasheets.
 >   height in that family is **1.5 mm**. A 0.06 mm protrusion disappears into that, and would
 >   still clear if the estimate were off by 10x.
 >
-> **So order the `-1`.** Three things say so: it is what onsemi's own reference BOM specifies
-> (`31000040 REV4`), it is the only variant anyone stocks (§15.1), and the asymmetric index
-> pins **key the socket's rotation** — on a 48-pin part where 90° out is a scrapped board and
-> a $139 sensor, that is insurance `-0` throws away.
+> **So order the `-1`.** It is what onsemi's own reference BOM specifies (`31000040 REV4`),
+> and its asymmetric index pins **key the socket's rotation** — on a 48-pin part where 90°
+> out is a scrapped board and a $139 sensor, that is insurance `-0` throws away. Nothing is
+> stocked either way, so the choice costs nothing (§15.1).
 >
-> Still worth one line in the Andon email: **how far do the pins protrude, and what
-> diameter?** Only their drawing settles it. Unless the answer is wildly off 1.66 mm, `-1`
-> is fine.
+> Still worth confirming with Andon: **how far do the pins protrude, and what diameter?**
+> Only their drawing settles it; the LCC data sheet is contact-only. Unless the answer is
+> wildly off 1.66 mm, `-1` is fine.
 
 ### Optical center — do not center the lens on the package
 
@@ -1653,17 +1653,37 @@ underside — into a gap the DF40s hold open by at least 1.5 mm, with no bottom-
 4.34 mm and no `B.Cu` track within ~0.47 mm of a hole edge. §7 has the full check. It was never a
 real obstacle; it was an unverified estimate that read worse than it was.
 
-What settles it is sourcing. **`-0` has no visible inventory anywhere** — `680-48-SM-G10-R14-0`
-returns nothing on OEMsTrade — while `-1` shows **71 units** across two brokers (Perfect Parts 22,
-GlobalTek 49, both RFQ, no distributor stock). `-1` is also what onsemi's own reference BOM
-specifies, and its asymmetric pins **key the socket's rotation**, which on a 48-pad part is worth
-having. `-0` may simply be a catalogue option Andon builds to order.
+So the case rests on engineering, and `-1` wins it: its asymmetric pins **key the socket's rotation**,
+which on a 48-pad part where 90° out means a scrapped board is worth having. It is also what onsemi's
+own reference BOM specifies (`31000040 REV4`).
 
-> **One line for the Andon email:** *how far do the index pins protrude, and what diameter?* Their
-> drawing is the only thing that settles the 1.66 mm figure. Unless it comes back wildly different,
-> `-1` is the part.
+> ### There is NO stock of this socket, anywhere. Confirmed 2026-08-07.
+>
+> Aggregators are misleading here and the earlier revision of this section repeated them. OEMsTrade
+> lists **71 units** across two brokers (Perfect Parts 22, GlobalTek 49). **Both were contacted and
+> both have nothing** — those listings are phantom. FindChips returns no results for the part at all;
+> Octopart has none; `-0` returns nothing anywhere. **Treat any broker listing for this part as
+> fiction until a human confirms it.**
+>
+> **Andon builds to order: 6–8 weeks.** That is the real supply route, and it is *good news* — it
+> sits well inside the sensor's ~27 weeks, so **the socket is not the critical path.** Order it in
+> parallel and it will arrive long before the sensor.
+>
+> **This also frees the `-0` / `-1` choice.** Both are build-to-order at the same lead time
+> (Andon's catalog is explicit: *"Replace '-X' with '-1' for index pins or '-0' for none"*), so
+> stock no longer constrains it. Take `-1` for the keying.
+>
+> **Contact:** Andon Electronics, **401-333-0388**, Info@andonelect.com, 4 Court Drive, Lincoln RI
+> 02865. Ask on the same order: **MOQ**, and **the actual index-pin protrusion and diameter** — the
+> ~1.66 mm figure is still unconfirmed, and their LCC socket data sheet is contact-only.
 
-**Buy two:** it is a 48-pad hand-soldered part and you may want a second attempt.
+**Buy two:** it is a 48-pad hand-soldered part and you may want a second attempt. Check MOQ — a
+build-to-order run may set the quantity for you.
+
+> **Does this change the plan?** The flush socket-less tile in `mech/` exists because the socket
+> looked unobtainable. It isn't — only slow, and slower things already gate the schedule. Before
+> committing to hand-soldering 48 wires, decide whether that build is still wanted or was a
+> workaround for a smaller problem than it appeared. The tile remains useful as a fallback.
 
 ### 15.2 PCB fabrication
 
@@ -1790,7 +1810,7 @@ refill before believing a single one.
 | # | Item | Blocks | Owner |
 |---|---|---|---|
 | **1** | **🔴 ORDER THE SENSOR AND SOCKET.** Order **`NOIP1SN1300A-QTI`** — the originally-specified `-QDI` is **discontinued**; `-QTI` is the same sensor with a peel-off foil (§4, §12). Expect a **~27-week factory lead**; if distributor stock runs out the board arrives and sits on a bench for months. This is the only genuinely time-critical item in the project and it is *not* blocked on layout. **How: §15.1.** | Nothing — do it now | **You** |
-| ~~2~~ | ✅ **CLOSED 2026-08-07 — order the `-1`.** This reversed: the section used to say default to `-0`. The ~1.66 mm index-pin protrusion against a 1.6 mm board leaves **0.06 mm** proud, into a gap the DF40s hold open by ≥1.5 mm, with no bottom-side part within 4.34 mm and no `B.Cu` track within ~0.47 mm of a hole edge (§7). And `-0` has **no visible inventory anywhere** while `-1` shows 71 broker units, is what onsemi's reference BOM specifies, and keys the socket's rotation. One line still worth putting in the Andon email: the actual pin protrusion and diameter. | — | — |
+| ~~2~~ | ✅ **CLOSED 2026-08-07 — order the `-1`.** This reversed: the section used to say default to `-0`. The ~1.66 mm index-pin protrusion against a 1.6 mm board leaves **0.06 mm** proud, into a gap the DF40s hold open by ≥1.5 mm, with no bottom-side part within 4.34 mm and no `B.Cu` track within ~0.47 mm of a hole edge (§7). Stock does not constrain the choice: **there is none of either variant** — the 71 broker units aggregators show are phantom, confirmed by contacting both. Andon builds to order in **6–8 weeks**, inside the sensor's ~27, so the socket is off the critical path. `-1` wins on keying and matches onsemi's reference BOM. **Still confirm with Andon: actual pin protrusion and diameter, and MOQ.** | — | — |
 | ~~3~~ | ✅ **CLOSED.** Superseded by the boost + 3-LDO + 2-supervisor tree (§6.5). There is no load switch and no ferrite: `U3` = `TPS61023DRLR`, `U4`/`U5` = `TPS7A2033PDBVR`, `U2` = `TPS7A2018PDBVR`, `U6`/`U7` = `TLV803SDBZR`. **Every part is a JLCPCB part number in `production/LauPythonCamera_Pt_Stack_bom.csv`** — the BOM is orderable. | — | — |
 | 4 | **PCB-surface-to-sensor-glass height.** Not published anywhere — not in Andon's catalog, not in the Eagle library. Sets the lens flange focal distance. | Lens mount (not this board) | Measure the physical socket |
 | ~~5~~ | ✅ **CLOSED.** The area-scoped exceptions exist in `LauPythonCamera_Pt_Stack.kicad_dru` — rules *"DF40 land pattern — 0.4mm pitch, intra-connector only"* and *"TPS61023 SOT-563 land pattern"*. They relax clearance **only between pads of the same component**; the global minimum and the LVDS rules are untouched. | — | — |
