@@ -45,12 +45,38 @@ model, which is what keeps Pt availability off the critical path.
 | **3** | SPI mailbox on the `0xA5` UART control plane | Real 115200 bytes in → chip ID out | ✅ **89 checks, 0 errors** |
 | **4** | `cam_au2.xdc` (Au V2) + build a bitstream | Synth + impl clean, timing met, DRC clean | ✅ **WNS +2.106 ns; pins verified by readback** |
 | **6** | Sensor boot sequencer (ROM-driven register upload) | Sensor reports PLL lock + ready | ✅ **12 checks, 0 errors** (`cam_boot_seq.v`) |
-| **5** | 🔴 **HARDWARE GATE — read chip ID `0x50D0`** | The correct value comes back | ⬜ **needs the Au on the bench** |
+| **5** | 🔴 **HARDWARE GATE — read chip ID `0x50D0`** | The correct value comes back | ✅ **PASSED 2026-08-10 on the Pt V2** — 40/40 clean reads |
 | **14** | Settle the `clk_pll` 20 ps jitter spec | We know the number, its units, and whether our clock clears it | ⬜ a number to look up / measure |
 
 ### Milestone 5 is the one that matters
 
 It is the whole "confirm the PCB, demonstrate working HDL" goal in a single transaction.
+
+> ## ✅ PASSED — 2026-08-10, on the **Pt V2** (not the Au)
+>
+> `reg0=50D0 mon=0 PASS`, 40 consecutive reads, no intermittency. The power tree, the DF40 pin map,
+> the stack pass-through, `reset_n` release and `cam_spi_master.v` are all confirmed against real
+> hardware. Run it yourself with `LauPythonCamera_Pt_Stack/hello/` — see that directory's README.
+>
+> **The fault was three separate hand-soldering defects on the LCC48**, found one at a time: two pins
+> bridged, then a loose `miso` joint, then further loose connections. Each fix looked like no
+> progress because the *next* defect masked it — the reading stayed `0xFFFF` throughout.
+>
+> **What the debug actually cost, and what would have shortened it.** Everything external was
+> eliminated first — board schematic against datasheet Table 29 (all 48 pins correct), our SPI
+> against Avnet's shipping `onsemi_vita_spi` (identical on every parameter), all rails and
+> `ibias_master`, and `clk_pll`. All of that was sound; none of it was the problem. The two tools
+> that actually found the defects were the **walking-ones bitstream** (`cam_pinwalk`, which catches
+> bridges a continuity beep-test misses) and **forcing an internal pull** on the undriven inputs so a
+> floating pin could be told from a driven one. Reach for those first next time.
+>
+> **A trap worth remembering:** `miso`, `monitor0` and `monitor1` have **no** board pull, so a
+> floating pin parks at a confident, meaningless level. Early on this produced `mon=2` and a
+> "sign of life" that was pure noise. It only became evidence once a pulldown was forced.
+>
+> **Do not conclude "dead part" from silence.** This one looked dead by every indirect measure —
+> including two bonded CMOS outputs that refused to drive — and was healthy the whole time.
+
 **Before powering up:**
 
 1. **Do not populate the `VBSEL_A` strap resistor** on an Au build (`CAMERA_IO_MAP.md` §8.3).

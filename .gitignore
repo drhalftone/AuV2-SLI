@@ -62,5 +62,11 @@ __pycache__/
 *.pyc
 
 build_pt/
+
+# Camera chip-ID bring-up bitstream: build products and xsim scratch.
+# Regenerate with hello/build_hello.tcl and hello/run_sim.tcl.
+/LauPythonCamera_Pt_Stack/hello/build/
+/LauPythonCamera_Pt_Stack/hello/sim_work/
+
 /LauPythonCamera_Pt_Stack/*.step
 /LauPythonCamera_Pt_Stack/production/*.step
