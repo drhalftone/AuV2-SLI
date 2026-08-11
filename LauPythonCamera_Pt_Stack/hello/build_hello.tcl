@@ -28,6 +28,17 @@ dict set BOARDS probe {xc7a100tfgg484-2 cam_probe    pt_cam_probe.xdc}
 dict set BOARDS walk  {xc7a100tfgg484-2 cam_pinwalk  pt_cam_pinwalk.xdc}
 # Same as pt, but clk_pll free-runs at 50 MHz. See pt_cam_hello_clk.v.
 dict set BOARDS ptclk {xc7a100tfgg484-2 pt_cam_hello_clk pt_cam_hello.xdc}
+# STAGE 2: powers up the sensor's LVDS drivers so they can be metered.
+# Same ports as pt_cam_hello, so it reuses that XDC. No bank-13 pin.
+dict set BOARDS lvdsen {xc7a100tfgg484-2 cam_lvds_en  pt_cam_hello.xdc}
+dict set BOARDS lvdsenclk {xc7a100tfgg484-2 cam_lvds_en_clk pt_cam_hello.xdc}
+dict set BOARDS regdump {xc7a100tfgg484-2 cam_regdump  pt_cam_hello.xdc}
+# STAGE 1: 72 MHz MMCM + Avnet SEQ01 + PLL lock poll (STOP_AT=8).
+dict set BOARDS stage1 {xc7a100tfgg484-2 cam_boot_stage1 pt_cam_hello.xdc}
+# STAGE 2: same, STOP_AT=41 -- adds LVDS power-up, sequencer still off.
+dict set BOARDS stage2 {xc7a100tfgg484-2 cam_boot_stage2 pt_cam_hello.xdc}
+# STAGE 3: recovers clock_out on bank 13. NEEDS VBSEL AT 2.5 V.
+dict set BOARDS stage3 {xc7a100tfgg484-2 cam_clkrx_stage3 pt_cam_clkrx.xdc}
 
 # Pins each board's XDC promises. Checked after implementation, because a
 # bring-up bitstream whose pins silently moved would blame the board for a
@@ -45,6 +56,13 @@ dict set PINS pt {
 dict set PINS probe [dict get $PINS pt]      ;# same board, same balls
 dict set PINS walk  [dict get $PINS pt]
 dict set PINS ptclk [dict get $PINS pt]
+dict set PINS lvdsen [dict get $PINS pt]
+dict set PINS lvdsenclk [dict get $PINS pt]
+dict set PINS regdump [dict get $PINS pt]
+dict set PINS stage1 [dict get $PINS pt]
+dict set PINS stage2 [dict get $PINS pt]
+# stage3 adds the bank-13 clock pair on top of the stage-1/2 pin set.
+dict set PINS stage3 [concat [dict get $PINS pt] {cam_clkout_p Y11 cam_clkout_n Y12}]
 dict set PINS au {
     clk N14
     led[0] K13  led[1] K12  led[2] L14  led[3] L13
@@ -80,7 +98,11 @@ foreach board $targets {
         $root/sources_1/imports/RTL/uart_tx.v \
         $here/$top.v \
     ]
-    if {$top ne "cam_probe" && $top ne "cam_pinwalk"} { lappend hdl $here/cam_hello_core.v }
+    if {[string match "*cam_hello*" $top]} { lappend hdl $here/cam_hello_core.v }
+    if {$top eq "cam_lvds_en_clk"} { lappend hdl $here/cam_lvds_en.v }
+    if {[string match "cam_boot_stage*" $top]} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
+    if {$top eq "cam_boot_stage2" || $top eq "cam_clkrx_stage3"} { lappend hdl $here/cam_boot_stage1.v }
+    if {$top eq "cam_clkrx_stage3"} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
     read_verilog $hdl
     read_xdc $here/$xdc
 
@@ -137,7 +159,23 @@ foreach board $targets {
     incr fail $nbad
 
     # Bank containment. Assert it rather than trusting nobody added a port.
-    if {$board ne "au"} {
+    if {$board eq "stage3"} {
+        # Stage 3 is the first design that legitimately uses bank 13, so the
+        # check inverts: bank 13 must contain EXACTLY the clock pair and nothing
+        # else. That keeps the VBSEL exposure to the two pins we intend, and
+        # catches a stray port wandering into the 2.5 V bank.
+        set b13 {}
+        foreach p [get_ports] {
+            if {[get_property IOBANK $p] == 13} { lappend b13 [get_property NAME $p] }
+        }
+        set want13 {cam_clkout_n cam_clkout_p}
+        set got13  [lsort $b13]
+        puts "=== stage3 bank-13 ports: $got13 (expect $want13) ==="
+        if {$got13 ne $want13} {
+            puts "  ** bank-13 contents are not exactly the clock pair"
+            incr fail
+        }
+    } elseif {$board ne "au"} {
         # Nothing in bank 13: the 2.5 V LVDS bank. Keeping out of it is what makes
         # these bitstreams' safety independent of the VBSEL_A strap.
         set bad 0

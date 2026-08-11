@@ -38,7 +38,18 @@ module cam_boot_seq #(
     parameter integer T_RST_HIGH  = 2_000,      // 20 us
     parameter integer T_PLL_POLL  = 10_000_000, // 100 ms between PLL-lock reads
     parameter integer PLL_TRIES   = 10,
-    parameter [15:0]  CHIP_ID     = 16'h50D0
+    parameter [15:0]  CHIP_ID     = 16'h50D0,
+    // Stop after this many ROM entries, for STAGED bring-up. 0 = run the whole
+    // sequence, which is the previous behaviour and the default, so existing
+    // instantiations (Au2_SLI) are unaffected.
+    //
+    //    8 -> SEQ01 + the PLL lock poll, and nothing else. The sensor's PLL is
+    //         asked to lock and we stop; no LVDS, no streaming.
+    //   41 -> everything up to and including rom[39] (reg 112 = LVDS drivers on)
+    //         but NOT rom[41], so the sequencer stays disabled and the sensor
+    //         does not stream. This is the state the stage-2 DMM test wants.
+    //    0 -> all 42, sequencer enabled, sensor streams.
+    parameter integer STOP_AT     = 0
 )(
     input  wire        clk,
     input  wire        rst,
@@ -130,6 +141,9 @@ module cam_boot_seq #(
     wire [8:0]  rom_addr = rom[idx][24:16];
     wire [15:0] rom_data = rom[idx][15:0];
 
+    // Index of the last ROM entry this run will execute.
+    localparam integer LAST_IDX = (STOP_AT == 0) ? (NROM - 1) : (STOP_AT - 1);
+
     always @(posedge clk) begin
         if (rst) begin
             st <= S_IDLE; busy <= 1'b0; ready <= 1'b0; failed <= 1'b0; pll_timeout <= 1'b0;
@@ -179,7 +193,7 @@ module cam_boot_seq #(
                         // after the last SEQ01 write (idx 7), poll the PLL before continuing
                         if ((idx == PLL_AT - 1) && !pll_done) begin
                             pll_cnt <= 4'd0; st <= S_PLL_RD;
-                        end else if (idx == NROM - 1) begin
+                        end else if (idx == LAST_IDX) begin
                             st <= S_DONE;
                         end else begin
                             idx <= idx + 6'd1; st <= S_WR;
@@ -192,12 +206,18 @@ module cam_boot_seq #(
                     end
                 S_PLL_W: if (spi_done) st <= S_PLL_CHK;
                 S_PLL_CHK: begin
+                        // The LAST_IDX test is repeated here, not just in S_WR_W: with
+                        // STOP_AT = 8 the run ends ON the PLL poll, so without this the
+                        // sequencer would fall through and start writing SEQ03.
                         if (spi_rdata[0]) begin
-                            pll_done <= 1'b1; idx <= idx + 6'd1; st <= S_WR;
+                            pll_done <= 1'b1;
+                            if (idx == LAST_IDX) st <= S_DONE;
+                            else begin idx <= idx + 6'd1; st <= S_WR; end
                         end else if (pll_cnt == PLL_TRIES[3:0] - 1) begin
                             // Avnet proceeds on timeout (its return is commented out). Flag it.
                             pll_timeout <= 1'b1; pll_done <= 1'b1;
-                            idx <= idx + 6'd1; st <= S_WR;
+                            if (idx == LAST_IDX) st <= S_DONE;
+                            else begin idx <= idx + 6'd1; st <= S_WR; end
                         end else begin
                             pll_cnt <= pll_cnt + 4'd1; wait_cnt <= T_PLL_POLL[23:0];
                             st <= S_PLL_WAIT;

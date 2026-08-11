@@ -19,6 +19,7 @@ set srcs [list \
     $here/cam_hello_core.v \
     $here/pt_cam_hello.v \
     $here/au_cam_hello.v \
+    $here/cam_lvds_en.v \
     $here/tb_pt_cam_hello.v \
 ]
 
