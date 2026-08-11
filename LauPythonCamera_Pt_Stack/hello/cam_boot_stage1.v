@@ -62,6 +62,11 @@ module cam_boot_stage1 #(
     parameter integer CLK_HZ   = 100_000_000,
     parameter integer BAUD     =     115_200,
     parameter integer STOP_AT  = 8,             // SEQ01 + PLL poll only
+    // MMCM CLKOUT0 divide. 15.0 -> 1080/15 = 72.000 MHz, the sensor's nominal
+    // reference. 30.0 -> 36.000 MHz, which HALVES the serialiser's bit rate to
+    // 360 Mbps and doubles the data eye -- the margin test. 36 MHz sits inside
+    // the 30-45 MHz reference band Avnet's driver handles explicitly.
+    parameter real    PLL_DIV  = 15.000,
     parameter integer POLL_CY  = CLK_HZ / 2
 )(
     input  wire       clk,
@@ -100,7 +105,7 @@ module cam_boot_stage1 #(
         .CLKIN1_PERIOD      (10.000),      // 100 MHz in
         .DIVCLK_DIVIDE      (5),           // D = 5   -> 20 MHz PFD
         .CLKFBOUT_MULT_F    (54.000),      // M = 54  -> VCO 1080 MHz
-        .CLKOUT0_DIVIDE_F   (15.000),      // /15     -> 72.000 MHz exact
+        .CLKOUT0_DIVIDE_F   (PLL_DIV),     // 15 -> 72.000 MHz, 30 -> 36.000 MHz
         .CLKOUT0_DUTY_CYCLE (0.500),       // spec is 45-50-55 %
         .STARTUP_WAIT       ("FALSE")
     ) u_mmcm (
