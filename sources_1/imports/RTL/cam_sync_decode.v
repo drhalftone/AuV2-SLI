@@ -61,6 +61,29 @@ module cam_sync_decode (
             line_start  <= 1'b0;
             frame_start <= 1'b0;
 
+            // FE ENDS THE FRAME FROM ANY STATE.
+            //
+            // It used to be tested only in S_LINE_WAIT, and on real silicon that
+            // is never where we are when it arrives. Measured with cam_syncdbg
+            // (a copy of this FSM with a counter per state): 100 % of FE codes --
+            // 0x382 of them, one per frame at ~100 fps -- land while the decoder
+            // is in S_LINE.
+            //
+            // S_LINE exits only on LE, so the decoder sailed past the frame
+            // boundary, kept waiting, and resynchronised on the NEXT line's LE.
+            // It stayed permanently one line out of phase and frame_start fired
+            // exactly once in the lifetime of the design. That single missing
+            // test caused all three observed symptoms: the line buffer never
+            // re-arming, the truncated capture, and the captured image being
+            // circularly shifted by an arbitrary number of rows.
+            //
+            // Testing FE globally is safe: the sync channel carries only defined
+            // codes plus 3-bit window-ID words (values 0-7), and FE is 0x32A, so
+            // nothing else can alias to it.
+            if (sync_word == SC_FE) begin
+                st     <= S_IDLE;
+                word_b <= 1'b0;
+            end else
             case (st)
                 S_IDLE:
                     if (sync_word == SC_FS) begin frame_start <= 1'b1; st <= S_AFTER_FS; end

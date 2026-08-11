@@ -33,6 +33,7 @@ dict set BOARDS ptclk {xc7a100tfgg484-2 pt_cam_hello_clk pt_cam_hello.xdc}
 dict set BOARDS lvdsen {xc7a100tfgg484-2 cam_lvds_en  pt_cam_hello.xdc}
 dict set BOARDS lvdsenclk {xc7a100tfgg484-2 cam_lvds_en_clk pt_cam_hello.xdc}
 dict set BOARDS regdump {xc7a100tfgg484-2 cam_regdump  pt_cam_hello.xdc}
+dict set BOARDS regslow {xc7a100tfgg484-2 cam_regdump_slow pt_cam_hello.xdc}
 # STAGE 1: 72 MHz MMCM + Avnet SEQ01 + PLL lock poll (STOP_AT=8).
 dict set BOARDS stage1 {xc7a100tfgg484-2 cam_boot_stage1 pt_cam_hello.xdc}
 # STAGE 2: same, STOP_AT=41 -- adds LVDS power-up, sequencer still off.
@@ -49,6 +50,10 @@ dict set BOARDS rxslow {xc7a100tfgg484-2 cam_rxdbg_slow pt_cam_rx.xdc}
 dict set BOARDS idelay {xc7a100tfgg484-2 cam_idelay_stage4 pt_cam_rx.xdc}
 # STAGE 5: full boot (sensor STREAMS) + sync decode + one line dumped as hex.
 dict set BOARDS stage5 {xc7a100tfgg484-2 cam_line_stage5 pt_cam_rx.xdc}
+# STAGE 6: 1280x256 frame into BRAM, streamed to the PC at 1 Mbaud.
+dict set BOARDS stage6 {xc7a100tfgg484-2 cam_frame_stage6 pt_cam_rx.xdc}
+# Sync-code counters: does FE ever appear on the wire?
+dict set BOARDS syncdbg {xc7a100tfgg484-2 cam_syncdbg pt_cam_rx.xdc}
 
 # Pins each board's XDC promises. Checked after implementation, because a
 # bring-up bitstream whose pins silently moved would blame the board for a
@@ -69,10 +74,21 @@ dict set PINS ptclk [dict get $PINS pt]
 dict set PINS lvdsen [dict get $PINS pt]
 dict set PINS lvdsenclk [dict get $PINS pt]
 dict set PINS regdump [dict get $PINS pt]
+dict set PINS regslow [dict get $PINS pt]
 dict set PINS stage1 [dict get $PINS pt]
 dict set PINS stage2 [dict get $PINS pt]
 # stage3 adds the bank-13 clock pair on top of the stage-1/2 pin set.
 dict set PINS stage3 [concat [dict get $PINS pt] {cam_clkout_p Y11 cam_clkout_n Y12}]
+dict set PINS syncdbg [concat [dict get $PINS stage3] {
+    cam_d_p[0] U15  cam_d_n[0] V15   cam_d_p[1] AB16 cam_d_n[1] AB17
+    cam_d_p[2] Y16  cam_d_n[2] AA16  cam_d_p[3] T14  cam_d_n[3] T15
+    cam_sync_p W14  cam_sync_n Y14
+}]
+dict set PINS stage6 [concat [dict get $PINS stage3] {
+    cam_d_p[0] U15  cam_d_n[0] V15   cam_d_p[1] AB16 cam_d_n[1] AB17
+    cam_d_p[2] Y16  cam_d_n[2] AA16  cam_d_p[3] T14  cam_d_n[3] T15
+    cam_sync_p W14  cam_sync_n Y14
+}]
 dict set PINS stage5 [concat [dict get $PINS stage3] {
     cam_d_p[0] U15  cam_d_n[0] V15   cam_d_p[1] AB16 cam_d_n[1] AB17
     cam_d_p[2] Y16  cam_d_n[2] AA16  cam_d_p[3] T14  cam_d_n[3] T15
@@ -133,23 +149,74 @@ foreach board $targets {
         $root/sources_1/imports/RTL/uart_tx.v \
         $here/$top.v \
     ]
-    if {[string match "*cam_hello*" $top]} { lappend hdl $here/cam_hello_core.v }
-    if {$top eq "cam_lvds_en_clk"} { lappend hdl $here/cam_lvds_en.v }
-    if {[string match "cam_boot_stage*" $top]} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
-    if {$top eq "cam_boot_stage2" || [string match "cam_*_stage*" $top] || [string match "cam_rxdbg*" $top] || [string match "cam_*_stage*" $top]} { lappend hdl $here/cam_boot_stage1.v }
-    if {[string match "cam_*_stage*" $top] || [string match "cam_rxdbg*" $top] || [string match "cam_*_stage*" $top]} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
-    if {$top eq "cam_rx_stage4" || [string match "cam_rxdbg*" $top] || $top eq "cam_idelay_stage4" || $top eq "cam_line_stage5"} {
-        lappend hdl $root/sources_1/imports/RTL/cam_lvds_rx.v
-        lappend hdl $root/sources_1/imports/RTL/cam_align.v
-    }
-    if {$top eq "cam_rxdbg_slow"} { lappend hdl $here/cam_rxdbg.v }
-    if {$top eq "cam_idelay_stage4" || $top eq "cam_line_stage5"} {
-        lappend hdl $here/cam_lvds_rx_idelay.v
-        lappend hdl $here/cam_eye_scan.v
-    }
-    if {$top eq "cam_line_stage5"} {
-        lappend hdl $root/sources_1/imports/RTL/cam_sync_decode.v
-        lappend hdl $root/sources_1/imports/RTL/cam_line_buf.v
+    # Per-top dependency list. Written out explicitly, one entry per top: the
+    # earlier glob-matching version accumulated overlapping patterns until it
+    # was silently omitting modules, which surfaces as "module not found" at
+    # synthesis rather than anywhere useful.
+    switch -exact -- $top {
+        pt_cam_hello - au_cam_hello - pt_cam_hello_clk {
+            lappend hdl $here/cam_hello_core.v
+        }
+        cam_probe - cam_pinwalk - cam_regdump { }
+        cam_regdump_slow { lappend hdl $here/cam_regdump.v }
+        cam_lvds_en      { }
+        cam_lvds_en_clk  { lappend hdl $here/cam_lvds_en.v }
+        cam_boot_stage1 {
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+        }
+        cam_boot_stage2 {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+        }
+        cam_clkrx_stage3 {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+        }
+        cam_rx_stage4 - cam_rxdbg {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_lvds_rx.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+        }
+        cam_rxdbg_slow {
+            lappend hdl $here/cam_rxdbg.v
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_lvds_rx.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+        }
+        cam_idelay_stage4 {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $here/cam_lvds_rx_idelay.v
+            lappend hdl $here/cam_eye_scan.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+        }
+        cam_line_stage5 {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $here/cam_lvds_rx_idelay.v
+            lappend hdl $here/cam_eye_scan.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+            lappend hdl $root/sources_1/imports/RTL/cam_sync_decode.v
+            lappend hdl $root/sources_1/imports/RTL/cam_line_buf.v
+        }
+        cam_syncdbg {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $here/cam_lvds_rx_idelay.v
+            lappend hdl $here/cam_eye_scan.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+        }
+        cam_frame_stage6 {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $here/cam_lvds_rx_idelay.v
+            lappend hdl $here/cam_eye_scan.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+            lappend hdl $root/sources_1/imports/RTL/cam_sync_decode.v
+        }
+        default { error "no HDL dependency list for top '$top'" }
     }
     read_verilog $hdl
     read_xdc $here/$xdc
@@ -207,7 +274,7 @@ foreach board $targets {
     incr fail $nbad
 
     # Bank containment. Assert it rather than trusting nobody added a port.
-    if {$board eq "stage4" || [string match "rx*" $board] || $board eq "idelay" || $board eq "stage5"} {
+    if {$board eq "stage4" || [string match "rx*" $board] || $board eq "idelay" || $board eq "stage5" || $board eq "stage6" || $board eq "syncdbg"} {
         # Stage 4 owns twelve bank-13 pins: six input pairs. Assert the count
         # rather than the names -- a stray port here would be a real hazard.
         set n13 0
