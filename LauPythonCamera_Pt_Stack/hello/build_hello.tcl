@@ -47,6 +47,8 @@ dict set BOARDS rxdbg {xc7a100tfgg484-2 cam_rxdbg pt_cam_rx.xdc}
 dict set BOARDS rxslow {xc7a100tfgg484-2 cam_rxdbg_slow pt_cam_rx.xdc}
 # STAGE 4b: IDELAY eye-centring at the full 720 Mbps.
 dict set BOARDS idelay {xc7a100tfgg484-2 cam_idelay_stage4 pt_cam_rx.xdc}
+# STAGE 5: full boot (sensor STREAMS) + sync decode + one line dumped as hex.
+dict set BOARDS stage5 {xc7a100tfgg484-2 cam_line_stage5 pt_cam_rx.xdc}
 
 # Pins each board's XDC promises. Checked after implementation, because a
 # bring-up bitstream whose pins silently moved would blame the board for a
@@ -71,6 +73,11 @@ dict set PINS stage1 [dict get $PINS pt]
 dict set PINS stage2 [dict get $PINS pt]
 # stage3 adds the bank-13 clock pair on top of the stage-1/2 pin set.
 dict set PINS stage3 [concat [dict get $PINS pt] {cam_clkout_p Y11 cam_clkout_n Y12}]
+dict set PINS stage5 [concat [dict get $PINS stage3] {
+    cam_d_p[0] U15  cam_d_n[0] V15   cam_d_p[1] AB16 cam_d_n[1] AB17
+    cam_d_p[2] Y16  cam_d_n[2] AA16  cam_d_p[3] T14  cam_d_n[3] T15
+    cam_sync_p W14  cam_sync_n Y14
+}]
 dict set PINS idelay [concat [dict get $PINS stage3] {
     cam_d_p[0] U15  cam_d_n[0] V15   cam_d_p[1] AB16 cam_d_n[1] AB17
     cam_d_p[2] Y16  cam_d_n[2] AA16  cam_d_p[3] T14  cam_d_n[3] T15
@@ -129,16 +136,20 @@ foreach board $targets {
     if {[string match "*cam_hello*" $top]} { lappend hdl $here/cam_hello_core.v }
     if {$top eq "cam_lvds_en_clk"} { lappend hdl $here/cam_lvds_en.v }
     if {[string match "cam_boot_stage*" $top]} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
-    if {$top eq "cam_boot_stage2" || [string match "cam_*_stage*" $top] || [string match "cam_rxdbg*" $top] || $top eq "cam_idelay_stage4"} { lappend hdl $here/cam_boot_stage1.v }
-    if {[string match "cam_*_stage*" $top] || [string match "cam_rxdbg*" $top] || $top eq "cam_idelay_stage4"} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
-    if {$top eq "cam_rx_stage4" || [string match "cam_rxdbg*" $top] || $top eq "cam_idelay_stage4"} {
+    if {$top eq "cam_boot_stage2" || [string match "cam_*_stage*" $top] || [string match "cam_rxdbg*" $top] || [string match "cam_*_stage*" $top]} { lappend hdl $here/cam_boot_stage1.v }
+    if {[string match "cam_*_stage*" $top] || [string match "cam_rxdbg*" $top] || [string match "cam_*_stage*" $top]} { lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v }
+    if {$top eq "cam_rx_stage4" || [string match "cam_rxdbg*" $top] || $top eq "cam_idelay_stage4" || $top eq "cam_line_stage5"} {
         lappend hdl $root/sources_1/imports/RTL/cam_lvds_rx.v
         lappend hdl $root/sources_1/imports/RTL/cam_align.v
     }
     if {$top eq "cam_rxdbg_slow"} { lappend hdl $here/cam_rxdbg.v }
-    if {$top eq "cam_idelay_stage4"} {
+    if {$top eq "cam_idelay_stage4" || $top eq "cam_line_stage5"} {
         lappend hdl $here/cam_lvds_rx_idelay.v
         lappend hdl $here/cam_eye_scan.v
+    }
+    if {$top eq "cam_line_stage5"} {
+        lappend hdl $root/sources_1/imports/RTL/cam_sync_decode.v
+        lappend hdl $root/sources_1/imports/RTL/cam_line_buf.v
     }
     read_verilog $hdl
     read_xdc $here/$xdc
@@ -196,7 +207,7 @@ foreach board $targets {
     incr fail $nbad
 
     # Bank containment. Assert it rather than trusting nobody added a port.
-    if {$board eq "stage4" || [string match "rx*" $board] || $board eq "idelay"} {
+    if {$board eq "stage4" || [string match "rx*" $board] || $board eq "idelay" || $board eq "stage5"} {
         # Stage 4 owns twelve bank-13 pins: six input pairs. Assert the count
         # rather than the names -- a stray port here would be a real hazard.
         set n13 0

@@ -95,6 +95,7 @@ module cam_rx_stage4 #(
         .CLK_HZ (CLK_HZ), .BAUD (BAUD), .STOP_AT (41)
     ) u_boot (
         .clk(clk), .rst_n(rst_n),
+        .stream_go(1'b0), .streaming(),   // these stages never stream
         .led(boot_led), .usb_tx(), .usb_rx(usb_rx),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
         .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),

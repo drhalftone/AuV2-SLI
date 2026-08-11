@@ -80,6 +80,7 @@ module cam_rxdbg #(
     wire [7:0] boot_led;
     cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(41), .PLL_DIV(PLL_DIV)) u_boot (
         .clk(clk), .rst_n(rst_n),
+        .stream_go(1'b0), .streaming(),   // these stages never stream
         .led(boot_led), .usb_tx(), .usb_rx(usb_rx),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
         .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),

@@ -71,6 +71,8 @@ module cam_boot_stage1 #(
 )(
     input  wire       clk,
     input  wire       rst_n,
+    input  wire       stream_go,   // pulse: perform the deferred reg 192 write
+    output reg        streaming,   // set once that write has landed
 
     output reg  [7:0] led,
     output wire       usb_tx,
@@ -143,11 +145,31 @@ module cam_boot_stage1 #(
 
     reg         p_start;
     reg  [8:0]  p_addr;
+    reg         p_wr    = 1'b0;
+    reg  [15:0] p_wdata = 16'h0000;
 
     assign spi_start = b_busy ? b_start : p_start;
-    assign spi_rw    = b_busy ? b_rw    : 1'b0;      // the poller only READS
+    assign spi_rw    = b_busy ? b_rw    : p_wr;
     assign spi_addr  = b_busy ? b_addr  : p_addr;
-    assign spi_wdata = b_busy ? b_wdata : 16'h0000;
+    assign spi_wdata = b_busy ? b_wdata : p_wdata;
+
+    // DEFERRED STREAM START.
+    //
+    // With STOP_AT = 41 the boot stops one entry short of rom[41] = reg 192 =
+    // 0x0801, the sequencer enable, so the sensor sits idle emitting the
+    // training pattern. That idle is not incidental: the IDELAY eye scan needs
+    // 256 CONSECUTIVE training words, and once the sensor streams, the training
+    // pattern only appears in inter-line gaps. Scanning against live image data
+    // finds nothing and parks the taps badly.
+    //
+    // So the caller scans and aligns first, then pulses stream_go, and this
+    // performs that one remaining write. Ordering, not extra capability.
+    reg stream_req = 1'b0;
+    always @(posedge clk) begin
+        if (rst)            stream_req <= 1'b0;
+        else if (stream_go) stream_req <= 1'b1;
+        else if (streaming) stream_req <= 1'b0;
+    end
 
     cam_spi_master #(.CLK_HZ(CLK_HZ), .SCK_HZ(1_000_000)) u_spi (
         .clk(clk), .rst(rst),
@@ -190,7 +212,8 @@ module cam_boot_stage1 #(
     localparam [3:0] P_WAIT = 4'd0, P_R16  = 4'd1, P_W16 = 4'd2,
                      P_R24  = 4'd3, P_W24  = 4'd4,
                      P_R112 = 4'd5, P_W112 = 4'd6,
-                     P_RPT  = 4'd7, P_GAP  = 4'd8;
+                     P_RPT  = 4'd7, P_GAP  = 4'd8,
+                     P_STRM = 4'd9, P_STRMW = 4'd10;
 
     reg [3:0]  ps  = P_WAIT;
     reg [26:0] ptm = 27'd0;
@@ -205,6 +228,7 @@ module cam_boot_stage1 #(
 
         if (rst) begin
             ps  <= P_WAIT; ptm <= 27'd0; r16 <= 16'd0; r24 <= 16'd0; r112 <= 16'd0;
+            p_wr <= 1'b0; p_wdata <= 16'd0; streaming <= 1'b0;
         end else begin
             case (ps)
             P_WAIT: if (!b_busy && started) ps <= P_R16;
@@ -215,8 +239,19 @@ module cam_boot_stage1 #(
             P_R112: if (!spi_busy) begin p_addr <= 9'd112; p_start <= 1'b1; ps <= P_W112; end
             P_W112: if (spi_done) begin r112 <= spi_rdata; ps <= P_RPT; end
             P_RPT:  begin msg_go <= 1'b1; ptm <= 27'd0; ps <= P_GAP; end
-            P_GAP:  if (ptm == POLL_CY[26:0] - 27'd1) begin ptm <= 27'd0; ps <= P_R16; end
-                    else ptm <= ptm + 27'd1;
+            P_GAP:  if (ptm == POLL_CY[26:0] - 27'd1) begin
+                        ptm <= 27'd0;
+                        ps  <= (stream_req && !streaming) ? P_STRM : P_R16;
+                    end else ptm <= ptm + 27'd1;
+            // rom[41] of cam_boot_seq, performed here instead: enable the
+            // sequencer and the sensor starts exposing and reading out.
+            P_STRM: if (!spi_busy) begin
+                        p_wr <= 1'b1; p_addr <= 9'd192; p_wdata <= 16'h0801;
+                        p_start <= 1'b1; ps <= P_STRMW;
+                    end
+            P_STRMW: if (spi_done) begin
+                        p_wr <= 1'b0; streaming <= 1'b1; ps <= P_R16;
+                    end
             default: ps <= P_WAIT;
             endcase
         end

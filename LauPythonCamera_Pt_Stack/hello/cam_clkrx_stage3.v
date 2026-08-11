@@ -105,6 +105,7 @@ module cam_clkrx_stage3 #(
         .STOP_AT (41)          // LVDS drivers on; sequencer still off
     ) u_boot (
         .clk(clk), .rst_n(rst_n),
+        .stream_go(1'b0), .streaming(),   // these stages never stream
         .led(boot_led),
         .usb_tx(),             // this design drives the UART itself
         .usb_rx(usb_rx),

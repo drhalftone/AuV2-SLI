@@ -67,6 +67,7 @@ module cam_boot_stage2 #(
         .STOP_AT (41)          // through reg 112; sequencer NOT enabled
     ) u_s1 (
         .clk(clk), .rst_n(rst_n),
+        .stream_go(1'b0), .streaming(),   // these stages never stream
         .led(led), .usb_tx(usb_tx), .usb_rx(usb_rx),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
         .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),
