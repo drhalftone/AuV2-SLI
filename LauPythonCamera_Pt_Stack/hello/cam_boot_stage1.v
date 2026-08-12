@@ -66,6 +66,9 @@ module cam_boot_stage1 #(
     // emits one frame per rising edge on trigger0 instead of free-running.
     // Passed straight through to cam_boot_seq; see its header for register 192.
     parameter integer TRIGGERED = 0,
+    // 1 = emit the sensor's built-in per-lane constant test pattern instead of
+    // pixels. Requires STOP_AT = 45 (or 0) so rom[41..44] actually run.
+    parameter integer TESTPAT   = 0,
     // Register 201 exposure0, passed through to cam_boot_seq.
     parameter [15:0]  EXPOSURE  = 16'h2710,
     // MMCM CLKOUT0 divide. 15.0 -> 1080/15 = 72.000 MHz, the sensor's nominal
@@ -201,7 +204,8 @@ module cam_boot_stage1 #(
 
     cam_boot_seq #(
         .CLK_HZ  (CLK_HZ),
-        .STOP_AT (STOP_AT), .TRIGGERED (TRIGGERED), .EXPOSURE (EXPOSURE)
+        .STOP_AT (STOP_AT), .TRIGGERED (TRIGGERED), .EXPOSURE (EXPOSURE),
+        .TESTPAT (TESTPAT)
     ) u_boot (
         .clk(clk), .rst(rst), .go(go),
         .busy(b_busy), .ready(b_ready), .failed(b_failed),
@@ -251,8 +255,17 @@ module cam_boot_stage1 #(
                     end else ptm <= ptm + 27'd1;
             // rom[41] of cam_boot_seq, performed here instead: enable the
             // sequencer and the sensor starts exposing and reading out.
+            // MUST carry the mode bits. This used to write a bare 0x0801, which
+            // clears 192[4] triggered_mode -- so the boot configured triggered
+            // mode in cam_boot_seq's rom[31] and then this write immediately
+            // took it away again, at the exact moment streaming started. The
+            // sensor free-ran, frames kept arriving during the 3.3 s UART dump,
+            // and later captures overwrote fmem while it was being read out:
+            // one dumped frame ended up containing rows from several captures,
+            // each landing on its own horizontal phase. That is the banding.
             P_STRM: if (!spi_busy) begin
-                        p_wr <= 1'b1; p_addr <= 9'd192; p_wdata <= 16'h0801;
+                        p_wr <= 1'b1; p_addr <= 9'd192;
+                        p_wdata <= 16'h0801 | (TRIGGERED ? 16'h0010 : 16'h0000);
                         p_start <= 1'b1; ps <= P_STRMW;
                     end
             P_STRMW: if (spi_done) begin

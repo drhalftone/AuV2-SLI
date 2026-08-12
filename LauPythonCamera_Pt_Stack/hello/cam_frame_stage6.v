@@ -125,7 +125,7 @@ module cam_frame_stage6 #(
     // TRIGGERED = 1: the sensor now waits for us instead of free-running.
     // cam_trigger is deliberately left UNCONNECTED here -- cam_boot_stage1 ties
     // its copy to 3'b000, and this design has to drive trigger0 itself.
-    cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(41), .TRIGGERED(1),
+    cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(45), .TRIGGERED(1), .TESTPAT(1),
                        .EXPOSURE(16'h0FA0)) u_boot (   // 4000. 10000 clipped 53 %; 1250 broke capture entirely
         .clk(clk), .rst_n(rst_n),
         .stream_go(stream_go), .streaming(streaming),

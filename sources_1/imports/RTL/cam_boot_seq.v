@@ -72,10 +72,37 @@ module cam_boot_seq #(
     //
     //    8 -> SEQ01 + the PLL lock poll, and nothing else. The sensor's PLL is
     //         asked to lock and we stop; no LVDS, no streaming.
-    //   41 -> everything up to and including rom[39] (reg 112 = LVDS drivers on)
-    //         but NOT rom[41], so the sequencer stays disabled and the sensor
-    //         does not stream. This is the state the stage-2 DMM test wants.
-    //    0 -> all 42, sequencer enabled, sensor streams.
+    //   41 -> everything up to and including rom[40] (reg 112 = LVDS drivers on)
+    //         but NOT the sequencer enable, so the sensor does not stream. This
+    //         is the state the stage-2 DMM test and the IDELAY eye scan want.
+    //   45 -> the same PLUS the test-pattern registers rom[41..44]. Use this
+    //         with TESTPAT = 1; the sequencer still stays disabled.
+    //    0 -> all 46, sequencer enabled, sensor streams.
+    // BUILT-IN TEST PATTERN (datasheet p54-55, Data Block offset 128).
+    //
+    //   144[0] testpattern_en     insert synthesized test pattern
+    //   144[1] inc_testpattern    1 = incrementing, 0 = constant
+    //   144[3] frame_testpattern  1 = FRAMED (real sync codes still emitted)
+    //   146    testpattern0/1 lsb   147  testpattern2/3 lsb   150  their msbs
+    //
+    // Each of the four datapaths emits its OWN constant, so every pixel in the
+    // frame is a direct readout of which LVDS lane produced it. That converts
+    // "does the image look right" -- unanswerable on a lens-less sensor staring
+    // at a flat field -- into a byte-exact comparison.
+    //
+    // The DEFAULTS (0,1,2,3) are useless here: the pixel path keeps kpix[9:2],
+    // and 0,1,2,3 >> 2 are all zero. These values survive the shift:
+    //
+    //   lane 0 = 0x040 -> 16     lane 2 = 0x0C0 -> 48
+    //   lane 1 = 0x080 -> 32     lane 3 = 0x100 -> 64
+    //
+    // With our de-interleave the expected line is a 16-pixel repeat:
+    //   even kernel  16 16 32 32 48 48 64 64
+    //   odd kernel   64 64 48 48 32 32 16 16
+    //
+    // TESTPAT = 0 writes the datasheet defaults instead, which is a functional
+    // no-op, so rom[41..44] are harmless for every existing instantiation.
+    parameter integer TESTPAT     = 0,
     parameter integer STOP_AT     = 0
 )(
     input  wire        clk,
@@ -96,7 +123,7 @@ module cam_boot_seq #(
     input  wire        spi_busy,
     input  wire        spi_done
 );
-    localparam integer NROM = 42;
+    localparam integer NROM = 46;
     localparam integer PLL_AT = 8;    // poll PLL after the first 8 writes (end of SEQ01)
 
     // ROM: {addr[8:0], data[15:0]} = SEQ01(8) + SEQ03(3) + SEQ04(21) + SEQ05(9) + enable(1)
@@ -150,7 +177,13 @@ module cam_boot_seq #(
         rom[39] = {9'd112, 16'h0007};   // *** LVDS drivers ON -- PT ONLY ***
         rom[40] = {9'd128, 16'h4714};
         // ---- enable sequencer ----
-        rom[41] = {9'd192, 16'h0801 | (TRIGGERED ? 16'h0010 : 16'h0000)}; // rom[31] | bit0
+        // ---- test pattern (defaults when TESTPAT = 0 -> no-op) ----
+        rom[41] = {9'd144, TESTPAT ? 16'h0009 : 16'h0000};  // en + framed
+        rom[42] = {9'd146, TESTPAT ? 16'h8040 : 16'h0100};  // lane1:lane0 lsb
+        rom[43] = {9'd147, TESTPAT ? 16'h00C0 : 16'h0302};  // lane3:lane2 lsb
+        rom[44] = {9'd150, TESTPAT ? 16'h0040 : 16'h0000};  // msbs: lane3 = 01
+        // ---- enable the sequencer LAST ----
+        rom[45] = {9'd192, 16'h0801 | (TRIGGERED ? 16'h0010 : 16'h0000)}; // rom[31] | bit0
     end
 
     localparam [3:0]
