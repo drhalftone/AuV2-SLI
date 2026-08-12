@@ -52,9 +52,12 @@
 module cam_frame_stage6 #(
     parameter integer CLK_HZ  = 100_000_000,
     parameter integer BAUD    =   1_000_000,   // 100 MHz / 1 MHz = 100 exactly
-    parameter integer NCOL    = 1280,          // pixels per line
-    parameter integer NROW    = 256,           // stored lines (every 4th)
-    parameter integer WPL     = NCOL/8         // 64-bit words per line = 160
+    parameter integer NCOL    = 1280,          // pixels per line on the wire
+    parameter integer NROW    = 1024,          // stored lines -- EVERY line now
+    parameter integer SCOL    = 320,           // stored pixels per line
+    parameter integer ONE_SHOT = 1,            // 1 = trigger exactly one frame, ever
+    parameter integer WPL     = NCOL/8,        // words in the line buffer = 160
+    parameter integer WPS     = SCOL/8         // words STORED per line     = 40
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -76,8 +79,14 @@ module cam_frame_stage6 #(
     output wire [2:0] cam_trigger,
     input  wire [1:0] cam_monitor
 );
-    localparam integer NWORDS = NROW * WPL;          // 256 * 160 = 40960
-    localparam integer NBYTES = NCOL * NROW;         // 327680
+    // 1024 x 40 = 40960 words, EXACTLY the same block RAM as the old
+    // 256 x 160. A full 1280 x 1024 frame is 1,310,720 bytes against ~607 KB of
+    // BRAM on this part -- it does not fit, by more than 2x, and needs DDR3
+    // (milestone #16). Trading width for height keeps the footprint identical
+    // while capturing EVERY line, which is what a vertical-sync fault needs.
+    localparam integer NWORDS = NROW * WPS;          // 1024 * 40 = 40960
+    localparam integer NBYTES = SCOL * NROW;         // 320 * 1024 = 327680
+    localparam integer REDUMP_CY = CLK_HZ;           // ~1 s between re-dumps
 
     reg [1:0] rstn_sync = 2'b00;
     reg [7:0] por       = 8'h00;
@@ -248,15 +257,17 @@ module cam_frame_stage6 #(
     (* ram_style = "block" *) reg [63:0] lbuf [0:511];
 
     reg [10:0] lcnt     = 11'd0;    // lines seen since capture armed (0..1023)
-    reg [8:0]  cur_slot = 9'd0;     // row this line will occupy, if kept
+    reg [9:0]  cur_slot = 10'd0;    // row this line will occupy
     reg        keep_cur = 1'b0;     // this line is one of the kept ones
     reg        cap      = 1'b0;
     reg        cap_dn   = 1'b0;
     reg        lb_tog   = 1'b0;     // flips when a kept line is complete
-    reg [8:0]  lb_slot  = 9'd0;     // its row; stable while lb_tog is stable
+    reg [9:0]  lb_slot  = 10'd0;    // its row; stable while lb_tog is stable
     reg        arm      = 1'b0;
     reg        dump_done = 1'b0;
     reg [1:0]  arm_s    = 2'b00;
+
+    reg [19:0] cwd = 20'd0;         // capture watchdog
 
     wire [10:0] lnext = lcnt + 11'd1;
 
@@ -264,10 +275,25 @@ module cam_frame_stage6 #(
         arm_s <= {arm_s[0], arm};
 
         if (wc_rst) begin
-            lcnt <= 11'd0; cur_slot <= 9'd0; keep_cur <= 1'b0;
+            lcnt <= 11'd0; cur_slot <= 10'd0; keep_cur <= 1'b0;
             cap  <= 1'b0;  cap_dn   <= 1'b0; lb_tog   <= 1'b0;
+            cwd  <= 20'd0;
         end else begin
             if (arm_s[1] && !cap && cap_dn) cap_dn <= 1'b0;
+
+            // CAPTURE WATCHDOG. A frame is ~10 ms; this fires at ~14.6 ms
+            // (2^20 wordclks at 72 MHz). Without it, a missed trigger or a lost
+            // FE leaves `cap` high forever: cap_dn is never set so no dump ever
+            // starts, and trig_ready is blocked by cap_s so no new trigger is
+            // ever issued -- the design deadlocks silently. That is exactly what
+            // stalled two captures once the trigger became real. Treat a
+            // timed-out frame as finished; the partial data is dumped and the
+            // sequence re-arms.
+            if (cap) begin
+                if (cwd == {20{1'b1}}) begin
+                    cap <= 1'b0; cap_dn <= 1'b1; keep_cur <= 1'b0; cwd <= 20'd0;
+                end else cwd <= cwd + 20'd1;
+            end else cwd <= 20'd0;
 
             // START ON frame_start, NOT on an arbitrary line.
             //
@@ -317,7 +343,7 @@ module cam_frame_stage6 #(
                     // line_start would consume row 1's LS and put row 1 in slot 0.
                     lcnt     <= 11'd0;
                     keep_cur <= 1'b1;
-                    cur_slot <= 9'd0;
+                    cur_slot <= 10'd0;
                 end
             end else if (line_start && cap) begin
                 // the line that just ENDED is complete: hand it over
@@ -329,8 +355,8 @@ module cam_frame_stage6 #(
                     cap <= 1'b0; cap_dn <= 1'b1; keep_cur <= 1'b0;
                 end else begin
                     lcnt     <= lnext;
-                    keep_cur <= (lnext[1:0] == 2'b00);     // every 4th
-                    cur_slot <= lnext[10:2];
+                    keep_cur <= 1'b1;                      // EVERY line now
+                    cur_slot <= lnext[9:0];
                 end
             end
 
@@ -358,12 +384,12 @@ module cam_frame_stage6 #(
     reg [7:0]  ci      = 8'd0;      // read index into lbuf
     reg [7:0]  ci_d    = 8'd0;      // index whose data is in lb_rd now
     reg        wr_v    = 1'b0;
-    reg [8:0]  c_slot  = 9'd0;
+    reg [9:0]  c_slot  = 10'd0;
     reg        c_bank  = 1'b0;   // which lbuf bank the finished line is in
     reg [63:0] lb_rd;
 
-    // c_slot*160 = c_slot*128 + c_slot*32, as shifts: no multiplier inferred.
-    wire [15:0] fwaddr = {c_slot, 7'd0} + {c_slot, 5'd0} + {8'd0, ci_d};
+    // c_slot*40 = c_slot*32 + c_slot*8, as shifts: no multiplier inferred.
+    wire [15:0] fwaddr = {1'b0, c_slot, 5'd0} + {3'd0, c_slot, 3'd0} + {8'd0, ci_d};
 
     //------------------------------------------------------------------------
     // ZERO THE BUFFER BETWEEN CAPTURES.
@@ -388,12 +414,12 @@ module cam_frame_stage6 #(
     wire [15:0] fwe_a = clearing ? clr_a : fwaddr;
     wire [63:0] fwe_d = clearing ? 64'hA5A5A5A5A5A5A5A5 : lb_rd;   // sentinel, NOT zero
     wire        fwe   = clearing ? 1'b1
-                                 : (wr_v && (ci_d < WPL[7:0]) && (c_slot < NROW[8:0]));
+                                 : (wr_v && (ci_d < WPS[7:0]) && (c_slot < NROW[10:0]));
     always @(posedge clk) if (fwe) fmem[fwe_a] <= fwe_d;
 
     always @(posedge clk) begin
         arm   <= 1'b0;
-        if (dump_done) need_clear <= 1'b1;
+        if (dump_done && !(ONE_SHOT != 0)) need_clear <= 1'b1;
         tog_s <= {tog_s[0], lb_tog};
         lb_rd <= lbuf[{c_bank, ci}];   // 1-cycle read latency
         ci_d  <= ci;
@@ -420,7 +446,7 @@ module cam_frame_stage6 #(
                     c_bank  <= tog_s[1];             // the bank it was written to
                 end
             end else begin
-                if (ci == WPL[7:0] + 8'd2) copying <= 1'b0;  // +2 flushes the pipe
+                if (ci == WPS[7:0] + 8'd2) copying <= 1'b0;  // +2 flushes the pipe
                 else ci <= ci + 8'd1;
             end
         end
@@ -477,7 +503,8 @@ module cam_frame_stage6 #(
     // T_IDLE is not always where the FSM is sitting -- the periodic status line
     // (T_ST) borrows it. A bare edge test therefore drops the request and no
     // dump ever happens. Latch it instead and consume it when T_IDLE is reached.
-    reg       dump_req = 1'b0;
+    reg        dump_req = 1'b0;
+    reg [27:0] rdt      = 28'd0;   // re-dump timer (ONE_SHOT)
     reg [4:0] hi = 5'd0;
 
     // "FRAMESTART\n" = 11 chars, "\nFRAMEEND\n" = 10 chars
@@ -523,6 +550,14 @@ module cam_frame_stage6 #(
         end else begin
             // one request per completed capture
             if (dn_s[1] && !dn_prev) dump_req <= 1'b1;
+            // ONE_SHOT: the frame never changes, so re-offer it about once a
+            // second. A host that misses one dump simply takes the next.
+            if (ONE_SHOT != 0) begin
+                if (ts == T_IDLE && dn_s[1]) begin
+                    if (rdt == REDUMP_CY[27:0] - 28'd1) begin rdt <= 28'd0; dump_req <= 1'b1; end
+                    else rdt <= rdt + 28'd1;
+                end else rdt <= 28'd0;
+            end
             case (ts)
             // RISING EDGE, not level.
             //
@@ -615,10 +650,21 @@ module cam_frame_stage6 #(
     // The pulse is 2 us high, 10 us after becoming ready. Only the RISING edge
     // matters to the sensor; the falling edge has no effect (datasheet p14).
     //------------------------------------------------------------------------
+    // ONE_SHOT: fire trigger0 exactly ONCE. After that single frame is captured
+    // the buffer is never rewritten and the same frame is dumped repeatedly, so
+    // the host can retry a grab and always get the identical image. Set 0 to go
+    // back to a fresh frame every dump cycle.
+    reg        fired_once = 1'b0;
+    always @(posedge clk) begin
+        if (rst) fired_once <= 1'b0;
+        else if (trig0_r) fired_once <= 1'b1;
+    end
+
     reg [23:0] tw      = 24'd0;
     reg        trig0_r = 1'b0;
     wire       trig_ready = streaming && !clearing && !dn_s[1] && !cap_s[1]
-                            && (ts == T_IDLE);
+                            && (ts == T_IDLE)
+                            && !(ONE_SHOT && fired_once);
 
     always @(posedge clk) begin
         if (rst || !trig_ready) begin
