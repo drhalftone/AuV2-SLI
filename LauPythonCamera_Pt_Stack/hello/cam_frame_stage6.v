@@ -134,8 +134,8 @@ module cam_frame_stage6 #(
     // TRIGGERED = 1: the sensor now waits for us instead of free-running.
     // cam_trigger is deliberately left UNCONNECTED here -- cam_boot_stage1 ties
     // its copy to 3'b000, and this design has to drive trigger0 itself.
-    cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(45), .TRIGGERED(1), .TESTPAT(1),
-                       .EXPOSURE(16'h0FA0)) u_boot (   // 4000. 10000 clipped 53 %; 1250 broke capture entirely
+    cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(45), .TRIGGERED(0), .TESTPAT(0),
+                       .EXPOSURE(16'h0640)) u_boot (   // 1600 units x 375 ns = 600 us. mult_timer(199)=27,
         .clk(clk), .rst_n(rst_n),
         .stream_go(stream_go), .streaming(streaming),
         .led(boot_led), .usb_tx(), .usb_rx(usb_rx),
@@ -650,6 +650,22 @@ module cam_frame_stage6 #(
     // The pulse is 2 us high, 10 us after becoming ready. Only the RISING edge
     // matters to the sensor; the falling edge has no effect (datasheet p14).
     //------------------------------------------------------------------------
+    // TRIGGERED = 0 here ON PURPOSE, for now.
+    //
+    // Every capture that produced sane pixels was taken while the sensor was
+    // free-running (back when 192[4] was being cleared by the deferred enable).
+    // The moment triggering became real, real pixels saturated 100 % at every
+    // exposure we tried -- 3.75 ms, 1.5 ms and 600 us all gave min=max=255. In
+    // triggered mode the array is meant to sit in reset until trigger0, but with
+    // ONE_SHOT the sensor idles for SECONDS after boot (PLL lock, eye scan, lane
+    // align) before that one trigger, and it is evidently integrating for that
+    // whole idle. Free-running, the array resets every 6.25 ms frame, so the
+    // integration time is bounded regardless of what exposure0 says.
+    //
+    // ONE_SHOT still yields exactly ONE captured frame: need_clear is suppressed
+    // after a dump, so arm never pulses again, so cap_dn stays set and no second
+    // capture can start. The sensor free-runs; we keep the first frame forever.
+    //
     // ONE_SHOT: fire trigger0 exactly ONCE. After that single frame is captured
     // the buffer is never rewritten and the same frame is dumped repeatedly, so
     // the host can retry a grab and always get the identical image. Set 0 to go
