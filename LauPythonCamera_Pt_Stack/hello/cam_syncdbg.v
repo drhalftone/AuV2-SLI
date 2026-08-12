@@ -200,56 +200,81 @@ module cam_syncdbg #(
     end
 
     //------------------------------------------------------------------------
-    // WHICH STATE IS THE DECODER IN WHEN FE ARRIVES?
+    // THE STRUCTURE OF ONE LINE.
     //
-    // FE is proven to be on the wire (FE climbs with FS), and cam_sync_decode
-    // still only ever fires frame_start once. It tests FE in exactly one state,
-    // S_LINE_WAIT, so it must not be in that state when FE turns up. This is a
-    // faithful copy of that FSM's TRANSITIONS -- no pixel path -- with a counter
-    // per state recording where it was each time FE went past.
+    // The FSM-replica that used to live here found the FE bug and is done. The
+    // open question now is what osrf/ovc's model asserts and our decoder denies:
+    // that the FRAMING words carry pixels too. Their sim_python.v sends exactly
+    // (COLS/4)-4 IM words per line -- 316 for 1280 columns, not 320 -- and their
+    // decoder's sync_img_data accepts IM | WN | FS | LS | FE | LE. The four
+    // missing words are LS, WN, LE, WN: 16 pixels, which is exactly the width of
+    // the black bar in every captured line.
     //
-    // Whichever counter climbs is the state that needs an FE test added, and it
-    // names the fix directly.
+    // The cumulative counters above cannot settle it. c_im is 16-bit and takes
+    // ~323k IM words per frame, so it wraps about five times per frame and every
+    // ratio built from it is meaningless. What settles it is measuring ONE line
+    // and latching the result:
+    //
+    //   IL == 316  -> ovc is right, the framing words carry pixels, and our
+    //                 decoder is throwing away 16 pixels per line
+    //   IL == 320  -> IM alone covers the line and the bar is something else
+    //
+    // W0 measures the FIRST line of the frame separately, because ovc's model
+    // sends FS *in place of* row 0's LS. If W0 == WL then FS really is a line
+    // start and our S_IDLE -> S_AFTER_FS -> S_LINE_WAIT path is losing row 0.
     //------------------------------------------------------------------------
-    localparam [2:0] Q_IDLE=0, Q_AFS=1, Q_LW=2, Q_ALS=3, Q_LINE=4, Q_LEND=5;
-    reg [2:0] qst = Q_IDLE;
+    wire h_lstart = h_ls | h_fs;
+    wire h_lend   = h_le | h_fe;
+
+    reg [15:0] wl_c=0, il_c=0, bl_c=0, ot_c=0;   // running, inside the current line
+    reg [15:0] wl_l=0, il_l=0, bl_l=0, ot_l=0;   // latched at the line end
+    reg [15:0] lf_c=0, lf_l=0;                   // line starts per frame
+    reg [15:0] w0_l=0;                           // words in the FS line
+    reg        inln=1'b0, fsln=1'b0;
 
     always @(posedge wordclk) begin
-        if (wc_rst) qst <= Q_IDLE;
-        else if (aligned) begin
-            case (qst)
-            Q_IDLE: if (h_fs) qst <= Q_AFS;
-            Q_AFS :           qst <= Q_LW;
-            Q_LW  : if      (h_ls) qst <= Q_ALS;
-                    else if (h_fe) qst <= Q_IDLE;
-            Q_ALS :           qst <= Q_LINE;
-            Q_LINE: if (h_le) qst <= Q_LEND;
-            Q_LEND:           qst <= Q_LW;
-            default:          qst <= Q_IDLE;
-            endcase
-        end
-    end
+        if (wc_rst) begin
+            wl_c<=0; il_c<=0; bl_c<=0; ot_c<=0; inln<=0; fsln<=0;
+            wl_l<=0; il_l<=0; bl_l<=0; ot_l<=0; lf_c<=0; lf_l<=0; w0_l<=0;
+        end else if (aligned) begin
+            if      (h_fs) lf_c <= 16'd1;              // FS restarts the frame
+            else if (h_ls) lf_c <= lf_c + 16'd1;
+            if (h_fe) lf_l <= lf_c;
 
-    reg [15:0] fq0=0, fq1=0, fq2=0, fq3=0, fq4=0, fq5=0;
-    always @(posedge wordclk) begin
-        if (wc_rst) begin fq0<=0; fq1<=0; fq2<=0; fq3<=0; fq4<=0; fq5<=0; end
-        else if (aligned && h_fe) begin
-            case (qst)
-            Q_IDLE: if (fq0 != 16'hFFFF) fq0 <= fq0 + 16'd1;
-            Q_AFS : if (fq1 != 16'hFFFF) fq1 <= fq1 + 16'd1;
-            Q_LW  : if (fq2 != 16'hFFFF) fq2 <= fq2 + 16'd1;
-            Q_ALS : if (fq3 != 16'hFFFF) fq3 <= fq3 + 16'd1;
-            Q_LINE: if (fq4 != 16'hFFFF) fq4 <= fq4 + 16'd1;
-            Q_LEND: if (fq5 != 16'hFFFF) fq5 <= fq5 + 16'd1;
-            endcase
+            if (h_lstart) begin
+                inln <= 1'b1;  fsln <= h_fs;
+                wl_c <= 16'd1; il_c <= 16'd0; bl_c <= 16'd0; ot_c <= 16'd0;  // bl_c reused as OP
+            end else if (inln) begin
+                wl_c <= wl_c + 16'd1;
+                if (h_im) il_c <= il_c + 16'd1;
+                // OP: the 1-based index, within the line, of the FIRST word that
+                // decodes to none of the eight codes -- i.e. the window ID.
+                //
+                // Our decoder assumes it sits at index 2, right after the line
+                // start, because that is where ovc's sim_python.v puts it. OL=1
+                // only proves there is exactly ONE such word per line, not where.
+                // If it is somewhere else, every pixel after it is displaced --
+                // which is what a 9 % seam at column 339 (= 4 x 85, a word
+                // boundary) would look like.
+                if (h_ot && bl_c == 16'd0) bl_c <= wl_c + 16'd1;
+                if (h_ot) ot_c <= ot_c + 16'd1;
+                if (h_lend) begin                      // this word ends the line
+                    inln <= 1'b0;
+                    wl_l <= wl_c + 16'd1;              // count the LE/FE word itself
+                    il_l <= il_c;
+                    bl_l <= bl_c;
+                    ot_l <= ot_c;
+                    if (fsln) w0_l <= wl_c + 16'd1;
+                end
+            end
         end
     end
 
     // Counters change slowly relative to a report; a plain sample is fine.
     reg [15:0] s_fs,s_fe,s_ls,s_le,s_im,s_bl,s_cr,s_tr,s_ot;
     always @(posedge clk) begin
-        s_fs<=c_fs; s_fe<=c_fe; s_ls<=fq0; s_le<=fq1; s_im<=fq2;
-        s_bl<=fq3; s_cr<=fq4; s_tr<=fq5; s_ot<=c_ot;
+        s_fs<=c_fs; s_fe<=c_fe; s_ls<=wl_l; s_le<=il_l; s_im<=bl_l;
+        s_bl<=lf_l; s_cr<=w0_l; s_tr<=ot_l; s_ot<=c_ot;
     end
 
     reg [26:0] rtm = 27'd0;
@@ -292,12 +317,12 @@ module cam_syncdbg #(
         case (idx)
         7'd0,7'd1,7'd2,7'd3,7'd4,7'd5,7'd6,7'd7,7'd8:       begin fval=s_fs; fc0="F"; fc1="S"; end
         7'd9,7'd10,7'd11,7'd12,7'd13,7'd14,7'd15,7'd16,7'd17: begin fval=s_fe; fc0="F"; fc1="E"; end
-        7'd18,7'd19,7'd20,7'd21,7'd22,7'd23,7'd24,7'd25,7'd26: begin fval=s_ls; fc0="q"; fc1="0"; end
-        7'd27,7'd28,7'd29,7'd30,7'd31,7'd32,7'd33,7'd34,7'd35: begin fval=s_le; fc0="q"; fc1="1"; end
-        7'd36,7'd37,7'd38,7'd39,7'd40,7'd41,7'd42,7'd43,7'd44: begin fval=s_im; fc0="q"; fc1="2"; end
-        7'd45,7'd46,7'd47,7'd48,7'd49,7'd50,7'd51,7'd52,7'd53: begin fval=s_bl; fc0="q"; fc1="3"; end
-        7'd54,7'd55,7'd56,7'd57,7'd58,7'd59,7'd60,7'd61,7'd62: begin fval=s_cr; fc0="q"; fc1="4"; end
-        7'd63,7'd64,7'd65,7'd66,7'd67,7'd68,7'd69,7'd70,7'd71: begin fval=s_tr; fc0="q"; fc1="5"; end
+        7'd18,7'd19,7'd20,7'd21,7'd22,7'd23,7'd24,7'd25,7'd26: begin fval=s_ls; fc0="W"; fc1="L"; end
+        7'd27,7'd28,7'd29,7'd30,7'd31,7'd32,7'd33,7'd34,7'd35: begin fval=s_le; fc0="I"; fc1="L"; end
+        7'd36,7'd37,7'd38,7'd39,7'd40,7'd41,7'd42,7'd43,7'd44: begin fval=s_im; fc0="O"; fc1="P"; end
+        7'd45,7'd46,7'd47,7'd48,7'd49,7'd50,7'd51,7'd52,7'd53: begin fval=s_bl; fc0="L"; fc1="F"; end
+        7'd54,7'd55,7'd56,7'd57,7'd58,7'd59,7'd60,7'd61,7'd62: begin fval=s_cr; fc0="W"; fc1="0"; end
+        7'd63,7'd64,7'd65,7'd66,7'd67,7'd68,7'd69,7'd70,7'd71: begin fval=s_tr; fc0="O"; fc1="L"; end
         default:                                              begin fval=s_ot; fc0="O"; fc1="T"; end
         endcase
     end

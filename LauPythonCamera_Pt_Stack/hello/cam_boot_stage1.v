@@ -62,6 +62,12 @@ module cam_boot_stage1 #(
     parameter integer CLK_HZ   = 100_000_000,
     parameter integer BAUD     =     115_200,
     parameter integer STOP_AT  = 8,             // SEQ01 + PLL poll only
+    // 1 = configure the sensor for TRIGGERED global shutter, master mode, so it
+    // emits one frame per rising edge on trigger0 instead of free-running.
+    // Passed straight through to cam_boot_seq; see its header for register 192.
+    parameter integer TRIGGERED = 0,
+    // Register 201 exposure0, passed through to cam_boot_seq.
+    parameter [15:0]  EXPOSURE  = 16'h2710,
     // MMCM CLKOUT0 divide. 15.0 -> 1080/15 = 72.000 MHz, the sensor's nominal
     // reference. 30.0 -> 36.000 MHz, which HALVES the serialiser's bit rate to
     // 360 Mbps and doubles the data eye -- the margin test. 36 MHz sits inside
@@ -195,7 +201,7 @@ module cam_boot_stage1 #(
 
     cam_boot_seq #(
         .CLK_HZ  (CLK_HZ),
-        .STOP_AT (STOP_AT)
+        .STOP_AT (STOP_AT), .TRIGGERED (TRIGGERED), .EXPOSURE (EXPOSURE)
     ) u_boot (
         .clk(clk), .rst(rst), .go(go),
         .busy(b_busy), .ready(b_ready), .failed(b_failed),

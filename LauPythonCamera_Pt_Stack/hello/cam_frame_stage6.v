@@ -122,13 +122,17 @@ module cam_frame_stage6 #(
     wire [7:0] boot_led;
     wire       streaming;
     reg        stream_go = 1'b0;
-    cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(41)) u_boot (
+    // TRIGGERED = 1: the sensor now waits for us instead of free-running.
+    // cam_trigger is deliberately left UNCONNECTED here -- cam_boot_stage1 ties
+    // its copy to 3'b000, and this design has to drive trigger0 itself.
+    cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(41), .TRIGGERED(1),
+                       .EXPOSURE(16'h0FA0)) u_boot (   // 4000. 10000 clipped 53 %; 1250 broke capture entirely
         .clk(clk), .rst_n(rst_n),
         .stream_go(stream_go), .streaming(streaming),
         .led(boot_led), .usb_tx(), .usb_rx(usb_rx),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
         .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),
-        .cam_clk_pll(cam_clk_pll), .cam_trigger(cam_trigger),
+        .cam_clk_pll(cam_clk_pll), .cam_trigger(),
         .cam_monitor(cam_monitor)
     );
 
@@ -198,7 +202,7 @@ module cam_frame_stage6 #(
     //------------------------------------------------------- sync decode
     wire [9:0]  kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7;
     wire [10:0] kbase;
-    wire        kvalid, line_start, frame_start, in_black;
+    wire        kvalid, line_start, frame_start, frame_end, in_black;
 
     cam_sync_decode u_dec (
         .wordclk(wordclk), .rst(wc_rst), .aligned(aligned),
@@ -207,7 +211,8 @@ module cam_frame_stage6 #(
         .kpix0(kp0), .kpix1(kp1), .kpix2(kp2), .kpix3(kp3),
         .kpix4(kp4), .kpix5(kp5), .kpix6(kp6), .kpix7(kp7),
         .kbase(kbase), .kvalid(kvalid),
-        .line_start(line_start), .frame_start(frame_start), .in_black(in_black)
+        .line_start(line_start), .frame_start(frame_start),
+        .frame_end(frame_end), .in_black(in_black)
     );
 
     //------------------------------------------------------ the frame buffer
@@ -230,7 +235,17 @@ module cam_frame_stage6 #(
     // between cam_sync_decode and the MIG, in its simplest possible form: the
     // producer finishes a line entirely before the consumer starts reading it,
     // so a toggle handshake is sufficient and no gray-coded FIFO is needed.
-    (* ram_style = "block" *) reg [63:0] lbuf [0:WPL-1];
+    // DOUBLE BUFFERED, 2 x 160 words indexed {bank, word}.
+    //
+    // Single-buffered, the copy of the finished line raced the incoming one on
+    // the same memory. The copy reads at 10 ns/word (100 MHz) while the writer
+    // produces a kernel every 27.8 ns (2 wordclks), so the reader overtakes and
+    // stays ahead -- but only from word 1 onward. At word 0 it loses: the copy
+    // needs ~3 clk (2 for the tog_s CDC, 1 for the read) = ~30 ns, while the new
+    // line writes lbuf[0] just 2 wordclks = 27.8 ns after the line start. Two
+    // nanoseconds, every line, so columns 0-7 of every row came from the WRONG
+    // line. Widening the buffer removes the race instead of trying to win it.
+    (* ram_style = "block" *) reg [63:0] lbuf [0:511];
 
     reg [10:0] lcnt     = 11'd0;    // lines seen since capture armed (0..1023)
     reg [8:0]  cur_slot = 9'd0;     // row this line will occupy, if kept
@@ -240,6 +255,7 @@ module cam_frame_stage6 #(
     reg        lb_tog   = 1'b0;     // flips when a kept line is complete
     reg [8:0]  lb_slot  = 9'd0;     // its row; stable while lb_tog is stable
     reg        arm      = 1'b0;
+    reg        dump_done = 1'b0;
     reg [1:0]  arm_s    = 2'b00;
 
     wire [10:0] lnext = lcnt + 11'd1;
@@ -271,17 +287,36 @@ module cam_frame_stage6 #(
             // delivers fewer than 1024 line_starts the capture was retriggered
             // forever and never completed: no dump at all. Capture now spans
             // exactly one frame_start to the next, whatever its line count.
-            if (frame_start) begin
-                if (cap) begin
-                    if (keep_cur) begin
-                        lb_slot <= cur_slot;
-                        lb_tog  <= ~lb_tog;
-                    end
-                    cap <= 1'b0; cap_dn <= 1'b1; keep_cur <= 1'b0;
-                end else if (!cap_dn) begin
+            //
+            // END ON frame_end (FE), NOT on the next frame_start.
+            //
+            // Free-running, "the next FS" was a serviceable stand-in for "this
+            // frame is over" -- but it ends the capture one whole frame late,
+            // and anything still in flight when it finally arrives is lost. That
+            // is the most likely reason the last 6 row-slots (~24 image lines)
+            // came back empty. Triggered, it is worse than late: it never
+            // arrives at all, because no further frame exists until we ask for
+            // one, so waiting for FS would hang the capture forever.
+            //
+            // FE is the sensor saying the frame is done. Hand off the last line
+            // and stop there.
+            if (frame_end && cap) begin
+                if (keep_cur) begin
+                    lb_slot <= cur_slot;
+                    lb_tog  <= ~lb_tog;
+                end
+                cap <= 1'b0; cap_dn <= 1'b1; keep_cur <= 1'b0;
+            end else if (frame_start) begin
+                if (!cap && !cap_dn) begin
                     cap      <= 1'b1;
-                    lcnt     <= 11'h7FF;
-                    keep_cur <= 1'b0;   // nothing to hand off yet
+                    // FS *IS* line 0's start -- measured, W0 == WL == 319, so the
+                    // FS word is the first data word of row 0 and cam_sync_decode
+                    // now pulses frame_start and line_start together on it. lcnt
+                    // therefore starts at 0, not -1, and row 0 is kept immediately
+                    // (0 mod 4 == 0). Starting at -1 and waiting for the next
+                    // line_start would consume row 1's LS and put row 1 in slot 0.
+                    lcnt     <= 11'd0;
+                    keep_cur <= 1'b1;
                     cur_slot <= 9'd0;
                 end
             end else if (line_start && cap) begin
@@ -299,11 +334,23 @@ module cam_frame_stage6 #(
                 end
             end
 
-            if (cap && keep_cur && kvalid) lbuf[kbase[10:3]] <= kword;
+            if (cap && keep_cur && kvalid) lbuf[{lb_tog, kbase[10:3]}] <= kword;
         end
     end
 
     //--- the frame buffer, in the GLOBAL clock domain (BRAM anywhere on the die)
+    //
+    // Pre-fill is 0xA5, not 0x00. Filling with zero cannot distinguish a pixel
+    // that was never written from a pixel the sensor genuinely read as black --
+    // both come back 0. 0xA5 is outside the observed image range, so any 0xA5 in
+    // the capture is unambiguously a MISSING WRITE.
+    //
+    // ONE write port, address and data MUXED between "clear" and "copy". Writing
+    // fmem from two places -- even in the same always block, even mutually
+    // exclusive in time -- gives it two write addresses, and Vivado will not
+    // infer a BRAM from that: it tried to build 110,080 distributed-RAM cells
+    // against 19,000 available. A single port with a muxed address infers
+    // cleanly.
     (* ram_style = "block" *) reg [63:0] fmem [0:NWORDS-1];
 
     reg [1:0]  tog_s   = 2'b00;
@@ -312,31 +359,70 @@ module cam_frame_stage6 #(
     reg [7:0]  ci_d    = 8'd0;      // index whose data is in lb_rd now
     reg        wr_v    = 1'b0;
     reg [8:0]  c_slot  = 9'd0;
+    reg        c_bank  = 1'b0;   // which lbuf bank the finished line is in
     reg [63:0] lb_rd;
 
     // c_slot*160 = c_slot*128 + c_slot*32, as shifts: no multiplier inferred.
     wire [15:0] fwaddr = {c_slot, 7'd0} + {c_slot, 5'd0} + {8'd0, ci_d};
 
+    //------------------------------------------------------------------------
+    // ZERO THE BUFFER BETWEEN CAPTURES.
+    //
+    // Without this, a row never written retains bytes from a PREVIOUS capture,
+    // which had a different frame alignment -- so unwritten rows masquerade as
+    // horizontally-displaced image data. That is almost certainly the band
+    // across the top of the last capture, and it is the same trap as reading a
+    // floating pin: stale data looks like a confident measurement.
+    //
+    // Cleared, an unwritten row is unambiguously BLACK, so the picture states
+    // directly which rows are missing and how many.
+    //
+    // ONE always block owns fmem -- clear and copy are two branches of the same
+    // writer, never two drivers. They cannot collide anyway: clearing runs after
+    // a dump completes and finishes before the next capture is allowed to arm.
+    //------------------------------------------------------------------------
+    reg        clearing   = 1'b1;      // clear once at power-up as well
+    reg        need_clear = 1'b0;
+    reg [15:0] clr_a      = 16'd0;
+
+    wire [15:0] fwe_a = clearing ? clr_a : fwaddr;
+    wire [63:0] fwe_d = clearing ? 64'hA5A5A5A5A5A5A5A5 : lb_rd;   // sentinel, NOT zero
+    wire        fwe   = clearing ? 1'b1
+                                 : (wr_v && (ci_d < WPL[7:0]) && (c_slot < NROW[8:0]));
+    always @(posedge clk) if (fwe) fmem[fwe_a] <= fwe_d;
+
     always @(posedge clk) begin
+        arm   <= 1'b0;
+        if (dump_done) need_clear <= 1'b1;
         tog_s <= {tog_s[0], lb_tog};
-        lb_rd <= lbuf[ci];          // 1-cycle read latency
+        lb_rd <= lbuf[{c_bank, ci}];   // 1-cycle read latency
         ci_d  <= ci;
         wr_v  <= copying;
 
-        if (wr_v && (ci_d < WPL[7:0]) && (c_slot < NROW[8:0]))
-            fmem[fwaddr] <= lb_rd;
-
         if (rst) begin
             copying <= 1'b0; ci <= 8'd0;
-        end else if (!copying) begin
-            if (tog_s[1] != tog_s[0]) begin      // a kept line is ready
-                copying <= 1'b1;
-                ci      <= 8'd0;
-                c_slot  <= lb_slot;
-            end
+            clearing <= 1'b1; clr_a <= 16'd0; need_clear <= 1'b0;
+        end else if (clearing) begin
+            if (clr_a == NWORDS[15:0] - 16'd1) begin
+                clearing <= 1'b0; clr_a <= 16'd0;
+                arm      <= 1'b1;      // NOW the next capture may arm
+            end else clr_a <= clr_a + 16'd1;
         end else begin
-            if (ci == WPL[7:0] + 8'd2) copying <= 1'b0;   // +2 flushes the pipe
-            else ci <= ci + 8'd1;
+            if (need_clear && !copying) begin
+                need_clear <= 1'b0;
+                clearing   <= 1'b1;
+                clr_a      <= 16'd0;
+            end else if (!copying) begin
+                if (tog_s[1] != tog_s[0]) begin      // a kept line is ready
+                    copying <= 1'b1;
+                    ci      <= 8'd0;
+                    c_slot  <= lb_slot;
+                    c_bank  <= tog_s[1];             // the bank it was written to
+                end
+            end else begin
+                if (ci == WPL[7:0] + 8'd2) copying <= 1'b0;  // +2 flushes the pipe
+                else ci <= ci + 8'd1;
+            end
         end
     end
 
@@ -347,8 +433,12 @@ module cam_frame_stage6 #(
     always @(posedge clk) rword <= fmem[rword_a];
     wire [7:0] rbyte = rword[ {baddr[2:0], 3'd0} +: 8 ];
 
-    reg [1:0] dn_s = 2'b00;
-    always @(posedge clk) dn_s <= {dn_s[0], cap_dn};
+    reg [1:0] dn_s    = 2'b00;
+    reg       dn_prev = 1'b0;
+    always @(posedge clk) begin
+        dn_s    <= {dn_s[0], cap_dn};
+        dn_prev <= dn_s[1];        // for the rising-edge dump trigger below
+    end
 
     // Counters + a periodic status line. Without this, "no dump appeared" is
     // undiagnosable without another build-and-load cycle, and loading this
@@ -383,6 +473,11 @@ module cam_frame_stage6 #(
     localparam [3:0] T_IDLE=0, T_HDR=1, T_SETA=2, T_LAT=3, T_BYTE=4,
                      T_FTR=5, T_DONE=6, T_ST=7;
     reg [3:0] ts = T_IDLE;
+    // Sticky dump request. The rising edge of cap_dn is one cycle wide, and
+    // T_IDLE is not always where the FSM is sitting -- the periodic status line
+    // (T_ST) borrows it. A bare edge test therefore drops the request and no
+    // dump ever happens. Latch it instead and consume it when T_IDLE is reached.
+    reg       dump_req = 1'b0;
     reg [4:0] hi = 5'd0;
 
     // "FRAMESTART\n" = 11 chars, "\nFRAMEEND\n" = 10 chars
@@ -420,14 +515,32 @@ module cam_frame_stage6 #(
     end
 
     always @(posedge clk) begin
-        send <= 1'b0;
-        arm  <= 1'b0;
+        send      <= 1'b0;
+        dump_done <= 1'b0;
 
         if (rst) begin
-            ts <= T_IDLE; hi <= 5'd0; baddr <= 19'd0;
+            ts <= T_IDLE; hi <= 5'd0; baddr <= 19'd0; dump_req <= 1'b0;
         end else begin
+            // one request per completed capture
+            if (dn_s[1] && !dn_prev) dump_req <= 1'b1;
             case (ts)
-            T_IDLE: if (dn_s[1]) begin hi <= 5'd0; ts <= T_HDR; end
+            // RISING EDGE, not level.
+            //
+            // This was `if (dn_s[1])`. cap_dn is not cleared until `arm`, and arm
+            // only fires after the post-dump buffer clear completes -- so at
+            // T_DONE cap_dn is still high and the dump restarted IMMEDIATELY,
+            // then streamed for 3.3 s while the clear (410 us) and the whole next
+            // capture wrote fmem underneath it.
+            //
+            // That is the moving corruption we chased for hours. The dumped frame
+            // began with however much of the buffer the clear and capture had
+            // reached by then -- so the garbage run had a different length every
+            // time (107, 250, 627, 953 pixels observed), and its boundaries were
+            // not 8-aligned because individual 64-bit words were read WHILE being
+            // written, giving half-old, half-new words.
+            //
+            // One dump per capture: wait for cap_dn to go low and rise again.
+            T_IDLE: if (dump_req) begin dump_req <= 1'b0; hi <= 5'd0; ts <= T_HDR; end
                     else if (st_go) begin hi <= 5'd0; ts <= T_ST; end
 
             T_HDR: if (tx_free) begin
@@ -451,8 +564,9 @@ module cam_frame_stage6 #(
                 else hi <= hi + 5'd1;
             end
 
-            // re-arm so the next capture starts; a fresh picture every few sec
-            T_DONE: begin arm <= 1'b1; ts <= T_IDLE; end
+            // Signal completion. Re-arming happens only AFTER the buffer has been
+            // cleared, so a new capture cannot be wiped mid-flight.
+            T_DONE: begin dump_done <= 1'b1; ts <= T_IDLE; end
 
             // 31-char status line: ST a1 s1 t1 c0 d0 f1234 l5678
             T_ST: if (tx_free) begin
@@ -473,6 +587,51 @@ module cam_frame_stage6 #(
 
     reg [1:0] cap_s;
     always @(posedge clk) cap_s <= {cap_s[0], cap};
+
+    //------------------------------------------------------------------------
+    // TRIGGER GENERATOR -- one rising edge on trigger0, one frame.
+    //
+    // Fires only when the whole pipeline is genuinely ready for a frame:
+    //
+    //   streaming   the sequencer is enabled (before this the sensor ignores
+    //               trigger0 entirely, so an early pulse is simply lost)
+    //   !clearing   the frame buffer pre-fill has finished
+    //   !dn_s[1]    the previous capture has been dumped and re-armed
+    //   !cap_s[1]   a capture is not already in progress
+    //   ts==T_IDLE  the UART is not in the middle of a 3.3 s dump
+    //
+    // Tying it to readiness rather than to the `arm` pulse matters. arm fires
+    // when the power-up clear completes, which is LONG before the eye scan and
+    // alignment finish, so a trigger issued there would be swallowed by a
+    // sensor whose sequencer is still disabled -- and since the next arm only
+    // ever follows a dump, and a dump only follows a capture, that one lost
+    // pulse would deadlock the design with no frame ever requested.
+    //
+    // tw free-runs while ready and wraps at 2^24 = 168 ms, so the pulse repeats
+    // on its own if a frame never materialises: a missed trigger costs a sixth
+    // of a second, not a hung board. A capture completes in ~10 ms, well inside
+    // one wrap, so the retry never interrupts a frame in progress.
+    //
+    // The pulse is 2 us high, 10 us after becoming ready. Only the RISING edge
+    // matters to the sensor; the falling edge has no effect (datasheet p14).
+    //------------------------------------------------------------------------
+    reg [23:0] tw      = 24'd0;
+    reg        trig0_r = 1'b0;
+    wire       trig_ready = streaming && !clearing && !dn_s[1] && !cap_s[1]
+                            && (ts == T_IDLE);
+
+    always @(posedge clk) begin
+        if (rst || !trig_ready) begin
+            tw      <= 24'd0;
+            trig0_r <= 1'b0;
+        end else begin
+            tw      <= tw + 24'd1;
+            trig0_r <= (tw >= 24'd1_000) && (tw < 24'd1_200);
+        end
+    end
+
+    // trigger1/2 stay low -- only trigger0 is the exposure/readout sync input.
+    assign cam_trigger = {2'b00, trig0_r};
 
     reg [25:0] hb = 26'd0;
     always @(posedge clk) hb <= hb + 26'd1;

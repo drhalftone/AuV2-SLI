@@ -39,6 +39,33 @@ module cam_boot_seq #(
     parameter integer T_PLL_POLL  = 10_000_000, // 100 ms between PLL-lock reads
     parameter integer PLL_TRIES   = 10,
     parameter [15:0]  CHIP_ID     = 16'h50D0,
+    // TRIGGERED GLOBAL SHUTTER, MASTER MODE (datasheet Table 28, register 192).
+    //
+    //   192[4] triggered_mode  0 = normal (free-running), 1 = triggered
+    //   192[5] slave_mode      0 = master, 1 = slave        <-- left at 0
+    //
+    // In triggered master mode the pixel array is held in reset until a RISING
+    // EDGE arrives on trigger0 (sensor pin 41); that edge starts integration and
+    // then readout of exactly one frame. Exposure still comes from registers
+    // 199-203, so every timing value we already validated stays as it is -- the
+    // only thing that changes is WHO decides when a frame begins. A falling edge
+    // does nothing, and an edge that arrives before the previous frame's
+    // exposure + FOT has finished is ignored by the sensor (p14, p25).
+    //
+    // 192[6:1] is a STATIC readout parameter (Table 6): it may only be written
+    // while 192[0] = 0. That is already how this ROM is shaped -- rom[31] writes
+    // 192 with the mode bits and the sequencer OFF, and rom[41] sets bit 0 last
+    // -- so enabling triggered mode is a bit in both words, not a new sequence.
+    //
+    // 0 keeps free-running behaviour, so Au2_SLI is unaffected.
+    parameter integer TRIGGERED   = 0,
+    // Register 201 = exposure0 (datasheet p59). Exposure time is
+    // exposure0 x mult_timer / f_pll, where mult_timer is register 199 (= 27
+    // here), so this is the one knob to turn for brightness. Avnet's value of
+    // 10000 saturated 53 % of the frame on this bench; lower it until the
+    // histogram stops clipping. Exposure is a DYNAMIC parameter (Table 8) --
+    // safe to change without disabling the sequencer, one frame of latency.
+    parameter [15:0]  EXPOSURE    = 16'h2710,
     // Stop after this many ROM entries, for STAGED bring-up. 0 = run the whole
     // sequence, which is the previous behaviour and the default, so existing
     // instantiations (Au2_SLI) are unaffected.
@@ -108,9 +135,10 @@ module cam_boot_seq #(
         rom[26] = {9'd215, 16'h0107};
         rom[27] = {9'd194, 16'h0221};
         rom[28] = {9'd199, 16'h001B};
-        rom[29] = {9'd201, 16'h2710};
+        rom[29] = {9'd201, EXPOSURE};        // exposure0 -- see EXPOSURE param
         rom[30] = {9'd200, 16'h411A};
-        rom[31] = {9'd192, 16'h0800};
+        // mode bits, sequencer still OFF (192[0] = 0) -- see TRIGGERED above
+        rom[31] = {9'd192, 16'h0800 | (TRIGGERED ? 16'h0010 : 16'h0000)};
         // ---- SEQ05: soft power-up ----
         rom[32] = {9'd32,  16'h3007};
         rom[33] = {9'd10,  16'h0000};
@@ -122,7 +150,7 @@ module cam_boot_seq #(
         rom[39] = {9'd112, 16'h0007};   // *** LVDS drivers ON -- PT ONLY ***
         rom[40] = {9'd128, 16'h4714};
         // ---- enable sequencer ----
-        rom[41] = {9'd192, 16'h0801};   // 0x0800 (from rom[31]) | bit0
+        rom[41] = {9'd192, 16'h0801 | (TRIGGERED ? 16'h0010 : 16'h0000)}; // rom[31] | bit0
     end
 
     localparam [3:0]
