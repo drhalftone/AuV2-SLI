@@ -30,6 +30,7 @@ module cam_async_fifo #(
     input  wire          wr_en,
     input  wire [DW-1:0] wr_data,
     output wire          full,
+    output wire          afull,               // <2 slots free -- see below
     output reg           overflow = 1'b0,     // sticky: a write was DROPPED
 
     input  wire          rd_clk,
@@ -56,6 +57,31 @@ module cam_async_fifo #(
     assign full  = (wgray == {~rgray_s2[AW:AW-1], rgray_s2[AW-2:0]});
     assign empty = (rgray == wgray_s2);
     assign rd_data = mem[rbin[AW-1:0]];
+
+    // ALMOST-FULL, for writers whose wr_en is REGISTERED.
+    //
+    // `full` is only safe for a writer that decides and writes in the same cycle.
+    // A writer that samples !full and asserts wr_en on the NEXT edge has a write
+    // already in flight that `full` cannot see, so it can commit one word too
+    // many. That is not theoretical: cam_frame_ft's DDR->USB pusher did exactly
+    // this and dropped 2 words out of the first frame after a load, leaving one
+    // frame 8 bytes short while every later frame was byte-exact.
+    //
+    // afull leaves two slots of margin -- one for the in-flight write, one for
+    // the decision cycle -- so such a writer never overruns and keeps full rate.
+    // Computed against the SYNCHRONISED read pointer, so it lags reality and errs
+    // toward "too full", which is the safe direction.
+    function [AW:0] gray2bin(input [AW:0] g);
+        integer i;
+        begin
+            gray2bin[AW] = g[AW];
+            for (i = AW-1; i >= 0; i = i - 1)
+                gray2bin[i] = gray2bin[i+1] ^ g[i];
+        end
+    endfunction
+    wire [AW:0] rbin_wr    = gray2bin(rgray_s2);
+    wire [AW:0] occupancy  = wbin - rbin_wr;
+    assign afull = (occupancy >= (DEPTH - 2));
 
     always @(posedge wr_clk) begin
         if (wr_rst) begin

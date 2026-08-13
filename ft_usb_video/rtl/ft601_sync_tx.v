@@ -87,15 +87,31 @@ module ft601_sync_tx (
     // design and hard-fails unless all 33 (32 data + WR#) landed in OLOGIC sites.
     (* IOB = "TRUE" *) reg [31:0] dout_q   = 32'd0;
 
-    // WR# needs TWO copies of the same flop, and this is not redundancy:
-    // a register packed into an IOB drives the pad ONLY -- its Q is not visible
-    // to the fabric. `accepted` below reads WR# back, so a single flop cannot be
-    // both IOB-packed and readable. wr_n_pad feeds the pin; wr_n_int feeds the
-    // logic. Identical next-state, so they are always equal -- but the tool would
-    // happily merge them back into one (and silently un-pack the IOB), hence
-    // EQUIVALENT_REGISTER_REMOVAL = "NO" on the pair.
-    (* IOB = "TRUE", EQUIVALENT_REGISTER_REMOVAL = "NO" *) reg wr_n_pad = 1'b1;
-    (*              EQUIVALENT_REGISTER_REMOVAL = "NO"  *) reg wr_n_int = 1'b1;
+    // WR# is a single IOB flop. An earlier version kept a second, fabric-visible
+    // copy (wr_n_int) because an IOB-packed register drives the pad only and its
+    // Q cannot be read back -- and `accepted` needed to read WR#. The replica is
+    // gone because reading WR# back was never necessary:
+    //
+    //     valid_q  <= next_valid        and        wr_n_pad <= ~next_valid
+    //
+    // so valid_q === ~wr_n_int identically, every cycle, including out of reset
+    // (rst drives valid_q=0 and WR#=1). Expressing the handshake in terms of
+    // valid_q -- which IS fabric-visible -- is the same function with one less
+    // flop, and it is also a TIMING FIX. TXE# is constrained at 7.0 ns
+    // clock-to-out, leaving under 3 ns of the 10 ns period for everything from
+    // the pad to WR#'s setup. Routed through wr_n_int the chain was
+    // ft_txe -> accepted -> load -> next_valid -> wr_n_pad/D and it failed at
+    // -0.148, then -0.260 after unrelated logic moved the placement. Substituted:
+    //
+    //     accepted   = valid_q & ~ft_txe
+    //     load       = ~valid_q | ~ft_txe
+    //     next_valid = (valid_q & ft_txe) | s_valid
+    //
+    // one LUT3 from {valid_q, ft_txe, s_valid} straight into the IOB flop. Same
+    // protocol, same hold-and-retry, no marginal path. Do not reintroduce a
+    // WR#-readback form: it re-creates the violation, and negative slack on this
+    // bus is what silently corrupted ft_data[31:16] once already.
+    (* IOB = "TRUE" *) reg wr_n_pad = 1'b1;
 
     reg valid_q = 1'b0;                     // dout_q holds a real word
 
@@ -110,13 +126,16 @@ module ft601_sync_tx (
 
     // Was the word presented during the cycle now ending actually taken? Both
     // terms are evaluated at this edge -- exactly as the FT601 evaluates them.
-    wire accepted = ~wr_n_int & ~ft_txe;
+    // valid_q is the presented-word flag, identical to ~WR# as driven.
+    wire accepted = valid_q & ~ft_txe;
 
     // The output register is free when its word was taken (or never held one).
-    wire load = accepted | ~valid_q;
+    wire load = ~valid_q | ~ft_txe;
 
     // WR# low whenever a valid word will be presented during the next cycle.
-    wire next_valid = load ? s_valid : valid_q;
+    // When the word was NOT taken (valid_q & ft_txe) it is re-presented, so
+    // next_valid stays 1 -- that hold is the skid buffer.
+    wire next_valid = (valid_q & ft_txe) | s_valid;
 
     // Pop the source in the same cycle we latch its word into the output reg.
     assign s_adv = load & s_valid;
@@ -126,14 +145,10 @@ module ft601_sync_tx (
             dout_q   <= 32'd0;
             valid_q  <= 1'b0;
             wr_n_pad <= 1'b1;
-            wr_n_int <= 1'b1;
         end else begin
-            if (load) begin
-                dout_q  <= s_word;
-                valid_q <= s_valid;
-            end
+            if (load) dout_q <= s_word;
+            valid_q  <= next_valid;
             wr_n_pad <= ~next_valid;
-            wr_n_int <= ~next_valid;
         end
     end
 

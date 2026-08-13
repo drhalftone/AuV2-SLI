@@ -1,0 +1,538 @@
+`timescale 1ns/1ps
+//=============================================================================
+// cam_frame_ft.v - camera -> DDR3 -> FT601 USB 3.0. Milestone #17.
+//
+// Same capture path as cam_frame_ddr.v; the UART is replaced by the Ft+.
+//
+//     UART   1 Mbaud  ~100 kB/s   13.1 s per frame
+//     FT601  measured  348 MB/s   ~3.8 ms per frame
+//
+// THE Ft+ IS ON THE BOTTOM of the Pt, camera on top. That is not cosmetic: the
+// Ft+ TOP pinout collides with ELEVEN camera pins -- cam_sck, cam_mosi,
+// cam_miso, cam_ss_n, cam_reset_n, cam_clk_pll, cam_trigger[0..2] and
+// cam_monitor[0..1] all land on FT601 signals. Bottom-mounted, the two pin sets
+// are disjoint. Build this ONLY with the bottom constraints.
+//
+// THREE CLOCK DOMAINS, all unrelated:
+//   wordclk  72 MHz, BUFR   -- the sensor
+//   ui_clk  100 MHz, MIG PLL -- DDR3
+//   ft_clk  100 MHz, sourced BY THE FT601 itself
+// ft_clk is not ours and does not exist until the FT601 is up, so the DDR->USB
+// hand-off needs its own async FIFO exactly as the sensor->DDR one does.
+//
+// WHY THE BUS IS IOB-REGISTERED AND CONSTRAINED. An earlier FT601 test here
+// measured 192 fps with zero dropped frames while silently corrupting
+// ft_data[31:16] -- the far-bank half missed the FT601's 1 ns setup window while
+// the near half made it. An unconstrained path is not a failing path: the tool
+// reported WNS >= 0 because it never timed the bus at all. ft601_sync_tx.v
+// launches from IOB flops and the bottom XDC now carries the same
+// set_output_delay/set_input_delay block the top one gained. VERIFY BYTES, never
+// throughput -- throughput looked perfect while half the bus was wrong.
+//
+// FRAMING matches sli_frame_gen so the existing host tools lock on unchanged:
+//   [0] 0x30494C53 "SLI0"   [1] frame index   [2] {height,width}
+//   [3] 0                   [4] bytes/frame   [5] pixel words/frame
+//   [6] format = 1          [7] ~MAGIC
+//=============================================================================
+module cam_frame_ft #(
+    parameter integer NCOL = 1280,
+    parameter integer NROW = 1024,
+    parameter [15:0]  EXPOSURE = 16'h0640
+)(
+    input  wire        clk,
+    input  wire        rst_n,
+    output reg  [7:0]  led,
+    output wire        usb_tx,        // 1 Mbaud status on the Pt's own USB (COM6)
+
+    input  wire        cam_clkout_p, cam_clkout_n,
+    input  wire [3:0]  cam_d_p,      cam_d_n,
+    input  wire        cam_sync_p,   cam_sync_n,
+    output wire        cam_sck, cam_mosi, cam_ss_n,
+    input  wire        cam_miso,
+    output wire        cam_reset_n, cam_clk_pll,
+    output wire [2:0]  cam_trigger,
+    input  wire [1:0]  cam_monitor,
+
+    input  wire        ft_clk,
+    inout  wire [31:0] ft_data,
+    inout  wire [3:0]  ft_be,
+    input  wire        ft_txe, ft_rxf,
+    output wire        ft_wr, ft_oe, ft_rd,
+    output wire        ft_wakeup, ft_reset,
+
+    inout  wire [15:0] ddr3_dq,
+    inout  wire [1:0]  ddr3_dqs_p, ddr3_dqs_n,
+    output wire [13:0] ddr3_addr,
+    output wire [2:0]  ddr3_ba,
+    output wire        ddr3_ras_n, ddr3_cas_n, ddr3_we_n, ddr3_reset_n,
+    output wire [0:0]  ddr3_ck_p, ddr3_ck_n, ddr3_cke, ddr3_cs_n,
+    output wire [1:0]  ddr3_dm,
+    output wire [0:0]  ddr3_odt
+);
+    localparam integer NBYTES = NCOL * NROW;
+    localparam integer NWORDS = NBYTES / 16;      // 81,920 DDR words
+    localparam integer ASTEP  = 8;
+    localparam [31:0]  MAGIC  = 32'h30494C53;
+
+    assign ft_wakeup = 1'b1;
+
+    // PULSE THE FT601's RESET_N AFTER CONFIGURATION -- do not just tie it to rst_n.
+    //
+    // ft_reset used to be `assign ft_reset = rst_n`, which never pulses: rst_n
+    // sits high across a bitstream load, so the FT601 is only ever reset when
+    // somebody presses the board button. The chip can sit enumerated on USB --
+    // D3XX lists it, its EEPROM reads back correctly -- while not driving ft_clk
+    // at all, and then NOTHING moves: the ft_clk domain has no clock, the DDR->USB
+    // FIFO fills to exactly its 1024-word depth and the host's read blocks
+    // forever with zero bytes. That is what happened here, and it was only
+    // diagnosed by ft_probe_bottom.v, which square-waves RESET_N -- the FT601
+    // came back clocking afterwards and this design suddenly worked, having not
+    // changed at all.
+    //
+    // ~42 ms low at 100 MHz, then release. The FT601 re-enumerates afterwards
+    // (about a second), so a host tool should retry its open -- ft_video_grab.py
+    // already does.
+    reg [21:0] ftrst_cnt = 22'd0;
+    reg        ftrst_rel = 1'b0;
+    always @(posedge clk) begin
+        if (!rstn_sync[1]) begin
+            ftrst_cnt <= 22'd0;
+            ftrst_rel <= 1'b0;
+        end else if (ftrst_cnt != {22{1'b1}}) begin
+            ftrst_cnt <= ftrst_cnt + 22'd1;
+        end else begin
+            ftrst_rel <= 1'b1;
+        end
+    end
+    assign ft_reset = ftrst_rel;
+
+    reg [1:0] rstn_sync = 2'b00;
+    reg [7:0] por = 8'h00;
+    always @(posedge clk) begin
+        rstn_sync <= {rstn_sync[0], rst_n};
+        if (!por[7]) por <= por + 8'd1;
+    end
+    wire rst = !por[7] || !rstn_sync[1];
+
+    wire fb, fb_g, c200_raw, clk200, c100_raw, clk100, mmcm_locked;
+    MMCME2_BASE #(
+        .BANDWIDTH("OPTIMIZED"), .CLKIN1_PERIOD(10.000),
+        .DIVCLK_DIVIDE(1), .CLKFBOUT_MULT_F(10.000),
+        .CLKOUT0_DIVIDE_F(5.000), .CLKOUT0_DUTY_CYCLE(0.500),
+        .CLKOUT1_DIVIDE(10),      .CLKOUT1_DUTY_CYCLE(0.500),
+        .STARTUP_WAIT("FALSE")
+    ) u_mmcm (
+        .CLKIN1(clk), .CLKFBIN(fb_g), .CLKFBOUT(fb),
+        .CLKOUT0(c200_raw), .CLKOUT1(c100_raw),
+        .CLKOUT2(), .CLKOUT3(), .CLKOUT4(), .CLKOUT5(), .CLKOUT6(),
+        .CLKOUT0B(), .CLKOUT1B(), .CLKOUT2B(), .CLKOUT3B(), .CLKFBOUTB(),
+        .LOCKED(mmcm_locked), .PWRDWN(1'b0), .RST(1'b0)
+    );
+    BUFG u_fb (.I(fb), .O(fb_g));
+    BUFG u_c200 (.I(c200_raw), .O(clk200));
+    BUFG u_c100 (.I(c100_raw), .O(clk100));
+
+    reg [7:0] idc_cnt = 8'd0;
+    reg       idc_rst = 1'b1;
+    always @(posedge clk200) begin
+        if (!mmcm_locked) begin idc_cnt <= 8'd0; idc_rst <= 1'b1; end
+        else if (idc_cnt != 8'hFF) begin idc_cnt <= idc_cnt + 8'd1; idc_rst <= 1'b1; end
+        else idc_rst <= 1'b0;
+    end
+    wire idc_rdy;
+    (* IODELAY_GROUP = "cam_idelay" *)
+    IDELAYCTRL u_idc (.REFCLK(clk200), .RST(idc_rst), .RDY(idc_rdy));
+
+    //--------------------------------------------------- camera front end
+    wire [7:0] boot_led;
+    wire       streaming;
+    reg        stream_go = 1'b0;
+    cam_boot_stage1 #(.CLK_HZ(100_000_000), .BAUD(1_000_000), .STOP_AT(45),
+                      .TRIGGERED(0), .EXPOSURE(EXPOSURE)) u_boot (
+        .clk(clk), .rst_n(rst_n),
+        .stream_go(stream_go), .streaming(streaming),
+        .led(boot_led), .usb_tx(), .usb_rx(1'b1),
+        .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
+        .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),
+        .cam_clk_pll(cam_clk_pll), .cam_trigger(cam_trigger),
+        .cam_monitor(cam_monitor)
+    );
+
+    wire        wordclk;
+    wire [9:0]  d0_word, d1_word, d2_word, d3_word, sync_word;
+    wire [4:0]  bitslip, lane_locked, lane_failed;
+    wire        aligned;
+    wire [24:0] tap_val;
+    wire        tap_ld;
+    cam_lvds_rx_idelay u_rx (
+        .cam_clkout_p(cam_clkout_p), .cam_clkout_n(cam_clkout_n),
+        .cam_d_p(cam_d_p), .cam_d_n(cam_d_n),
+        .cam_sync_p(cam_sync_p), .cam_sync_n(cam_sync_n),
+        .bitslip(bitslip), .tap_val(tap_val), .tap_ld(tap_ld),
+        .wordclk(wordclk), .d0_word(d0_word), .d1_word(d1_word),
+        .d2_word(d2_word), .d3_word(d3_word), .sync_word(sync_word)
+    );
+
+    reg [7:0] wc_cnt = 8'd0;
+    reg       wc_rst = 1'b1;
+    always @(posedge wordclk) begin
+        if (!idc_rdy) begin wc_cnt <= 8'd0; wc_rst <= 1'b1; end
+        else if (wc_cnt != 8'hFF) begin wc_cnt <= wc_cnt + 8'd1; wc_rst <= 1'b1; end
+        else wc_rst <= 1'b0;
+    end
+
+    wire       scan_done, align_rst;
+    wire [4:0] bt0,bt1,bt2,bt3,bts;
+    wire [5:0] bl0,bl1,bl2,bl3,bls;
+    cam_eye_scan u_scan (
+        .wordclk(wordclk), .rst(wc_rst),
+        .d0_word(d0_word), .d1_word(d1_word), .d2_word(d2_word),
+        .d3_word(d3_word), .sync_word(sync_word),
+        .tap_val(tap_val), .tap_ld(tap_ld),
+        .scan_done(scan_done), .align_rst(align_rst),
+        .best_tap0(bt0), .best_tap1(bt1), .best_tap2(bt2), .best_tap3(bt3),
+        .best_taps(bts), .best_len0(bl0), .best_len1(bl1), .best_len2(bl2),
+        .best_len3(bl3), .best_lens(bls)
+    );
+    cam_align u_align (
+        .wordclk(wordclk), .rst(wc_rst | align_rst),
+        .d0_word(d0_word), .d1_word(d1_word), .d2_word(d2_word),
+        .d3_word(d3_word), .sync_word(sync_word),
+        .bitslip(bitslip), .lane_locked(lane_locked),
+        .aligned(aligned), .lane_failed(lane_failed)
+    );
+
+    wire init_calib_complete;
+    reg [2:0] rdy_s = 3'b000;
+    reg       fired = 1'b0;
+    always @(posedge clk) begin
+        stream_go <= 1'b0;
+        rdy_s <= {rdy_s[1:0], (scan_done & aligned & init_calib_complete)};
+        if (rst) fired <= 1'b0;
+        else if (rdy_s[2] && !fired && !streaming) begin
+            stream_go <= 1'b1; fired <= 1'b1;
+        end
+    end
+
+    wire [9:0]  kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7;
+    wire [10:0] kbase;
+    wire        kvalid, line_start, frame_start, frame_end, in_black;
+    cam_sync_decode u_dec (
+        .wordclk(wordclk), .rst(wc_rst), .aligned(aligned),
+        .d0_word(d0_word), .d1_word(d1_word), .d2_word(d2_word),
+        .d3_word(d3_word), .sync_word(sync_word),
+        .kpix0(kp0), .kpix1(kp1), .kpix2(kp2), .kpix3(kp3),
+        .kpix4(kp4), .kpix5(kp5), .kpix6(kp6), .kpix7(kp7),
+        .kbase(kbase), .kvalid(kvalid), .line_start(line_start),
+        .frame_start(frame_start), .frame_end(frame_end), .in_black(in_black)
+    );
+    wire [63:0] kword = { kp7[9:2], kp6[9:2], kp5[9:2], kp4[9:2],
+                          kp3[9:2], kp2[9:2], kp1[9:2], kp0[9:2] };
+
+    // ARM THE CAPTURE ONLY WHEN THE DRAIN IS ALREADY RUNNING.
+    //
+    // cap used to start on the first frame_start after alignment, but the ui_clk
+    // FSM sits in W_WAIT until init_calib_complete. Any pixel that arrives in
+    // that window is written into a FIFO nobody is reading, and the telemetry
+    // caught it: cfifo_ovf was SET on the very first run. This capture is
+    // single-shot -- exactly NWORDS*2 words enter and the write FSM counts out
+    // exactly that many -- so a dropped word does not merely blemish the image,
+    // it shifts every pixel after it and leaves the FSM waiting forever for a
+    // remainder that will never come. Gating on the FSM actually being in W_LO
+    // makes the overflow flag mean something too: with no writes possible before
+    // the arm, a set flag is now a real mid-frame drop and not a startup artifact.
+    reg [1:0] arm_s = 2'b00;
+    always @(posedge wordclk) arm_s <= {arm_s[0], (st == W_LO)};
+
+    reg cap = 1'b0, cap_dn = 1'b0;
+    always @(posedge wordclk) begin
+        if (wc_rst) begin cap <= 1'b0; cap_dn <= 1'b0; end
+        else if (frame_end && cap) begin cap <= 1'b0; cap_dn <= 1'b1; end
+        else if (frame_start && !cap && !cap_dn && arm_s[1]) cap <= 1'b1;
+    end
+
+    wire cfifo_full, cfifo_empty, cfifo_ovf;
+    wire [63:0] cfifo_dout;
+    reg  cfifo_rd = 1'b0;
+    cam_async_fifo #(.DW(64), .AW(8)) u_cfifo (
+        .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(cap && kvalid),
+        .wr_data(kword), .full(cfifo_full), .overflow(cfifo_ovf),
+        .rd_clk(ui_clk), .rd_rst(ui_rst), .rd_en(cfifo_rd),
+        .rd_data(cfifo_dout), .empty(cfifo_empty)
+    );
+
+    //---------------------------------------------------------------- MIG
+    wire        ui_clk, ui_rst;
+    wire [27:0] app_addr;
+    wire [2:0]  app_cmd;
+    wire        app_en, app_rdy;
+    wire [127:0] app_wdf_data;
+    wire        app_wdf_end, app_wdf_wren, app_wdf_rdy;
+    wire [127:0] app_rd_data;
+    wire        app_rd_data_valid, app_rd_data_end;
+
+    reg [27:0]  r_addr = 28'd0;
+    reg [2:0]   r_cmd  = 3'd0;
+    reg [127:0] r_wdata = 128'd0;
+    reg         cmd_done = 1'b0, dat_done = 1'b0;
+
+    localparam [3:0] W_WAIT=0, W_LO=1, W_HI=2, W_ISSUE=3, W_DONE=4,
+                     P_HDR=5, P_CMD=6, P_WAIT=7, P_PUSH=8;
+    reg [3:0] st = W_WAIT;
+
+    wire issuing = (st == W_ISSUE) || (st == P_CMD);
+    assign app_addr     = r_addr;
+    assign app_cmd      = r_cmd;
+    assign app_en       = issuing && !cmd_done;
+    assign app_wdf_data = r_wdata;
+    assign app_wdf_wren = (st == W_ISSUE) && !dat_done;
+    assign app_wdf_end  = (st == W_ISSUE) && !dat_done;
+
+    mig_ddr3 u_mig (
+        .ddr3_addr(ddr3_addr), .ddr3_ba(ddr3_ba),
+        .ddr3_cas_n(ddr3_cas_n), .ddr3_ck_n(ddr3_ck_n), .ddr3_ck_p(ddr3_ck_p),
+        .ddr3_cke(ddr3_cke), .ddr3_ras_n(ddr3_ras_n), .ddr3_reset_n(ddr3_reset_n),
+        .ddr3_we_n(ddr3_we_n), .ddr3_dq(ddr3_dq),
+        .ddr3_dqs_n(ddr3_dqs_n), .ddr3_dqs_p(ddr3_dqs_p),
+        .init_calib_complete(init_calib_complete),
+        .ddr3_cs_n(ddr3_cs_n), .ddr3_dm(ddr3_dm), .ddr3_odt(ddr3_odt),
+        .app_addr(app_addr), .app_cmd(app_cmd), .app_en(app_en),
+        .app_wdf_data(app_wdf_data), .app_wdf_end(app_wdf_end),
+        .app_wdf_wren(app_wdf_wren), .app_wdf_mask(16'h0000),
+        .app_rd_data(app_rd_data), .app_rd_data_end(app_rd_data_end),
+        .app_rd_data_valid(app_rd_data_valid),
+        .app_rdy(app_rdy), .app_wdf_rdy(app_wdf_rdy),
+        .app_sr_req(1'b0), .app_ref_req(1'b0), .app_zq_req(1'b0),
+        .app_sr_active(), .app_ref_ack(), .app_zq_ack(),
+        .ui_clk(ui_clk), .ui_clk_sync_rst(ui_rst),
+        .sys_clk_i(clk100), .clk_ref_i(clk200),
+        .sys_rst(mig_rst)                    // ACTIVE HIGH per mig_pt_v2.prj
+    );
+    reg [1:0] mrstn_s = 2'b00;
+    always @(posedge clk100) mrstn_s <= {mrstn_s[0], rst_n};
+    wire mig_rst = !mrstn_s[1] || !mmcm_locked;
+
+    //--------------------- ui_clk -> ft_clk: the USB side of the crossing
+    wire ufifo_full, ufifo_afull, ufifo_empty, ufifo_ovf;
+    wire [31:0] ufifo_dout;
+    reg  [31:0] ufifo_din = 32'd0;
+    reg         ufifo_wr = 1'b0;
+    wire        ufifo_rd;
+
+    cam_async_fifo #(.DW(32), .AW(10)) u_ufifo (
+        .wr_clk(ui_clk), .wr_rst(ui_rst), .wr_en(ufifo_wr),
+        .wr_data(ufifo_din), .full(ufifo_full), .afull(ufifo_afull),
+        .overflow(ufifo_ovf),
+        .rd_clk(ft_clk), .rd_rst(ft_rst), .rd_en(ufifo_rd),
+        .rd_data(ufifo_dout), .empty(ufifo_empty)
+    );
+
+    reg [16:0] widx = 17'd0;
+    reg [127:0] rword = 128'd0;
+    reg [2:0]  pw = 3'd0;                 // which 32-bit slice of rword
+    reg [2:0]  hw = 3'd0;                 // header word index
+    reg [31:0] frame_idx = 32'd0;
+
+    always @(posedge ui_clk) begin
+        cfifo_rd <= 1'b0;
+        ufifo_wr <= 1'b0;
+
+        if (ui_rst) begin
+            st <= W_WAIT; widx <= 17'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+            cmd_done <= 1'b0; dat_done <= 1'b0; pw <= 3'd0; hw <= 3'd0;
+            frame_idx <= 32'd0;
+        end else begin
+            case (st)
+            W_WAIT: if (init_calib_complete) begin
+                        st <= W_LO; widx <= 17'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+                    end
+            W_LO: if (!cfifo_empty) begin
+                      r_wdata[63:0] <= cfifo_dout; cfifo_rd <= 1'b1; st <= W_HI;
+                  end
+            W_HI: if (!cfifo_empty) begin
+                      r_wdata[127:64] <= cfifo_dout; cfifo_rd <= 1'b1;
+                      cmd_done <= 1'b0; dat_done <= 1'b0; st <= W_ISSUE;
+                  end
+            W_ISSUE: begin
+                if (app_en && app_rdy)           cmd_done <= 1'b1;
+                if (app_wdf_wren && app_wdf_rdy) dat_done <= 1'b1;
+                if ((cmd_done || (app_en && app_rdy)) &&
+                    (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
+                    cmd_done <= 1'b0; dat_done <= 1'b0;
+                    if (widx == NWORDS[16:0] - 17'd1) st <= W_DONE;
+                    else begin
+                        widx <= widx + 17'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
+                    end
+                end
+            end
+            W_DONE: begin
+                widx <= 17'd0; r_addr <= 28'd0; r_cmd <= 3'd1;
+                hw <= 3'd0; st <= P_HDR;
+            end
+
+            // 8-word header, then the frame, then straight into the next header:
+            // the FT601 pulls continuously and the DDR contents never change, so
+            // the host sees a steady stream of identical frames at link rate.
+            P_HDR: if (!ufifo_afull) begin
+                ufifo_wr <= 1'b1;
+                case (hw)
+                3'd0: ufifo_din <= MAGIC;
+                3'd1: ufifo_din <= frame_idx;
+                3'd2: ufifo_din <= {NROW[15:0], NCOL[15:0]};
+                3'd3: ufifo_din <= 32'd0;
+                3'd4: ufifo_din <= NBYTES;
+                3'd5: ufifo_din <= NBYTES/4;
+                3'd6: ufifo_din <= 32'd1;              // format: 8-bit mono
+                default: ufifo_din <= ~MAGIC;
+                endcase
+                if (hw == 3'd7) begin hw <= 3'd0; st <= P_CMD; end
+                else hw <= hw + 3'd1;
+            end
+
+            P_CMD:  if (app_en && app_rdy) st <= P_WAIT;
+            P_WAIT: if (app_rd_data_valid) begin
+                        rword <= app_rd_data; pw <= 3'd0; st <= P_PUSH;
+                    end
+            P_PUSH: if (!ufifo_afull) begin
+                ufifo_wr  <= 1'b1;
+                ufifo_din <= rword[pw*32 +: 32];
+                if (pw == 3'd3) begin
+                    if (widx == NWORDS[16:0] - 17'd1) begin
+                        widx <= 17'd0; r_addr <= 28'd0;
+                        frame_idx <= frame_idx + 32'd1;
+                        hw <= 3'd0; st <= P_HDR;
+                    end else begin
+                        widx <= widx + 17'd1; r_addr <= r_addr + ASTEP; st <= P_CMD;
+                    end
+                end else pw <= pw + 3'd1;
+            end
+            default: st <= W_WAIT;
+            endcase
+        end
+    end
+
+    //------------------------------------------------- the FT601 write master
+    reg [1:0] ftrst_s = 2'b11;
+    always @(posedge ft_clk) ftrst_s <= {ftrst_s[0], ~rst_n};
+    wire ft_rst = ftrst_s[1];
+
+    // FWFT OUTPUT STAGE, and it is a timing fix, not tidiness.
+    //
+    // Feeding ft601_sync_tx s_valid = !ufifo_empty put an 11-bit gray-code
+    // comparison directly into the WR# decision, and WR# also depends on ft_txe
+    // -- which the FT601 may present up to 7.0 ns after the clock edge, leaving
+    // 3.0 ns for everything downstream. That path failed at -0.148 ns:
+    //     ft_txe -> u_ft/wr_n_pad_reg_rep/D
+    // sli_frame_gen never had it because its valid was a register, not a FIFO
+    // status bit. Negative slack on THIS bus is precisely the condition that
+    // silently corrupted ft_data[31:16] before, so it is not shippable.
+    //
+    // One register stage makes s_word/s_valid flop outputs. FWFT semantics are
+    // preserved: pop whenever the holding register is empty or is being consumed
+    // this cycle.
+    reg [31:0] hold_word = 32'd0;
+    reg        hold_valid = 1'b0;
+    wire       ft_adv;
+    wire       pop = !ufifo_empty && (!hold_valid || ft_adv);
+    assign ufifo_rd = pop;
+    always @(posedge ft_clk) begin
+        if (ft_rst) hold_valid <= 1'b0;
+        else if (pop) begin hold_word <= ufifo_dout; hold_valid <= 1'b1; end
+        else if (ft_adv) hold_valid <= 1'b0;
+    end
+
+    wire [31:0] ft_dout;
+    wire [3:0]  ft_beout;
+    wire        bus_oe;
+    ft601_sync_tx u_ft (
+        .clk(ft_clk), .rst(ft_rst),
+        .ft_txe(ft_txe), .ft_wr(ft_wr), .ft_oe(ft_oe), .ft_rd(ft_rd),
+        .ft_dout(ft_dout), .ft_beout(ft_beout), .bus_oe(bus_oe),
+        .s_word(hold_word), .s_valid(hold_valid), .s_adv(ft_adv)
+    );
+    assign ft_data = bus_oe ? ft_dout  : 32'bz;
+    assign ft_be   = bus_oe ? ft_beout : 4'bz;
+
+    reg [1:0] cap_s = 2'b00, covf_s = 2'b00, uovf_s = 2'b00;
+    always @(posedge ui_clk) begin
+        cap_s  <= {cap_s[0], cap};
+        covf_s <= {covf_s[0], cfifo_ovf};
+        uovf_s <= {uovf_s[0], ufifo_ovf};
+    end
+    //---------------------------------------------------------------------
+    // STATUS OVER THE Pt's OWN USB (COM6, 1 Mbaud).
+    //
+    // The FT601 read blocked forever with zero bytes, and with no UART in this
+    // build the only evidence was eight LEDs I cannot see from here. The FSM has
+    // several states that stall silently and look identical from outside:
+    // W_LO/W_HI wait on the camera FIFO, so ONE dropped word (a cfifo overflow)
+    // means the frame never completes and P_HDR is never reached -- no bytes,
+    // forever. This prints the state instead of guessing.
+    //
+    // ftw counts words actually handed to the FT601, ftc free-runs on ft_clk:
+    // if ftc is stuck the FT601 is not clocking us at all, which is a different
+    // fault entirely from "clocking but never accepting".
+    reg [23:0] ftw = 24'd0, ftc = 24'd0;
+    always @(posedge ft_clk) begin
+        ftc <= ftc + 24'd1;
+        if (ft_adv) ftw <= ftw + 24'd1;
+    end
+    reg [7:0] ftw_s1=0, ftw_s2=0, ftc_s1=0, ftc_s2=0;
+    reg [1:0] txe_s = 2'b00;
+    always @(posedge ui_clk) begin
+        ftw_s1 <= ftw[23:16]; ftw_s2 <= ftw_s1;
+        ftc_s1 <= ftc[23:16]; ftc_s2 <= ftc_s1;
+        txe_s  <= {txe_s[0], ft_txe};
+    end
+
+    wire [47:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
+                         covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
+                         frame_idx[3:0], widx[15:0], ftw_s2, ftc_s2 };
+
+    reg [47:0] shold = 48'd0;
+    reg [3:0]  nib   = 4'd0;
+    reg [23:0] utick = 24'd0;
+    reg [7:0]  ubyte = 8'd0;
+    reg        usend = 1'b0;
+    reg [1:0]  ust   = 2'd0;
+    wire       ubusy;
+    wire [3:0] n = shold[47 - nib*4 -: 4];
+
+    always @(posedge ui_clk) begin
+        usend <= 1'b0;
+        if (ui_rst) begin ust <= 2'd0; utick <= 24'd0; nib <= 4'd0; end
+        else case (ust)
+        2'd0: begin
+            utick <= utick + 24'd1;
+            if (utick == 24'd10_000_000) begin           // ~10 Hz
+                utick <= 24'd0; shold <= stat; nib <= 4'd0; ust <= 2'd1;
+            end
+        end
+        2'd1: if (!ubusy && !usend) begin
+            ubyte <= (n < 4'd10) ? (8'd48 + {4'd0,n}) : (8'd55 + {4'd0,n});
+            usend <= 1'b1;
+            if (nib == 4'd11) ust <= 2'd2; else nib <= nib + 4'd1;
+        end
+        2'd2: if (!ubusy && !usend) begin ubyte <= 8'h0D; usend <= 1'b1; ust <= 2'd3; end
+        2'd3: if (!ubusy && !usend) begin ubyte <= 8'h0A; usend <= 1'b1; ust <= 2'd0; end
+        endcase
+    end
+
+    uart_tx #(.CLK_HZ(100_000_000), .BAUD(1_000_000)) u_uart (
+        .clk(ui_clk), .rst(ui_rst), .data(ubyte), .send(usend),
+        .tx(usb_tx), .busy(ubusy)
+    );
+
+    reg [26:0] hb = 27'd0;
+    always @(posedge ui_clk) begin
+        hb <= hb + 27'd1;
+        led[7] <= hb[26];
+        led[6] <= init_calib_complete;
+        led[5] <= aligned;
+        led[4] <= cap_s[1];
+        led[3] <= (st >= P_HDR);          // streaming to USB
+        led[2] <= streaming;
+        led[1] <= covf_s[1];              // sensor->DDR FIFO overflowed
+        led[0] <= uovf_s[1];              // DDR->USB FIFO overflowed
+    end
+endmodule
