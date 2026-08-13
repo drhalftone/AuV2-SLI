@@ -37,7 +37,8 @@
 module cam_frame_ft #(
     parameter integer NCOL = 1280,
     parameter integer NROW = 1024,
-    parameter [15:0]  EXPOSURE = 16'h0640
+    parameter [15:0]  EXPOSURE = 16'h0640,
+    parameter integer NFRAMES  = 8            // burst length; <=16 (fcnt is 4 bits)
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -70,7 +71,9 @@ module cam_frame_ft #(
     output wire [0:0]  ddr3_odt
 );
     localparam integer NBYTES = NCOL * NROW;
-    localparam integer NWORDS = NBYTES / 16;      // 81,920 DDR words
+    localparam integer NWORDS = NBYTES / 16;      // 81,920 DDR words per frame
+    localparam integer NKERN  = NBYTES / 8;       // 163,840 kernels per frame
+    localparam integer NTOT   = NWORDS * NFRAMES; // 655,360 words = 10.5 MB of 256
     localparam integer ASTEP  = 8;
     localparam [31:0]  MAGIC  = 32'h30494C53;
 
@@ -244,18 +247,93 @@ module cam_frame_ft #(
     reg [1:0] arm_s = 2'b00;
     always @(posedge wordclk) arm_s <= {arm_s[0], (st == W_LO)};
 
-    reg cap = 1'b0, cap_dn = 1'b0;
+    // BURST CAPTURE -- NFRAMES consecutive frames, each bounded to exactly NKERN
+    // kernels, then stop.
+    //
+    // THE BOUND IS NOT OPTIONAL. The sensor emits MORE than one frame's worth of
+    // kernels per frame: cam_sync_decode accumulates black reference lines (SC_BL)
+    // as well as image lines, so a frame delivers 1024 image rows plus however many
+    // black rows the PYTHON1300 is configured for. Single-shot capture got away
+    // with it -- the write FSM counted out its NWORDS and simply stopped draining,
+    // and the surplus overflowed into the sticky cfifo_ovf flag that has read 1
+    // since the first run. Across a BURST that surplus is fatal: it is still in the
+    // FIFO when the next frame starts, so every frame after the first is offset by
+    // a growing number of words.
+    //
+    // Counting kernels from each frame_start and dropping everything past NKERN
+    // makes each frame independently self-aligning, and makes cfifo_ovf mean what
+    // it says again -- a set flag is now a real mid-frame drop.
+    //
+    // frame_start can coincide with kvalid: the framing words carry pixels (the
+    // cause of the 16-pixel black bar), so FS itself delivers a kernel and the
+    // reload value is 1, not 0. arm_now covers the same case on the very first
+    // frame, when cap has not yet been registered high.
+    reg [17:0] kcnt = 18'd0;
+    reg [3:0]  fcnt = 4'd0;
+    reg        cap  = 1'b0, cap_dn = 1'b0;
+
+    wire arm_now = frame_start && !cap && !cap_dn && arm_s[1];
+    wire cap_act = cap || arm_now;
+    wire cap_wr  = cap_act && kvalid && (kcnt != NKERN[17:0]);
+
     always @(posedge wordclk) begin
-        if (wc_rst) begin cap <= 1'b0; cap_dn <= 1'b0; end
-        else if (frame_end && cap) begin cap <= 1'b0; cap_dn <= 1'b1; end
-        else if (frame_start && !cap && !cap_dn && arm_s[1]) cap <= 1'b1;
+        if (wc_rst) begin
+            cap <= 1'b0; cap_dn <= 1'b0; kcnt <= 18'd0; fcnt <= 4'd0;
+        end else if (arm_now) begin
+            cap  <= 1'b1;
+            kcnt <= kvalid ? 18'd1 : 18'd0;
+        end else if (cap) begin
+            if (frame_start)                        kcnt <= kvalid ? 18'd1 : 18'd0;
+            else if (kvalid && kcnt != NKERN[17:0]) kcnt <= kcnt + 18'd1;
+
+            if (frame_end) begin
+                if (fcnt == NFRAMES[3:0] - 4'd1) begin
+                    cap <= 1'b0; cap_dn <= 1'b1;      // burst complete, one shot
+                end else fcnt <= fcnt + 4'd1;
+            end
+        end
+    end
+
+    // FRAME PERIOD, measured -- not derived from the register programming.
+    //
+    // Counts wordclk cycles between the 1st and 9th frame_start, i.e. exactly 8
+    // frame periods, then latches and stops. wordclk is the sensor's own recovered
+    // 72.000 MHz (720 Mbps / 10), so
+    //
+    //     fps = 8 * 72e6 / fper_lat
+    //
+    // Measuring across 8 periods rather than 1 divides the +/-1 cycle quantisation
+    // by eight and averages any frame-to-frame jitter. fper_lat is written once and
+    // then never changes, so sampling all 32 bits into ui_clk needs no gray coding
+    // -- but it is only safe BECAUSE it is static; do not make it free-running.
+    reg [31:0] fper_cnt = 32'd0, fper_lat = 32'd0;
+    reg [3:0]  fper_n   = 4'd0;
+    reg        fper_run = 1'b0, fper_dn = 1'b0;
+    always @(posedge wordclk) begin
+        if (wc_rst) begin
+            fper_cnt <= 32'd0; fper_lat <= 32'd0; fper_n <= 4'd0;
+            fper_run <= 1'b0;  fper_dn  <= 1'b0;
+        end else begin
+            if (fper_run) fper_cnt <= fper_cnt + 32'd1;
+            if (frame_start) begin
+                if (!fper_run && !fper_dn) begin
+                    fper_run <= 1'b1; fper_cnt <= 32'd0; fper_n <= 4'd0;
+                end else if (fper_run) begin
+                    if (fper_n == 4'd7) begin
+                        fper_lat <= fper_cnt;      // 8 periods elapsed
+                        fper_run <= 1'b0;
+                        fper_dn  <= 1'b1;
+                    end else fper_n <= fper_n + 4'd1;
+                end
+            end
+        end
     end
 
     wire cfifo_full, cfifo_empty, cfifo_ovf;
     wire [63:0] cfifo_dout;
     reg  cfifo_rd = 1'b0;
     cam_async_fifo #(.DW(64), .AW(8)) u_cfifo (
-        .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(cap && kvalid),
+        .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(cap_wr),
         .wr_data(kword), .full(cfifo_full), .overflow(cfifo_ovf),
         .rd_clk(ui_clk), .rd_rst(ui_rst), .rd_en(cfifo_rd),
         .rd_data(cfifo_dout), .empty(cfifo_empty)
@@ -327,7 +405,9 @@ module cam_frame_ft #(
         .rd_data(ufifo_dout), .empty(ufifo_empty)
     );
 
-    reg [16:0] widx = 17'd0;
+    reg [19:0] widx  = 20'd0;             // 0..NTOT-1, the whole burst
+    reg [16:0] fwidx = 17'd0;             // 0..NWORDS-1 within one frame
+    reg [3:0]  fidx  = 4'd0;              // which captured frame is streaming
     reg [127:0] rword = 128'd0;
     reg [2:0]  pw = 3'd0;                 // which 32-bit slice of rword
     reg [2:0]  hw = 3'd0;                 // header word index
@@ -338,13 +418,14 @@ module cam_frame_ft #(
         ufifo_wr <= 1'b0;
 
         if (ui_rst) begin
-            st <= W_WAIT; widx <= 17'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+            st <= W_WAIT; widx <= 20'd0; fwidx <= 17'd0; fidx <= 4'd0;
+            r_addr <= 28'd0; r_cmd <= 3'd0;
             cmd_done <= 1'b0; dat_done <= 1'b0; pw <= 3'd0; hw <= 3'd0;
             frame_idx <= 32'd0;
         end else begin
             case (st)
             W_WAIT: if (init_calib_complete) begin
-                        st <= W_LO; widx <= 17'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+                        st <= W_LO; widx <= 20'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
                     end
             W_LO: if (!cfifo_empty) begin
                       r_wdata[63:0] <= cfifo_dout; cfifo_rd <= 1'b1; st <= W_HI;
@@ -359,27 +440,32 @@ module cam_frame_ft #(
                 if ((cmd_done || (app_en && app_rdy)) &&
                     (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    if (widx == NWORDS[16:0] - 17'd1) st <= W_DONE;
+                    if (widx == NTOT[19:0] - 20'd1) st <= W_DONE;
                     else begin
-                        widx <= widx + 17'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
+                        widx <= widx + 20'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
                     end
                 end
             end
             W_DONE: begin
-                widx <= 17'd0; r_addr <= 28'd0; r_cmd <= 3'd1;
+                widx <= 20'd0; fwidx <= 17'd0; fidx <= 4'd0;
+                r_addr <= 28'd0; r_cmd <= 3'd1;
                 hw <= 3'd0; st <= P_HDR;
             end
 
-            // 8-word header, then the frame, then straight into the next header:
-            // the FT601 pulls continuously and the DDR contents never change, so
-            // the host sees a steady stream of identical frames at link rate.
+            // 8-word header, then the frame, then straight into the next header.
+            // The FT601 pulls continuously and the captured burst never changes,
+            // so the host sees frames 0..NFRAMES-1 repeating forever at link rate.
+            // Word 3 carries the SLOT (0..NFRAMES-1) so the host knows which
+            // captured frame it holds; frame_idx keeps counting across wraps, and
+            // slot == frame_idx mod NFRAMES. Two frames sharing a slot must be
+            // byte-identical -- that is the bus integrity check.
             P_HDR: if (!ufifo_afull) begin
                 ufifo_wr <= 1'b1;
                 case (hw)
                 3'd0: ufifo_din <= MAGIC;
                 3'd1: ufifo_din <= frame_idx;
                 3'd2: ufifo_din <= {NROW[15:0], NCOL[15:0]};
-                3'd3: ufifo_din <= 32'd0;
+                3'd3: ufifo_din <= {28'd0, fidx};   // slot within the burst
                 3'd4: ufifo_din <= NBYTES;
                 3'd5: ufifo_din <= NBYTES/4;
                 3'd6: ufifo_din <= 32'd1;              // format: 8-bit mono
@@ -397,12 +483,21 @@ module cam_frame_ft #(
                 ufifo_wr  <= 1'b1;
                 ufifo_din <= rword[pw*32 +: 32];
                 if (pw == 3'd3) begin
-                    if (widx == NWORDS[16:0] - 17'd1) begin
-                        widx <= 17'd0; r_addr <= 28'd0;
+                    if (fwidx == NWORDS[16:0] - 17'd1) begin
+                        // end of one frame -> emit the next frame's header
+                        fwidx     <= 17'd0;
                         frame_idx <= frame_idx + 32'd1;
-                        hw <= 3'd0; st <= P_HDR;
+                        hw        <= 3'd0;
+                        st        <= P_HDR;
+                        if (fidx == NFRAMES[3:0] - 4'd1) begin
+                            fidx <= 4'd0; r_addr <= 28'd0;   // wrap to frame 0
+                        end else begin
+                            fidx <= fidx + 4'd1; r_addr <= r_addr + ASTEP;
+                        end
                     end else begin
-                        widx <= widx + 17'd1; r_addr <= r_addr + ASTEP; st <= P_CMD;
+                        fwidx  <= fwidx + 17'd1;
+                        r_addr <= r_addr + ASTEP;
+                        st     <= P_CMD;
                     end
                 end else pw <= pw + 3'd1;
             end
@@ -416,29 +511,57 @@ module cam_frame_ft #(
     always @(posedge ft_clk) ftrst_s <= {ftrst_s[0], ~rst_n};
     wire ft_rst = ftrst_s[1];
 
-    // FWFT OUTPUT STAGE, and it is a timing fix, not tidiness.
+    // TWO-DEEP SKID, and it is a timing fix, not tidiness.
     //
-    // Feeding ft601_sync_tx s_valid = !ufifo_empty put an 11-bit gray-code
-    // comparison directly into the WR# decision, and WR# also depends on ft_txe
-    // -- which the FT601 may present up to 7.0 ns after the clock edge, leaving
-    // 3.0 ns for everything downstream. That path failed at -0.148 ns:
-    //     ft_txe -> u_ft/wr_n_pad_reg_rep/D
-    // sli_frame_gen never had it because its valid was a register, not a FIFO
-    // status bit. Negative slack on THIS bus is precisely the condition that
-    // silently corrupted ft_data[31:16] before, so it is not shippable.
+    // Feeding ft601_sync_tx directly from the FIFO status put an 11-bit gray-code
+    // comparison in the same logic cone as ft_txe, which the FT601 may present up
+    // to 7.0 ns after the clock edge -- under 3 ns for everything downstream. Two
+    // successive versions failed there:
+    //     ft_txe -> u_ft/wr_n_pad_reg_rep/D   at -0.148
+    //     ft_txe -> hold_word_reg[4]/CE       at -0.080
+    // The second was a one-deep holding register whose pop term was
+    // !empty && (!valid || adv) -- `empty` and `ft_txe` combined, so the late
+    // signal had to wait behind the wide comparison.
     //
-    // One register stage makes s_word/s_valid flop outputs. FWFT semantics are
-    // preserved: pop whenever the holding register is empty or is being consumed
-    // this cycle.
-    reg [31:0] hold_word = 32'd0;
-    reg        hold_valid = 1'b0;
-    wire       ft_adv;
-    wire       pop = !ufifo_empty && (!hold_valid || ft_adv);
+    // With two entries the pop decision depends only on OCCUPANCY:
+    //
+    //     pop = !empty && (cnt != 2)
+    //
+    // and `empty` is out of the ft_txe cone completely. ft_txe now reaches only
+    // cnt/b0/b1 enables, through a single level. Throughput is unchanged: with the
+    // FT601 taking a word every cycle, cnt settles at 1 and pop fires every cycle
+    // (cnt=2 -> consume -> cnt=1 -> pop+consume -> cnt=1 ...).
+    //
+    // b0 is the head presented to the FT601. Losing a word here is not a blemish;
+    // it shifts every pixel after it, so the skid is written as an explicit
+    // push/pop case split rather than trusting a shift register.
+    reg [31:0] b0 = 32'd0, b1 = 32'd0;
+    reg [1:0]  cnt = 2'd0;                 // 0, 1 or 2 words held
+    wire       ft_adv;                     // the FT601 took the head this cycle
+    wire       pop = !ufifo_empty && (cnt != 2'd2);
     assign ufifo_rd = pop;
+
     always @(posedge ft_clk) begin
-        if (ft_rst) hold_valid <= 1'b0;
-        else if (pop) begin hold_word <= ufifo_dout; hold_valid <= 1'b1; end
-        else if (ft_adv) hold_valid <= 1'b0;
+        if (ft_rst) begin
+            cnt <= 2'd0;
+        end else begin
+            case ({pop, ft_adv})
+            2'b10: begin                                   // push only
+                if (cnt == 2'd0) b0 <= ufifo_dout;
+                else             b1 <= ufifo_dout;
+                cnt <= cnt + 2'd1;
+            end
+            2'b01: begin                                   // the head was taken
+                b0  <= b1;
+                cnt <= cnt - 2'd1;
+            end
+            2'b11: begin                                   // taken and refilled
+                if (cnt == 2'd1) b0 <= ufifo_dout;         // head out, new head in
+                else begin b0 <= b1; b1 <= ufifo_dout; end
+            end
+            default: ;
+            endcase
+        end
     end
 
     wire [31:0] ft_dout;
@@ -448,7 +571,7 @@ module cam_frame_ft #(
         .clk(ft_clk), .rst(ft_rst),
         .ft_txe(ft_txe), .ft_wr(ft_wr), .ft_oe(ft_oe), .ft_rd(ft_rd),
         .ft_dout(ft_dout), .ft_beout(ft_beout), .bus_oe(bus_oe),
-        .s_word(hold_word), .s_valid(hold_valid), .s_adv(ft_adv)
+        .s_word(b0), .s_valid(cnt != 2'd0), .s_adv(ft_adv)
     );
     assign ft_data = bus_oe ? ft_dout  : 32'bz;
     assign ft_be   = bus_oe ? ft_beout : 4'bz;
@@ -479,39 +602,42 @@ module cam_frame_ft #(
     end
     reg [7:0] ftw_s1=0, ftw_s2=0, ftc_s1=0, ftc_s2=0;
     reg [1:0] txe_s = 2'b00;
+    reg [31:0] fper_s1 = 32'd0, fper_s2 = 32'd0;
     always @(posedge ui_clk) begin
         ftw_s1 <= ftw[23:16]; ftw_s2 <= ftw_s1;
         ftc_s1 <= ftc[23:16]; ftc_s2 <= ftc_s1;
         txe_s  <= {txe_s[0], ft_txe};
+        fper_s1 <= fper_lat; fper_s2 <= fper_s1;   // static once written
     end
 
-    wire [47:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
+    wire [79:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
                          covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
-                         frame_idx[3:0], widx[15:0], ftw_s2, ftc_s2 };
+                         frame_idx[3:0], widx[15:0], ftw_s2, ftc_s2,
+                         fper_s2 };
 
-    reg [47:0] shold = 48'd0;
-    reg [3:0]  nib   = 4'd0;
+    reg [79:0] shold = 80'd0;
+    reg [4:0]  nib   = 5'd0;
     reg [23:0] utick = 24'd0;
     reg [7:0]  ubyte = 8'd0;
     reg        usend = 1'b0;
     reg [1:0]  ust   = 2'd0;
     wire       ubusy;
-    wire [3:0] n = shold[47 - nib*4 -: 4];
+    wire [3:0] n = shold[79 - nib*4 -: 4];
 
     always @(posedge ui_clk) begin
         usend <= 1'b0;
-        if (ui_rst) begin ust <= 2'd0; utick <= 24'd0; nib <= 4'd0; end
+        if (ui_rst) begin ust <= 2'd0; utick <= 24'd0; nib <= 5'd0; end
         else case (ust)
         2'd0: begin
             utick <= utick + 24'd1;
             if (utick == 24'd10_000_000) begin           // ~10 Hz
-                utick <= 24'd0; shold <= stat; nib <= 4'd0; ust <= 2'd1;
+                utick <= 24'd0; shold <= stat; nib <= 5'd0; ust <= 2'd1;
             end
         end
         2'd1: if (!ubusy && !usend) begin
             ubyte <= (n < 4'd10) ? (8'd48 + {4'd0,n}) : (8'd55 + {4'd0,n});
             usend <= 1'b1;
-            if (nib == 4'd11) ust <= 2'd2; else nib <= nib + 4'd1;
+            if (nib == 5'd19) ust <= 2'd2; else nib <= nib + 5'd1;
         end
         2'd2: if (!ubusy && !usend) begin ubyte <= 8'h0D; usend <= 1'b1; ust <= 2'd3; end
         2'd3: if (!ubusy && !usend) begin ubyte <= 8'h0A; usend <= 1'b1; ust <= 2'd0; end
