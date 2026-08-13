@@ -4,6 +4,8 @@
 |---|---|---|
 | `gen_sensor_step.py` | `../3dmodels/NOIP1SN1300A_LCC48.step` | the PYTHON 1300 package — the reference body everything else is designed around |
 | `gen_socket_tile.py` | `../3dmodels/camera_socket_tile.step` | iteration 0 of the bracket: the contact tile |
+| `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens |
+| `gen_lens_holder.py` | `../3dmodels/camera_lens_holder.step` | M12 / S-mount alternative: plate on four posts with a threaded barrel |
 | `step_writer.py` | — | shared AP214 writer and 2D helpers |
 | `check_step.py` | — | validates any of the above |
 
@@ -14,11 +16,60 @@ that differs is a real change.
 python gen_sensor_step.py                    # typical dimensions
 python gen_sensor_step.py --tolerance max    # worst-case envelope
 python gen_socket_tile.py
+python gen_lens_box.py --bosses              # the C-mount box, located on the corner holes
+python gen_lens_holder.py                    # the M12 alternative
 python check_step.py
 ```
 
 The first section below covers the sensor; [the socket tile](#the-socket-tile-iteration-0)
-is further down.
+and [the lens mounts](#the-lens-mounts) are further down.
+
+## The lens mounts
+
+Both read `../LauPythonCamera_Pt_Stack.kicad_pcb` on **every run** for the board outline,
+the four Ø2.2 corner holes, U1's position and rotation, and every component courtyard.
+Neither hard-codes board geometry, and both **fail the build** rather than warn when a
+wall, post or boss would land on a part. A holder that fouls a 0402 is something you
+discover with a scalpel.
+
+The optical axis is **not** the package centre. `OPTICAL_CENTER = (-0.17924, +1.36714)`
+(Table 32) puts it at KiCad **(135.821, 80.633)** with U1 at (136, 82) unrotated. Skipping
+that offset decentres the image and looks perfectly plausible while doing so.
+
+### `gen_lens_box.py` — C-mount (preferred)
+
+An open-bottomed box. The lens is not threaded into anything: its flange shoulder rests on
+the top face and gravity holds it, board flat on a table. The bore is a **clearance** hole,
+25.4 + 0.8 mm, so the barrel hangs through without touching.
+
+**The top face is the optical datum.** C-mount flange focal distance is 17.526 mm from the
+shoulder to the image plane, so `top surface = image plane + 17.526` = **19.786 mm** above
+the PCB at the default seat height. That one surface sets focus; everything else is
+clearance. Machine or print it flat and do not sand it.
+
+**It stands on the table, not the board.** The first version put walls on the board edge
+and the clearance assertion rejected it: C31, an 0805, has its courtyard 1.8 mm in from the
+left edge, leaving nowhere for a wall worth printing. Straddling the PCB removes the
+constraint entirely — the 56.5 × 46.5 cavity swallows the 55 × 45 board with 0.75 mm all
+round, and the box touches nothing.
+
+`--bosses` adds four Ø5 columns that **hang from the top face** down to the board, each with
+a Ø2.0 pin entering the board's own Ø2.2 hole 1 mm (a slip fit — this part is meant to lift
+off). Ø5 rather than Ø6 because the holes sit 2.5 mm in from the edge and anything larger
+overhangs; the script asserts that too.
+
+### `gen_lens_holder.py` — M12 / S-mount
+
+Kept as the alternative. A plate on four corner posts with a tapped barrel; bore 11.5 mm is
+the tap drill for M12 × 0.5. Note the PYTHON 1300's image circle is 7.87 mm diagonal — a
+**1/2″ format** — and many M12 lenses are only corrected for 1/3″ and will vignette.
+
+### The number that is not published
+
+`--seat-z`, the sensor's seating plane above the PCB, defaults to 1.0 mm. It is not in any
+datasheet — `gen_socket_tile.py` says so outright — and it shifts the top face, and
+therefore **focus**, 1:1. Measure the glass height with calipers before committing to a
+machined part. A C-mount lens at f/1.4 has very little depth of focus.
 
 Every dimension comes from `docs/datasheets/NOIP1SN1300A.pdf` — **Table 31** (Mechanical
 Specification), **Figure 50** (Package Drawing), **Table 32 / Figures 51–52** (Optical
