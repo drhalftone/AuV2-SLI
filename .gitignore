@@ -70,3 +70,7 @@ build_pt/
 
 /LauPythonCamera_Pt_Stack/*.step
 /LauPythonCamera_Pt_Stack/production/*.step
+
+# MIG-generated output -- regenerate with LauPythonCamera_Pt_Stack/ddr/gen_mig.tcl
+/LauPythonCamera_Pt_Stack/ddr/ip/
+/LauPythonCamera_Pt_Stack/ddr/build/
