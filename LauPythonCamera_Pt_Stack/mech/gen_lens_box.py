@@ -48,6 +48,24 @@ C_SHOULDER_OD  = 32.0        # typical flange shoulder; the seat must exceed thi
 COLORS = {"box": (0.32, 0.34, 0.38), "boss": (0.28, 0.30, 0.33)}
 
 
+def circle_phase(cx, cy, r, n, phase):
+    """A circle whose first vertex is rotated by `phase`.
+
+    step_writer.bridge_holes threads each hole into the outer loop by casting a
+    +x ray from the hole's RIGHTMOST VERTEX. With sw.circle that vertex sits
+    exactly at the centre's y, so the two left screw pockets cast rays at exactly
+    the same height as the two right ones -- straight through a pocket that has
+    already been merged. The keyhole then bridges to a vertex it cannot see and
+    the cap ear-clips into a non-watertight mess (the STL check catches it).
+
+    A per-hole phase moves each rightmost vertex a hair off centre-y, so no two
+    rays share a height. The circle is geometrically identical; only which vertex
+    is 'first' changes.
+    """
+    return [(cx + r * math.cos(2.0 * math.pi * i / n + phase),
+             cy + r * math.sin(2.0 * math.pi * i / n + phase)) for i in range(n)]
+
+
 def build(args):
     edge, pcb_holes, comps, u1 = read_pcb()
     xs = [v for e in edge for v in (e[0], e[2])]
@@ -132,11 +150,17 @@ def build(args):
                 if math.hypot(dx, dy) < br + args.wall_clear:
                     sys.exit("BOSS FOULS %s at model (%.2f, %.2f): gap %.2f mm"
                              % (c["ref"], mx, my, math.hypot(dx, dy) - br))
-        # and it must sit ON the board, not half over the edge
-        over = br - min(abs(mh[0][0] - x0), abs(mh[0][1] - y1))
-        if over > 0:
-            sys.exit("BOSS OVERHANGS the board edge by %.2f mm; reduce --boss-dia "
-                     "below %.2f" % (over, 2 * min(abs(mh[0][0] - x0), abs(mh[0][1] - y1))))
+        # The foot MAY overhang the board edge -- the holes are only 2.5 mm in, and
+        # a foot small enough to stay entirely on the board (Ø5) cannot also
+        # enclose an M2 head (Ø3.8 + clearance). The overhanging sliver is carried
+        # by the top face and the wall, not by the board, so it is structural, not
+        # cantilevered off nothing. What is NOT negotiable is a real wall between
+        # the head pocket and the outside of the foot:
+        if args.boss_dia - args.head_dia < 2 * args.min_web:
+            sys.exit("FOOT WALL TOO THIN: --boss-dia %.2f minus --head-dia %.2f "
+                     "leaves %.2f mm of web, need %.2f"
+                     % (args.boss_dia, args.head_dia,
+                        (args.boss_dia - args.head_dia) / 2.0, args.min_web))
 
     # 4. the seat must be wide enough to carry the flange shoulder
     # measured on the BOX, not the board: the optical axis is 8.3 mm off the
@@ -164,9 +188,15 @@ def build(args):
 
     # the top face, with the lens clearance bore
     n = "top"
-    bore = sw.reverse(sw.circle(ox, oy, bore_r, args.segments))
-    step.prism(outer, top_under, top_surf, n, COLORS["box"], holes=[bore])
-    expected[n] = (abs(sw.signed_area(outer)) - abs(sw.signed_area(bore))) * args.top_t
+    tholes = [sw.reverse(sw.circle(ox, oy, bore_r, args.segments))]
+    if args.bosses:
+        # driver access straight down onto each screw head
+        tholes += [sw.reverse(circle_phase(px, py, args.head_dia / 2.0, args.segments,
+                                          (k + 1) * 2.0 * math.pi / args.segments / 5.0))
+                   for k, (px, py, _) in enumerate(mh)]
+    step.prism(outer, top_under, top_surf, n, COLORS["box"], holes=tholes)
+    expected[n] = (abs(sw.signed_area(outer))
+                   - sum(abs(sw.signed_area(h)) for h in tholes)) * args.top_t
 
     # Optional locating bosses on the PCB's own corner holes.
     #
@@ -179,17 +209,31 @@ def build(args):
     # the box laterally. The pin is a slip fit, not a press fit: this part is
     # meant to lift off.
     if args.bosses:
-        pin_r = (2 * mh[0][2] - args.pin_slip) / 2.0
+        foot_r = args.boss_dia / 2.0
+        shank_r = args.screw_dia / 2.0
+        head_r = args.head_dia / 2.0
         for i, (px, py, _) in enumerate(mh):
-            nm = "boss%d" % (i + 1)
-            ring = sw.circle(px, py, args.boss_dia / 2.0, args.segments)
-            step.prism(ring, 0.0, top_under, nm, COLORS["boss"])
-            expected[nm] = abs(sw.signed_area(ring)) * top_under
+            # 1. the WASHER: a flat annulus bearing on the PCB around the hole.
+            #    Bore is M2 shank clearance, so the screw passes through into the
+            #    board's own hole and its head lands on this ring's top face.
+            nm = "washer%d" % (i + 1)
+            ring = sw.circle(px, py, foot_r, args.segments)
+            bore = sw.reverse(sw.circle(px, py, shank_r, args.segments))
+            step.prism(ring, 0.0, args.washer_t, nm, COLORS["boss"], holes=[bore])
+            expected[nm] = ((abs(sw.signed_area(ring)) - abs(sw.signed_area(bore)))
+                            * args.washer_t)
 
-            nm = "pin%d" % (i + 1)
-            pin = sw.circle(px, py, pin_r, args.segments)
-            step.prism(pin, -args.pin_depth, 0.0, nm, COLORS["boss"])
-            expected[nm] = abs(sw.signed_area(pin)) * args.pin_depth
+            # 2. the COLUMN, arching from the washer up to the top face, bored
+            #    out to head diameter -- this is the box "curving around the
+            #    screw head". The bore runs all the way through the top face so a
+            #    driver reaches the screw from outside without lifting the box.
+            nm = "column%d" % (i + 1)
+            pocket = sw.reverse(circle_phase(px, py, head_r, args.segments,
+                                             (i + 1) * 2.0 * math.pi / args.segments / 5.0))
+            step.prism(ring, args.washer_t, top_under, nm, COLORS["boss"],
+                       holes=[pocket])
+            expected[nm] = ((abs(sw.signed_area(ring)) - abs(sw.signed_area(pocket)))
+                            * (top_under - args.washer_t))
 
     text = step.dumps()
     open(OUT, "w", newline="\n").write(text)
@@ -202,14 +246,15 @@ def build(args):
     w("\nbox        %.1f x %.1f mm outer, %.2f mm walls, cavity %.1f x %.1f, open bottom\n"
       % (out_w, out_h, t, cav_w, cav_h))
     w("stands     on the TABLE at z = %.2f (PCB %.2f thick); board sits inside with "
-      "%.2f mm all round -- the box never touches the PCB\n"
-      % (z_table, args.pcb_t, args.pcb_clear))
+      "%.2f mm all round;\n           the WALLS never touch the PCB%s\n"
+      % (z_table, args.pcb_t, args.pcb_clear,
+         " -- only the four feet below bear on it" if args.bosses else ""))
     if args.bosses:
-        w("bosses     4 x %.1f dia hanging from the top face down to the PCB, each with a "
-          "%.2f pin\n           %.2f mm into the board's own %.2f hole (%.2f slip fit). "
-          "Checked clear of every part.\n"
-          % (args.boss_dia, 2 * mh[0][2] - args.pin_slip, args.pin_depth,
-             2 * mh[0][2], args.pin_slip))
+        w("feet       4 x %.1f dia washer faces bearing on the PCB at its own corner "
+          "holes,\n           %.2f thick, bored %.2f for the M2 shank. The box arches "
+          "over the head\n           in a %.2f pocket that exits through the top face "
+          "for a driver.\n"
+          % (args.boss_dia, args.washer_t, args.screw_dia, args.head_dia))
     w("board      %.1f x %.1f mm inside a %.1f x %.1f cavity\n"
       % (bw, bh, cav_w, cav_h))
     w("optical    axis KiCad (%.3f, %.3f), bore centred there\n"
@@ -248,14 +293,18 @@ def main():
     p.add_argument("--seat-min", type=float, default=4.0,
                    help="minimum annulus of top face outside the bore, mm")
     p.add_argument("--bosses", action="store_true",
-                   help="add locating bosses on the PCB's four corner holes")
-    p.add_argument("--boss-dia", type=float, default=5.0,
-                   help="mm. The holes are 2.5 mm in from the board edge, so "
-                        "anything over 5.0 hangs off the edge.")
-    p.add_argument("--pin-depth", type=float, default=1.00,
-                   help="how far the locating pin enters the PCB hole, mm")
-    p.add_argument("--pin-slip", type=float, default=0.20,
-                   help="pin undersize in the hole, mm (slip fit -- it lifts off)")
+                   help="bolt the box down: a flat washer on the PCB at each of the "
+                        "four corner holes, with the box arching over the screw head")
+    p.add_argument("--boss-dia", type=float, default=7.0,
+                   help="foot / column outside diameter, mm. Above ~7.8 it fouls U7 "
+                        "at the top-left hole, which the script checks.")
+    p.add_argument("--min-web", type=float, default=1.00,
+                   help="minimum wall between the head pocket and the foot OD, mm")
+    p.add_argument("--washer-t", type=float, default=1.20,
+                   help="thickness of the flat washer bearing on the PCB, mm")
+    p.add_argument("--head-dia", type=float, default=4.20,
+                   help="pocket the box arches over the screw head with, mm "
+                        "(M2 socket head is 3.8, pan head 4.0)")
     p.add_argument("--screw-dia", type=float, default=2.40)
     p.add_argument("--corner-r", type=float, default=2.0)
     p.add_argument("--segments", type=int, default=64)
