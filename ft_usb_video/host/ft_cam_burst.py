@@ -51,6 +51,14 @@ try:
     d.setPipeTimeout(PIPE, 1000)
 except Exception:
     pass
+CH = 1 << 20
+STREAM = "--nostream" not in sys.argv
+if STREAM:
+    try:
+        d.setStreamPipe(PIPE, CH)
+    except Exception:
+        STREAM = False
+print("stream pipe:", STREAM)
 
 
 def rd(size):
@@ -65,17 +73,29 @@ def rd(size):
     return buf.raw[:n]
 
 
-need = (2 * NFRAMES + 3) * (FBYTES + HDR)
+# Read enough for TWO full scans at the largest supported length. The
+# byte-exactness check needs the same slot to come round twice, and with a
+# 24-frame scan a 50 MB read never repeats a slot -- the check silently had
+# nothing to compare and reported CHECK rather than a verdict.
+MAXSCAN = 24
+need = (2 * MAXSCAN + 2) * (FBYTES + HDR)
 data = bytearray()
 t0 = time.time()
 while len(data) < need and time.time() - t0 < 40.0:
-    c = rd(1 << 20)
+    c = rd(CH)
     if c:
         data += c
 el = time.time() - t0
+try:
+    if STREAM:
+        d.clearStreamPipe(PIPE)
+except Exception:
+    pass
 d.close()
 print("read %.1f MB in %.2f s (%.1f MB/s)" % (len(data) / 1e6, el, len(data) / el / 1e6))
 
+KEEP_SLOTS = {0, 1, 2, 3}
+kept = {}
 frames, offs = [], []
 i = 0
 while True:
@@ -95,7 +115,17 @@ for o in offs:
     nf_hdr = (h[3] >> 8) & 0x3F
     if nf_hdr:
         NFRAMES = nf_hdr
-    frames.append((h[3] & 0x3F, h[1], bytes(data[o + HDR: o + HDR + FBYTES])))
+    slot = h[3] & 0x3F
+    # Keep pixels only for the first few slots, and at most twice each. Holding
+    # two full 24-frame scans is ~260 MB of Python bytes objects and the process
+    # dies with no message at all. Two copies of a handful of slots is all the
+    # byte-comparison needs, and every slot is still counted for the sequencing
+    # and spacing checks.
+    keep = (slot in KEEP_SLOTS) and (kept.get(slot, 0) < 2)
+    px = bytes(data[o + HDR: o + HDR + FBYTES]) if keep else b""
+    if keep:
+        kept[slot] = kept.get(slot, 0) + 1
+    frames.append((slot, h[1], px))
 
 gaps = sorted({offs[k + 1] - offs[k] for k in range(len(offs) - 1)})
 print("complete frames: %d   header spacing (expect %d): %s"
@@ -110,7 +140,9 @@ if not frames:
 # ---- 1. bus integrity: same slot, different pass
 by_slot = collections.defaultdict(list)
 for s, ix, px in frames:
-    by_slot[s].append((ix, px))
+    if px:
+        by_slot[s].append((ix, px))
+del data
 repeats = corrupt = 0
 for s in sorted(by_slot):
     seq = by_slot[s]

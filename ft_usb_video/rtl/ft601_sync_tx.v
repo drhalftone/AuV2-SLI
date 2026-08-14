@@ -145,6 +145,20 @@ module ft601_sync_tx (
     // The output register is free when its word was taken (or never held one).
     wire load = ~valid_q | ~ft_txe_g;
 
+    // REPLICATED PER BYTE LANE. `load` gates all 32 dout_q clock enables, and
+    // TXE# arrives 7.0 ns after the edge -- the FT601Q datasheet figure, so the
+    // budget is a fixed ~3 ns and cannot be argued down. One driver reaching 32
+    // enables missed it by 0.142 ns; phys_opt_design recovered part of that
+    // automatically (-0.142 -> -0.082), and this does the rest explicitly.
+    //
+    // KEEP stops the tool merging the copies back into one net, which would
+    // silently undo it -- the same failure mode the WR# replica and the
+    // tri-state enables each needed guarding against.
+    (* KEEP = "TRUE" *) wire load_b0 = ~valid_q | ~ft_txe_g;
+    (* KEEP = "TRUE" *) wire load_b1 = ~valid_q | ~ft_txe_g;
+    (* KEEP = "TRUE" *) wire load_b2 = ~valid_q | ~ft_txe_g;
+    (* KEEP = "TRUE" *) wire load_b3 = ~valid_q | ~ft_txe_g;
+
     // WR# low whenever a valid word will be presented during the next cycle.
     // When the word was NOT taken (valid_q & ft_txe) it is re-presented, so
     // next_valid stays 1 -- that hold is the skid buffer.
@@ -159,7 +173,10 @@ module ft601_sync_tx (
             valid_q  <= 1'b0;
             wr_n_pad <= 1'b1;
         end else begin
-            if (load) dout_q <= s_word;
+            if (load_b0) dout_q[7:0]   <= s_word[7:0];
+            if (load_b1) dout_q[15:8]  <= s_word[15:8];
+            if (load_b2) dout_q[23:16] <= s_word[23:16];
+            if (load_b3) dout_q[31:24] <= s_word[31:24];
             valid_q  <= next_valid;
             // valid_q still tracks the held word; only the PAD is forced idle,
             // and it is forced from inside this same IOB flop.

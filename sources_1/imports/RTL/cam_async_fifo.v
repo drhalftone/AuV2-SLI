@@ -23,7 +23,12 @@
 //=============================================================================
 module cam_async_fifo #(
     parameter integer DW = 64,
-    parameter integer AW = 8                  // depth = 2^AW
+    parameter integer AW = 8,                 // depth = 2^AW
+    // Slots kept free when `afull` asserts. 2 covers a writer whose wr_en is
+    // registered. A writer that issues DDR reads speculatively needs enough for
+    // every read still in flight, since that data MUST be accepted when it
+    // returns -- the MIG presents it once and it is gone.
+    parameter integer AFULL_MARGIN = 2
 )(
     input  wire          wr_clk,
     input  wire          wr_rst,
@@ -81,7 +86,7 @@ module cam_async_fifo #(
     endfunction
     wire [AW:0] rbin_wr    = gray2bin(rgray_s2);
     wire [AW:0] occupancy  = wbin - rbin_wr;
-    assign afull = (occupancy >= (DEPTH - 2));
+    assign afull = (occupancy >= (DEPTH - AFULL_MARGIN));
 
     always @(posedge wr_clk) begin
         if (wr_rst) begin

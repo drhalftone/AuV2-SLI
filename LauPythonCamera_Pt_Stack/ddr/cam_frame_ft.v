@@ -604,13 +604,18 @@ module cam_frame_ft #(
     reg         cmd_done = 1'b0, dat_done = 1'b0;
 
     localparam [3:0] W_WAIT=0, W_LO=1, W_HI=2, W_ISSUE=3, W_DONE=4,
-                     P_HDR=5, P_CMD=6, P_WAIT=7, P_PUSH=8;
+                     P_HDR=5, P_RUN=6;
     reg [3:0] st = W_WAIT;
 
-    wire issuing = (st == W_ISSUE) || (st == P_CMD);
+    // Playback issues reads speculatively; the write phase is unchanged.
+    reg  [17:0] rd_iss = 18'd0, rd_got = 18'd0;
+    reg  [4:0]  outst  = 5'd0;
+    wire issue_rd = (st == P_RUN) && (rd_iss != NWORDS[17:0])
+                    && (outst < MAXOUT[4:0]) && !ufifo_afull;
+    wire issuing = (st == W_ISSUE) || issue_rd;
     assign app_addr     = r_addr;
     assign app_cmd      = r_cmd;
-    assign app_en       = issuing && !cmd_done;
+    assign app_en       = (st == W_ISSUE) ? !cmd_done : issue_rd;
     assign app_wdf_data = r_wdata;
     assign app_wdf_wren = (st == W_ISSUE) && !dat_done;
     assign app_wdf_end  = (st == W_ISSUE) && !dat_done;
@@ -640,13 +645,29 @@ module cam_frame_ft #(
     wire mig_rst = !mrstn_s[1] || !mmcm_locked;
 
     //--------------------- ui_clk -> ft_clk: the USB side of the crossing
-    wire ufifo_full, ufifo_afull, ufifo_empty, ufifo_ovf;
-    wire [31:0] ufifo_dout;
-    reg  [31:0] ufifo_din = 32'd0;
-    reg         ufifo_wr = 1'b0;
-    wire        ufifo_rd;
+    // 128 BITS WIDE, and that is the throughput fix.
+    //
+    // Playback used to read ONE DDR word, WAIT for it, then push it as 4 x 32
+    // bits before issuing the next: a full DDR3 read round trip per 16 bytes.
+    // At ~30 ui_clk of read latency that is ~53 MB/s, which is exactly the 51
+    // MB/s measured -- while the same FT601 does 348 MB/s when fed directly.
+    //
+    // Now a returning 128-bit word is written in ONE cycle and the ft_clk side
+    // unpacks it into 4 words, so reads can be issued many-deep and the latency
+    // is amortised instead of paid per word.
+    //
+    // MAXOUT reads may be in flight. Their data MUST be accepted the cycle the
+    // MIG presents it -- there is no back-pressure on app_rd_data_valid -- so
+    // AFULL_MARGIN must exceed MAXOUT, and issuing stops on afull.
+    localparam integer MAXOUT = 16;
 
-    cam_async_fifo #(.DW(32), .AW(10)) u_ufifo (
+    wire ufifo_full, ufifo_afull, ufifo_empty, ufifo_ovf;
+    wire [127:0] ufifo_dout;
+    reg  [127:0] ufifo_din = 128'd0;
+    reg          ufifo_wr = 1'b0;
+    wire         ufifo_rd;
+
+    cam_async_fifo #(.DW(128), .AW(8), .AFULL_MARGIN(MAXOUT + 8)) u_ufifo (
         .wr_clk(ui_clk), .wr_rst(ui_rst), .wr_en(ufifo_wr),
         .wr_data(ufifo_din), .full(ufifo_full), .afull(ufifo_afull),
         .overflow(ufifo_ovf),
@@ -657,13 +678,19 @@ module cam_frame_ft #(
     reg [17:0] fwidx = 18'd0;             // 0..NWORDS-1 within one frame
     reg [5:0]  fidx  = 6'd0;              // frame index, write phase and playback
     reg [5:0]  nf_run = 6'd0;             // frames in the burst actually captured
-    reg [127:0] rword = 128'd0;
-    reg [2:0]  pw = 3'd0;                 // which 32-bit slice of rword
     reg [2:0]  hw = 3'd0;                 // header word index
     reg [31:0] frame_idx = 32'd0;
 
     always @(posedge ui_clk) begin
         ufifo_wr <= 1'b0;
+
+        // app_rd_data_valid is not back-pressurable: take it the cycle it is
+        // presented or lose it. Guarded by AFULL_MARGIN > MAXOUT above.
+        if (!ui_rst && (st == P_RUN) && app_rd_data_valid) begin
+            ufifo_wr  <= 1'b1;
+            ufifo_din <= app_rd_data;
+            rd_got    <= rd_got + 18'd1;
+        end
 
         if (rearm_u && !ui_rst) begin
             // restart the write phase; the playback pointers are re-initialised
@@ -674,9 +701,18 @@ module cam_frame_ft #(
         end else if (ui_rst) begin
             st <= W_WAIT; fwidx <= 18'd0; fidx <= 6'd0; nf_run <= 6'd0;
             r_addr <= 28'd0; r_cmd <= 3'd0;
-            cmd_done <= 1'b0; dat_done <= 1'b0; pw <= 3'd0; hw <= 3'd0;
-            frame_idx <= 32'd0;
+            cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
+            frame_idx <= 32'd0; rd_iss <= 18'd0; rd_got <= 18'd0; outst <= 5'd0;
         end else begin
+            // one read accepted by the MIG, one word returned
+            if (issue_rd && app_rdy) begin
+                rd_iss <= rd_iss + 18'd1;
+                r_addr <= r_addr + ASTEP;
+                if (!app_rd_data_valid) outst <= outst + 5'd1;
+            end else if (app_rd_data_valid && (st == P_RUN) && (outst != 5'd0)) begin
+                outst <= outst - 5'd1;
+            end
+
             case (st)
             W_WAIT: if (init_calib_complete) begin
                         st <= W_LO; fwidx <= 18'd0; fidx <= 6'd0;
@@ -722,50 +758,35 @@ module cam_frame_ft #(
             // captured frame it holds; frame_idx keeps counting across wraps, and
             // slot == frame_idx mod NFRAMES. Two frames sharing a slot must be
             // byte-identical -- that is the bus integrity check.
+            // header as 2 x 128-bit entries, little-endian word order
             P_HDR: if (!ufifo_afull) begin
                 ufifo_wr <= 1'b1;
-                case (hw)
-                3'd0: ufifo_din <= MAGIC;
-                3'd1: ufifo_din <= frame_idx;
-                3'd2: ufifo_din <= {NROW[15:0], NCOL[15:0]};
-                // slot, and the burst length it belongs to, so the host can
-                // parse a scan without being told the length out of band
-                3'd3: ufifo_din <= {18'd0, nf_run, 2'd0, fidx};
-                3'd4: ufifo_din <= FBYTES;
-                3'd5: ufifo_din <= FBYTES/4;
-                3'd6: ufifo_din <= 32'd2;              // format 2: 16-bit LE, 10 valid
-                default: ufifo_din <= ~MAGIC;
-                endcase
-                if (hw == 3'd7) begin hw <= 3'd0; st <= P_CMD; end
-                else hw <= hw + 3'd1;
+                if (hw == 3'd0)
+                    ufifo_din <= { {18'd0, nf_run, 2'd0, fidx},
+                                   {NROW[15:0], NCOL[15:0]},
+                                   frame_idx, MAGIC };
+                else
+                    ufifo_din <= { ~MAGIC, 32'd2, FBYTES/4, FBYTES };
+                if (hw == 3'd1) begin
+                    hw <= 3'd0;
+                    rd_iss <= 18'd0; rd_got <= 18'd0;
+                    st <= P_RUN;
+                end else hw <= hw + 3'd1;
             end
 
-            P_CMD:  if (app_en && app_rdy) st <= P_WAIT;
-            P_WAIT: if (app_rd_data_valid) begin
-                        rword <= app_rd_data; pw <= 3'd0; st <= P_PUSH;
-                    end
-            P_PUSH: if (!ufifo_afull) begin
-                ufifo_wr  <= 1'b1;
-                ufifo_din <= rword[pw*32 +: 32];
-                if (pw == 3'd3) begin
-                    if (fwidx == NWORDS[17:0] - 18'd1) begin
-                        // end of one frame -> emit the next frame's header
-                        fwidx     <= 18'd0;
-                        frame_idx <= frame_idx + 32'd1;
-                        hw        <= 3'd0;
-                        st        <= P_HDR;
-                        if (fidx == nf_run - 6'd1) begin
-                            fidx <= 6'd0; r_addr <= 28'd0;   // wrap to frame 0
-                        end else begin
-                            fidx <= fidx + 6'd1; r_addr <= r_addr + ASTEP;
-                        end
-                    end else begin
-                        fwidx  <= fwidx + 18'd1;
-                        r_addr <= r_addr + ASTEP;
-                        st     <= P_CMD;
-                    end
-                end else pw <= pw + 3'd1;
+            // Reads are issued up to MAXOUT deep and their data is accepted the
+            // cycle it returns; the frame ends when rd_got reaches NWORDS.
+            P_RUN: if (rd_got == NWORDS[17:0]) begin
+                frame_idx <= frame_idx + 32'd1;
+                hw <= 3'd0;
+                st <= P_HDR;
+                if (fidx == nf_run - 6'd1) begin
+                    fidx <= 6'd0; r_addr <= 28'd0;      // wrap to frame 0
+                end else begin
+                    fidx <= fidx + 6'd1;
+                end
             end
+
             default: st <= W_WAIT;
             endcase
         end
@@ -803,11 +824,31 @@ module cam_frame_ft #(
     // b0 is the head presented to the FT601. Losing a word here is not a blemish;
     // it shifts every pixel after it, so the skid is written as an explicit
     // push/pop case split rather than trusting a shift register.
+    // Unpack one 128-bit FIFO entry into four 32-bit words. FWFT: u_word is
+    // valid while u_valid, and u_take consumes it.
+    reg [127:0] uw    = 128'd0;
+    reg [1:0]   uidx  = 2'd0;
+    reg         uvalid = 1'b0;
+    wire        u_take;
+    wire        upop = !ufifo_empty && (!uvalid || (u_take && uidx == 2'd3));
+    assign ufifo_rd = upop;
+    always @(posedge ft_clk) begin
+        if (ft_rst) begin
+            uvalid <= 1'b0; uidx <= 2'd0;
+        end else if (upop) begin
+            uw <= ufifo_dout; uidx <= 2'd0; uvalid <= 1'b1;
+        end else if (u_take) begin
+            if (uidx == 2'd3) uvalid <= 1'b0;
+            else uidx <= uidx + 2'd1;
+        end
+    end
+    wire [31:0] u_word = uw[uidx*32 +: 32];
+
     reg [31:0] b0 = 32'd0, b1 = 32'd0;
     reg [1:0]  cnt = 2'd0;                 // 0, 1 or 2 words held
     wire       ft_adv;                     // the FT601 took the head this cycle
-    wire       pop = !ufifo_empty && (cnt != 2'd2);
-    assign ufifo_rd = pop;
+    wire       pop = uvalid && (cnt != 2'd2);
+    assign u_take = pop;
 
     always @(posedge ft_clk) begin
         if (ft_rst) begin
@@ -815,8 +856,8 @@ module cam_frame_ft #(
         end else begin
             case ({pop, ft_adv})
             2'b10: begin                                   // push only
-                if (cnt == 2'd0) b0 <= ufifo_dout;
-                else             b1 <= ufifo_dout;
+                if (cnt == 2'd0) b0 <= u_word;
+                else             b1 <= u_word;
                 cnt <= cnt + 2'd1;
             end
             2'b01: begin                                   // the head was taken
@@ -824,8 +865,8 @@ module cam_frame_ft #(
                 cnt <= cnt - 2'd1;
             end
             2'b11: begin                                   // taken and refilled
-                if (cnt == 2'd1) b0 <= ufifo_dout;         // head out, new head in
-                else begin b0 <= b1; b1 <= ufifo_dout; end
+                if (cnt == 2'd1) b0 <= u_word;             // head out, new head in
+                else begin b0 <= b1; b1 <= u_word; end
             end
             default: ;
             endcase
@@ -875,8 +916,40 @@ module cam_frame_ft #(
         .ft_dout(ft_dout), .ft_beout(ft_beout), .bus_oe(),
         .s_word(b0), .s_valid(cnt != 2'd0), .s_adv(ft_adv)
     );
-    assign ft_data = bus_oe ? ft_dout  : 32'bz;
-    assign ft_be   = bus_oe ? ft_beout : 4'bz;
+    // REPLICATE THE OUTPUT ENABLE, ONE FLOP PER PAD.
+    //
+    // ft601_sync_tx.v warned not to make bus_oe dynamic without re-checking
+    // timing, and this is the bill. As a constant it was not a timing path at
+    // all; as a register it is one signal driving 36 tri-state buffers spread
+    // over two banks, it cannot pack into the IOB T flops, and Vivado times it
+    // against the same set_output_delay as the data. It failed at -2.983 on
+    // every ft_data bit.
+    //
+    // A dedicated flop per pad packs into each IOB's T register, so the enable
+    // leaves from the pad itself. EQUIVALENT_REGISTER_REMOVAL="NO" stops the
+    // tool merging them back into one and silently undoing it -- the same guard
+    // the WR# replica needed.
+    //
+    // Costs one cycle of enable latency, which the 3-cycle turnaround on each
+    // edge of the read window already covers.
+    (* IOB = "TRUE", EQUIVALENT_REGISTER_REMOVAL = "NO" *)
+    reg [31:0] doe = 32'hFFFFFFFF;
+    (* IOB = "TRUE", EQUIVALENT_REGISTER_REMOVAL = "NO" *)
+    reg [3:0]  boe = 4'hF;
+    always @(posedge ft_clk) begin
+        doe <= {32{bus_oe}};
+        boe <= {4{bus_oe}};
+    end
+
+    genvar gi;
+    generate
+        for (gi = 0; gi < 32; gi = gi + 1) begin : g_ftdata
+            assign ft_data[gi] = doe[gi] ? ft_dout[gi] : 1'bz;
+        end
+        for (gi = 0; gi < 4; gi = gi + 1) begin : g_ftbe
+            assign ft_be[gi] = boe[gi] ? ft_beout[gi] : 1'bz;
+        end
+    endgenerate
 
     reg [1:0] cap_s = 2'b00, covf_s = 2'b00, uovf_s = 2'b00;
     always @(posedge ui_clk) begin

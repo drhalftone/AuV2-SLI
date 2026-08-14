@@ -41,8 +41,14 @@ module ft601_sync_rx #(
 
     input  wire        ft_rxf,           // RXF# : low = a word is waiting
     input  wire [31:0] ft_din,           // the shared bus, as an input
-    output reg         ft_oe,            // OE#  : low = FT601 drives DATA
-    output reg         ft_rd,            // RD#  : low = capture this cycle
+    // OE# and RD# ARE sampled by the FT601 -- unlike the tri-state enable, these
+    // are protocol signals with a real setup window, so they get IOB flops
+    // rather than a relaxed constraint. Driven from fabric they missed by
+    // 0.985 ns once the pipelined read logic pushed placement away from the
+    // pads; from an IOB flop clock-to-out is a fixed Tco plus a pad route.
+    // Neither is ever read back in the FSM, so packing costs nothing.
+    (* IOB = "TRUE" *) output reg ft_oe, // OE#  : low = FT601 drives DATA
+    (* IOB = "TRUE" *) output reg ft_rd, // RD#  : low = capture this cycle
 
     output reg         bus_oe,           // 1 = FPGA may drive DATA/BE
     output reg         rx_hold,          // 1 = TX must idle (see above)

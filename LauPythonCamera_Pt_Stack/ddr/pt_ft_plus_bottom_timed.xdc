@@ -175,3 +175,9 @@ set_false_path -to [get_ports {usb_tx}]
 set ft_bidir [get_ports {ft_data[*]}]
 set_input_delay -clock ft_clk_13 -max 7.0 $ft_bidir
 set_input_delay -clock ft_clk_13 -min 1.0 $ft_bidir
+
+# THE TRI-STATE ENABLE IS NOT SAMPLED BY THE FT601, so it is not timed like
+# data. That multicycle constraint lives in build_cam_ft.tcl, applied AFTER
+# synth_design: it references netlist pins (doe_reg[*]/C), which do not exist
+# when this file is read, and a get_pins that matches nothing here fails
+# SILENTLY -- it cost a full build to notice the constraint had never applied.
