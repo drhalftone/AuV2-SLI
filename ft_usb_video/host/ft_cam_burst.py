@@ -34,7 +34,7 @@ NCOL, NROW = 1280, 1024
 NPIX = NCOL * NROW
 FBYTES = NPIX * 2                 # 16 bpp
 HDR = 32
-NFRAMES = 8
+NFRAMES = 8          # default; overridden by header word 3
 OUT = (r"C:\Users\dllau\AppData\Local\Temp\claude"
        r"\C--Users-dllau-Developer-AuV2-SLI"
        r"\38453fd4-3087-4efe-9b4a-ac6c0036de5c\scratchpad")
@@ -92,7 +92,10 @@ for o in offs:
     if h[7] != (~MAGIC & 0xFFFFFFFF) or h[4] != FBYTES:
         continue
     fmt = h[6]
-    frames.append((h[3], h[1], bytes(data[o + HDR: o + HDR + FBYTES])))
+    nf_hdr = (h[3] >> 8) & 0x3F
+    if nf_hdr:
+        NFRAMES = nf_hdr
+    frames.append((h[3] & 0x3F, h[1], bytes(data[o + HDR: o + HDR + FBYTES])))
 
 gaps = sorted({offs[k + 1] - offs[k] for k in range(len(offs) - 1)})
 print("complete frames: %d   header spacing (expect %d): %s"

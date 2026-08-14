@@ -34,7 +34,9 @@ while time.time() - t0 < SECONDS:
         ln = ser.readline().decode(errors="replace").strip()
     except Exception:
         continue
-    if len(ln) != 20:
+    # telemetry grew as fields were added; the benchmark fields kept their
+    # offsets, so accept any line long enough to contain them
+    if len(ln) < 20:
         continue
     try:
         wtot = int(ln[3:10], 16)

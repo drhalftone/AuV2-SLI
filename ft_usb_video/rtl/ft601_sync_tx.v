@@ -70,6 +70,12 @@ module ft601_sync_tx (
 
     // ---- FT601 245-sync-FIFO bus (active-low controls) ----
     input  wire        ft_txe,       // TXE#  : low = room to write
+    // 1 = a READ window is in progress on the shared bus; stand down. The TX
+    // must not drive WR# while the FT601 owns DATA. Rather than mux WR# outside
+    // the IOB -- which would un-pack the launch flop and undo half of the
+    // 2026-07-30 corruption fix -- rx_hold makes TXE# look deasserted, so the
+    // held word is simply re-presented once the window closes. No word is lost.
+    input  wire        rx_hold,
     output wire        ft_wr,        // WR#   : low = write this cycle
     output wire        ft_oe,        // OE#   : held high (TX only)
     output wire        ft_rd,        // RD#   : held high (TX only)
@@ -119,23 +125,30 @@ module ft601_sync_tx (
     // OE#/RD#/BE are static levels -- they never change after reset, so they have
     // no per-cycle edge to violate and need no IOB flop (unlike DATA, which
     // toggles every clock and is exactly what missed setup before this rewrite).
+    // TX-ONLY defaults. A bidirectional top (cam_frame_ft) ignores these and
+    // takes ft_oe/ft_rd/bus_oe from ft601_sync_rx instead; a TX-only top
+    // (ft_video_top) uses them as-is and ties rx_hold low.
     assign ft_oe    = 1'b1;
     assign ft_rd    = 1'b1;
     assign bus_oe   = 1'b1;
     assign ft_beout = 4'hF;                 // all four bytes always valid
 
+    // During a read window the FT601 is not accepting from us, so treat TXE# as
+    // deasserted: nothing is "accepted", the held word stays held.
+    wire ft_txe_g = ft_txe | rx_hold;
+
     // Was the word presented during the cycle now ending actually taken? Both
     // terms are evaluated at this edge -- exactly as the FT601 evaluates them.
     // valid_q is the presented-word flag, identical to ~WR# as driven.
-    wire accepted = valid_q & ~ft_txe;
+    wire accepted = valid_q & ~ft_txe_g;
 
     // The output register is free when its word was taken (or never held one).
-    wire load = ~valid_q | ~ft_txe;
+    wire load = ~valid_q | ~ft_txe_g;
 
     // WR# low whenever a valid word will be presented during the next cycle.
     // When the word was NOT taken (valid_q & ft_txe) it is re-presented, so
     // next_valid stays 1 -- that hold is the skid buffer.
-    wire next_valid = (valid_q & ft_txe) | s_valid;
+    wire next_valid = (valid_q & ft_txe_g) | s_valid;
 
     // Pop the source in the same cycle we latch its word into the output reg.
     assign s_adv = load & s_valid;
@@ -148,7 +161,9 @@ module ft601_sync_tx (
         end else begin
             if (load) dout_q <= s_word;
             valid_q  <= next_valid;
-            wr_n_pad <= ~next_valid;
+            // valid_q still tracks the held word; only the PAD is forced idle,
+            // and it is forced from inside this same IOB flop.
+            wr_n_pad <= ~(next_valid & ~rx_hold);
         end
     end
 

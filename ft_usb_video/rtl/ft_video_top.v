@@ -118,6 +118,7 @@ module ft_video_top #(
         .ft_dout  (ft_dout),
         .ft_beout (ft_beout),
         .bus_oe   (bus_oe),
+        .rx_hold  (1'b0),          // TX-only design: never stand down
         .s_word   (gen_word),
         .s_valid  (gen_valid),
         .s_adv    (gen_adv)

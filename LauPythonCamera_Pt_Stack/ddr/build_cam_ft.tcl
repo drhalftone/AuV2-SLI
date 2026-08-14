@@ -13,7 +13,7 @@ if {![file exists $xci]} { error "MIG not generated -- run gen_mig.tcl first" }
 
 read_verilog [list \
     $here/cam_frame_ft.v \
-    $ftrtl/ft601_sync_tx.v \
+    $ftrtl/ft601_sync_tx.v $ftrtl/ft601_sync_rx.v \
     $hello/cam_boot_stage1.v $hello/cam_lvds_rx_idelay.v $hello/cam_eye_scan.v \
     $rtl/cam_boot_seq.v $rtl/cam_align.v $rtl/cam_sync_decode.v \
     $rtl/cam_async_fifo.v $rtl/cam_spi_master.v $rtl/uart_tx.v \

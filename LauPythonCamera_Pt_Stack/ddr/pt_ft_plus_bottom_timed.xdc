@@ -168,3 +168,10 @@ set_false_path -to [get_ports {ft_reset ft_wakeup}]
 # so it cannot collide with the FT601 bus.
 set_property -dict {PACKAGE_PIN AA21 IOSTANDARD LVCMOS33} [get_ports {usb_tx}]
 set_false_path -to [get_ports {usb_tx}]
+
+# ft_data is now BIDIRECTIONAL -- the control channel reads the FT601 OUT pipe,
+# so the bus needs input delays as well as the output delays above. Same window
+# as TXE#/RXF#: the FT601 drives DATA from its own clock edge.
+set ft_bidir [get_ports {ft_data[*]}]
+set_input_delay -clock ft_clk_13 -max 7.0 $ft_bidir
+set_input_delay -clock ft_clk_13 -min 1.0 $ft_bidir

@@ -259,6 +259,7 @@ module cam_frame_ft #(
         endcase
     end
 
+    reg [23:0] trig_per = TRIG_PER[23:0];   // runtime-settable, opcode 2
     reg [23:0] tcnt  = 24'd0;
     reg        trig0 = 1'b0;
     always @(posedge clk) begin
@@ -267,7 +268,7 @@ module cam_frame_ft #(
             trig0 <= 1'b0;
             tidx  <= 3'd0;
         end else begin
-            if (tcnt == TRIG_PER[23:0] - 24'd1) begin
+            if (tcnt == trig_per - 24'd1) begin
                 tcnt <= 24'd0;
                 tidx <= tidx + 3'd1;
             end else begin
@@ -368,16 +369,58 @@ module cam_frame_ft #(
         default: etab = 16'd12800; //  4.800 ms
         endcase
     end
+    reg [15:0] expo_cur = EXPOSURE;         // what the sensor was last told
+    reg        rearm_tog = 1'b0;
+
+    // FRAMES PER SCAN, runtime-settable (opcode 4). NFRAMES is only the power-on
+    // default now. Bounded at MAXF because the burst has to fit DDR3 and the
+    // address range: 63 frames x 2.62 MB = 165 MB of 256, and r_addr stays inside
+    // 28 bits. A zero would make the write phase never terminate, so 0 is
+    // rejected rather than clamped silently.
+    localparam integer MAXF = 63;
+    reg [5:0] nframes_r = NFRAMES[5:0];
     always @(posedge clk) begin
         expo_req <= 1'b0;
         if (rst) begin
             eidx <= 3'd0;
+            expo_cur <= EXPOSURE;
+            trig_per <= TRIG_PER[23:0];
+            nframes_r <= NFRAMES[5:0];
         end else if ((EXPO_SWEEP != 0) && streaming && fe_pulse) begin
             expo_val <= etab;
             expo_req <= 1'b1;
+            expo_cur <= etab;
             eidx     <= eidx + 3'd1;
+        end else if (cw_pulse) begin
+            case (cw_ft[31:28])
+            4'd1: begin
+                expo_val <= cw_ft[15:0];
+                expo_req <= 1'b1;
+                expo_cur <= cw_ft[15:0];
+            end
+            4'd2: if (cw_ft[23:0] > 24'd1000) trig_per <= cw_ft[23:0];
+            4'd3: rearm_tog <= ~rearm_tog;
+            4'd4: if (cw_ft[5:0] != 6'd0 && cw_ft[5:0] <= MAXF[5:0])
+                      nframes_r <= cw_ft[5:0];
+            default: ;
+            endcase
         end
     end
+
+    // Re-arm crosses into both capture domains. Without it a new exposure changes
+    // nothing the host can see: DDR still holds the burst captured at the old
+    // value, and the capture is one-shot per bitstream load.
+    reg [5:0] nf_w1 = 6'd0, nf_w2 = 6'd0;
+    always @(posedge wordclk) begin nf_w1 <= nframes_r; nf_w2 <= nf_w1; end
+    reg [5:0] nf_u1 = 6'd0, nf_u2 = 6'd0;
+    always @(posedge ui_clk)  begin nf_u1 <= nframes_r; nf_u2 <= nf_u1; end
+
+    reg [2:0] ra_w = 3'b000;
+    always @(posedge wordclk) ra_w <= {ra_w[1:0], rearm_tog};
+    wire rearm_w = ra_w[2] ^ ra_w[1];
+    reg [2:0] ra_u = 3'b000;
+    always @(posedge ui_clk) ra_u <= {ra_u[1:0], rearm_tog};
+    wire rearm_u = ra_u[2] ^ ra_u[1];
 
     wire [9:0]  kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7;
     wire [10:0] kbase;
@@ -431,7 +474,8 @@ module cam_frame_ft #(
     // reload value is 1, not 0. arm_now covers the same case on the very first
     // frame, when cap has not yet been registered high.
     reg [17:0] kcnt = 18'd0;
-    reg [4:0]  fcnt = 5'd0;
+    reg [5:0]  fcnt = 6'd0;
+    reg [5:0]  nf_cap = 6'd0;              // latched at arm; cannot move mid-burst
     reg        cap  = 1'b0, cap_dn = 1'b0;
 
     reg [3:0] skipc = 4'd0;
@@ -445,19 +489,20 @@ module cam_frame_ft #(
     wire cap_wr  = cap_act && kvalid && (kcnt != NKERN[17:0]);
 
     always @(posedge wordclk) begin
-        if (wc_rst) begin
-            cap <= 1'b0; cap_dn <= 1'b0; kcnt <= 18'd0; fcnt <= 5'd0;
+        if (wc_rst || rearm_w) begin
+            cap <= 1'b0; cap_dn <= 1'b0; kcnt <= 18'd0; fcnt <= 6'd0;
         end else if (arm_now) begin
-            cap  <= 1'b1;
-            kcnt <= kvalid ? 18'd1 : 18'd0;
+            cap    <= 1'b1;
+            nf_cap <= nf_w2;
+            kcnt   <= kvalid ? 18'd1 : 18'd0;
         end else if (cap) begin
             if (frame_start)                        kcnt <= kvalid ? 18'd1 : 18'd0;
             else if (kvalid && kcnt != NKERN[17:0]) kcnt <= kcnt + 18'd1;
 
             if (frame_end) begin
-                if (fcnt == NFRAMES[4:0] - 5'd1) begin
+                if (fcnt == nf_cap - 6'd1) begin
                     cap <= 1'b0; cap_dn <= 1'b1;      // burst complete, one shot
-                end else fcnt <= fcnt + 5'd1;
+                end else fcnt <= fcnt + 6'd1;
             end
         end
     end
@@ -609,9 +654,9 @@ module cam_frame_ft #(
         .rd_data(ufifo_dout), .empty(ufifo_empty)
     );
 
-    reg [21:0] widx  = 22'd0;             // 0..NTOT-1, the whole burst
     reg [17:0] fwidx = 18'd0;             // 0..NWORDS-1 within one frame
-    reg [4:0]  fidx  = 5'd0;              // which captured frame is streaming
+    reg [5:0]  fidx  = 6'd0;              // frame index, write phase and playback
+    reg [5:0]  nf_run = 6'd0;             // frames in the burst actually captured
     reg [127:0] rword = 128'd0;
     reg [2:0]  pw = 3'd0;                 // which 32-bit slice of rword
     reg [2:0]  hw = 3'd0;                 // header word index
@@ -620,15 +665,22 @@ module cam_frame_ft #(
     always @(posedge ui_clk) begin
         ufifo_wr <= 1'b0;
 
-        if (ui_rst) begin
-            st <= W_WAIT; widx <= 22'd0; fwidx <= 18'd0; fidx <= 5'd0;
+        if (rearm_u && !ui_rst) begin
+            // restart the write phase; the playback pointers are re-initialised
+            // by W_DONE when the new burst completes
+            st <= W_LO; fwidx <= 18'd0; fidx <= 6'd0; nf_run <= nf_u2;
+            r_addr <= 28'd0; r_cmd <= 3'd0;
+            cmd_done <= 1'b0; dat_done <= 1'b0;
+        end else if (ui_rst) begin
+            st <= W_WAIT; fwidx <= 18'd0; fidx <= 6'd0; nf_run <= 6'd0;
             r_addr <= 28'd0; r_cmd <= 3'd0;
             cmd_done <= 1'b0; dat_done <= 1'b0; pw <= 3'd0; hw <= 3'd0;
             frame_idx <= 32'd0;
         end else begin
             case (st)
             W_WAIT: if (init_calib_complete) begin
-                        st <= W_LO; widx <= 22'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+                        st <= W_LO; fwidx <= 18'd0; fidx <= 6'd0;
+                        nf_run <= nf_u2; r_addr <= 28'd0; r_cmd <= 3'd0;
                     end
             // One kernel, one DDR word. cfifo_rd is asserted combinationally in
             // this same cycle (see above), so the word sampled here is the word
@@ -643,14 +695,22 @@ module cam_frame_ft #(
                 if ((cmd_done || (app_en && app_rdy)) &&
                     (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    if (widx == NTOT[21:0] - 22'd1) st <= W_DONE;
-                    else begin
-                        widx <= widx + 22'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
+                    // one frame's worth, nf_run times
+                    if (fwidx == NWORDS[17:0] - 18'd1) begin
+                        fwidx <= 18'd0;
+                        if (fidx == nf_run - 6'd1) st <= W_DONE;
+                        else begin
+                            fidx <= fidx + 6'd1;
+                            r_addr <= r_addr + ASTEP; st <= W_LO;
+                        end
+                    end else begin
+                        fwidx <= fwidx + 18'd1;
+                        r_addr <= r_addr + ASTEP; st <= W_LO;
                     end
                 end
             end
             W_DONE: begin
-                widx <= 22'd0; fwidx <= 18'd0; fidx <= 5'd0;
+                fwidx <= 18'd0; fidx <= 6'd0;
                 r_addr <= 28'd0; r_cmd <= 3'd1;
                 hw <= 3'd0; st <= P_HDR;
             end
@@ -668,7 +728,9 @@ module cam_frame_ft #(
                 3'd0: ufifo_din <= MAGIC;
                 3'd1: ufifo_din <= frame_idx;
                 3'd2: ufifo_din <= {NROW[15:0], NCOL[15:0]};
-                3'd3: ufifo_din <= {27'd0, fidx};   // slot within the burst
+                // slot, and the burst length it belongs to, so the host can
+                // parse a scan without being told the length out of band
+                3'd3: ufifo_din <= {18'd0, nf_run, 2'd0, fidx};
                 3'd4: ufifo_din <= FBYTES;
                 3'd5: ufifo_din <= FBYTES/4;
                 3'd6: ufifo_din <= 32'd2;              // format 2: 16-bit LE, 10 valid
@@ -692,10 +754,10 @@ module cam_frame_ft #(
                         frame_idx <= frame_idx + 32'd1;
                         hw        <= 3'd0;
                         st        <= P_HDR;
-                        if (fidx == NFRAMES[4:0] - 5'd1) begin
-                            fidx <= 5'd0; r_addr <= 28'd0;   // wrap to frame 0
+                        if (fidx == nf_run - 6'd1) begin
+                            fidx <= 6'd0; r_addr <= 28'd0;   // wrap to frame 0
                         end else begin
-                            fidx <= fidx + 5'd1; r_addr <= r_addr + ASTEP;
+                            fidx <= fidx + 6'd1; r_addr <= r_addr + ASTEP;
                         end
                     end else begin
                         fwidx  <= fwidx + 18'd1;
@@ -770,13 +832,47 @@ module cam_frame_ft #(
         end
     end
 
+    // ---- host -> FPGA control channel, over the Ft+ itself.
+    //
+    // The Pt's COM6 UART is bring-up scaffolding; the delivered system reaches
+    // this board ONLY through the Ft+, so commands arrive on the FT601 OUT pipe
+    // (0x02) and the DATA bus becomes genuinely bidirectional. ft601_sync_rx
+    // owns OE#/RD#/bus_oe and gates the TX with rx_hold during read windows.
+    wire        rx_hold, bus_oe;
+    wire [31:0] cmd_word;
+    wire        cmd_valid;
+    wire [15:0] cmd_count;
+    wire [3:0]  rx_dbg;
+    ft601_sync_rx u_ftrx (
+        .clk(ft_clk), .rst(ft_rst),
+        .ft_rxf(ft_rxf), .ft_din(ft_data),
+        .ft_oe(ft_oe), .ft_rd(ft_rd),
+        .bus_oe(bus_oe), .rx_hold(rx_hold),
+        .cmd_word(cmd_word), .cmd_valid(cmd_valid), .cmd_count(cmd_count),
+        .dbg(rx_dbg)
+    );
+
+    // Commands are single 32-bit words: [31:28] opcode, [27:0] payload. One word
+    // per command means the decoder is stateless -- a truncated USB transfer
+    // cannot strand it half-way through a command.
+    //   1 = exposure0 (payload[15:0])   2 = trigger period, clk cycles
+    //   3 = re-arm the burst capture
+    reg [31:0] cw_ft = 32'd0;
+    reg        cw_tog = 1'b0;
+    always @(posedge ft_clk) if (cmd_valid) begin
+        cw_ft <= cmd_word; cw_tog <= ~cw_tog;
+    end
+    reg [2:0] cw_s = 3'b000;
+    always @(posedge clk) cw_s <= {cw_s[1:0], cw_tog};
+    wire cw_pulse = cw_s[2] ^ cw_s[1];       // cw_ft is stable well before this
+
     wire [31:0] ft_dout;
     wire [3:0]  ft_beout;
-    wire        bus_oe;
     ft601_sync_tx u_ft (
         .clk(ft_clk), .rst(ft_rst),
-        .ft_txe(ft_txe), .ft_wr(ft_wr), .ft_oe(ft_oe), .ft_rd(ft_rd),
-        .ft_dout(ft_dout), .ft_beout(ft_beout), .bus_oe(bus_oe),
+        .ft_txe(ft_txe), .ft_wr(ft_wr), .ft_oe(), .ft_rd(),
+        .rx_hold(rx_hold),
+        .ft_dout(ft_dout), .ft_beout(ft_beout), .bus_oe(),
         .s_word(b0), .s_valid(cnt != 2'd0), .s_adv(ft_adv)
     );
     assign ft_data = bus_oe ? ft_dout  : 32'bz;
@@ -822,19 +918,32 @@ module cam_frame_ft #(
         wmax_s1 <= wmax_l; wmax_s2 <= wmax_s1;
     end
 
-    // 4 + 8 + 28 + 20 + 20 = 80 bits = 20 hex chars
-    wire [79:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
-                         covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
-                         wtot_s2, wmin_s2, wmax_s2 };
+    // 4 + 8 + 28 + 20 + 20 + 16 + 16 = 112 bits = 28 hex chars.
+    // expo_cur and cmd_count are the acknowledgement path: the host sees its
+    // command take effect in the telemetry it is already reading, so the control
+    // channel needs no reply direction of its own.
+    reg [15:0] ccnt_s1 = 16'd0, ccnt_s2 = 16'd0;
+    reg [3:0]  rxd_s1 = 4'd0, rxd_s2 = 4'd0;
+    always @(posedge ui_clk) begin
+        ccnt_s1 <= cmd_count; ccnt_s2 <= ccnt_s1;
+        rxd_s1  <= rx_dbg;    rxd_s2  <= rxd_s1;
+    end
+    // + rx_dbg{RXF#-ever-low, state} + frames-per-scan = 128 bits, 32 chars
+    reg [5:0] nfr_s1 = 6'd0, nfr_s2 = 6'd0;
+    always @(posedge ui_clk) begin nfr_s1 <= nframes_r; nfr_s2 <= nfr_s1; end
+    wire [127:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
+                          covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
+                          wtot_s2, wmin_s2, wmax_s2, expo_cur, ccnt_s2,
+                          rxd_s2, nfr_s2, 6'd0 };
 
-    reg [79:0] shold = 80'd0;
+    reg [127:0] shold = 128'd0;
     reg [4:0]  nib   = 5'd0;
     reg [23:0] utick = 24'd0;
     reg [7:0]  ubyte = 8'd0;
     reg        usend = 1'b0;
     reg [1:0]  ust   = 2'd0;
     wire       ubusy;
-    wire [3:0] n = shold[79 - nib*4 -: 4];
+    wire [3:0] n = shold[127 - nib*4 -: 4];
 
     always @(posedge ui_clk) begin
         usend <= 1'b0;
@@ -849,7 +958,7 @@ module cam_frame_ft #(
         2'd1: if (!ubusy && !usend) begin
             ubyte <= (n < 4'd10) ? (8'd48 + {4'd0,n}) : (8'd55 + {4'd0,n});
             usend <= 1'b1;
-            if (nib == 5'd19) ust <= 2'd2; else nib <= nib + 5'd1;
+            if (nib == 5'd31) ust <= 2'd2; else nib <= nib + 5'd1;
         end
         2'd2: if (!ubusy && !usend) begin ubyte <= 8'h0D; usend <= 1'b1; ust <= 2'd3; end
         2'd3: if (!ubusy && !usend) begin ubyte <= 8'h0A; usend <= 1'b1; ust <= 2'd0; end
