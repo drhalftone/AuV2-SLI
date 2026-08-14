@@ -83,7 +83,23 @@ looked like a success.
 
 ---
 
-## Shortcut (run first)
+## RESULT of the shortcut (2026-08-14) — M1..M3 are SUPERSEDED
+
+`CONCURRENT=0` (two-FSM structure, reader waits for `stw == W_DONE`) **calibrates and
+streams byte-exact**: init_calib=1 held over 32 s, 50 frames, spacing exactly 2,621,472,
+0 mismatching bytes, 0 duplicated kernels, 216.6 MB/s, WNS +0.059 / WHS +0.059.
+
+So the FSM split is fine and **only concurrency breaks it**. M1-M3 were designed to find
+which *added component* broke calibration; there is no such component, so they are
+skipped. `CONCURRENT=0` is effectively M4 and has passed.
+
+**Puzzle worth keeping in view:** the two builds should be IDENTICAL until calibration
+completes -- the reader cannot leave `R_IDLE` while `wf_done` is 0, whatever `CONCURRENT`
+is, and `ui_rst` holds both FSMs until the MIG releases it. So the difference is in what
+synthesis *builds*, not what the FSM *does*. That makes a marginal placement outcome a
+live possibility, and means the A/B below may simply not reproduce.
+
+## Shortcut (run first) -- DONE
 
 Take `wip/concurrent-capture` and hold the reader until `stw == W_DONE`, i.e. the new
 two-FSM structure with the *old* sequential behaviour.

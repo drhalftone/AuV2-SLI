@@ -43,7 +43,9 @@ if {[info exists ::env(CAM_TRIG_CY)]} { set trigcy $::env(CAM_TRIG_CY) }
 set nframes 24
 if {[info exists ::env(CAM_NFRAMES)]} { set nframes $::env(CAM_NFRAMES) }
 puts "### TRIGGERED = $trig   TRIG_US = $trigus   EXPO_SWEEP = $esweep"
-puts "### TRIG_CY = $trigcy   NFRAMES = $nframes"
+set conc 1
+if {[info exists ::env(CAM_CONCURRENT)]} { set conc $::env(CAM_CONCURRENT) }
+puts "### TRIG_CY = $trigcy   NFRAMES = $nframes   CONCURRENT = $conc"
 
 synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo              -generic TRIGGERED=$trig -generic TRIG_US=$trigus              -generic EXPO_SWEEP=$esweep -generic TRIG_CY=$trigcy              -generic NFRAMES=$nframes
 # Tri-state enable: NOT sampled by the FT601, so the 1 ns set_output_delay
@@ -90,6 +92,7 @@ write_checkpoint -force $outdir/cam_frame_ft${tag}_routed.dcp
 
 set wns [get_property SLACK [get_timing_paths -delay_type min_max]]
 puts "### WNS = $wns"
+puts "### HOLD WHS = [get_property SLACK [get_timing_paths -delay_type min]]"
 
 # The bus MUST be IOB-registered; that is half of the corruption fix.
 set noiob {}
