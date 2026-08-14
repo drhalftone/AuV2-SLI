@@ -70,10 +70,21 @@ module cam_frame_ft #(
     output wire [1:0]  ddr3_dm,
     output wire [0:0]  ddr3_odt
 );
-    localparam integer NBYTES = NCOL * NROW;
-    localparam integer NWORDS = NBYTES / 16;      // 81,920 DDR words per frame
-    localparam integer NKERN  = NBYTES / 8;       // 163,840 kernels per frame
-    localparam integer NTOT   = NWORDS * NFRAMES; // 655,360 words = 10.5 MB of 256
+    // 10 BITS PER PIXEL, carried as 16-bit little-endian with the value in the
+    // low 10 bits and the top 6 zero. The sensor runs in 10-bit mode -- the LVDS
+    // words are 10 bits wide, which is why the sync codes are values like 0x2AA --
+    // and cam_sync_decode already recovers all ten. The previous packing threw the
+    // bottom two away with kp[9:2].
+    //
+    // 8 pixels x 16 bits = 128 bits = EXACTLY one MIG native word, so one decoded
+    // kernel is now one DDR write. That is not just tidy, it deletes the two-read
+    // W_LO/W_HI pairing that was silently corrupting every captured frame (see the
+    // cfifo_rd note below).
+    localparam integer NPIX   = NCOL * NROW;      // 1,310,720 pixels
+    localparam integer NKERN  = NPIX / 8;         // 163,840 kernels per frame
+    localparam integer NWORDS = NKERN;            // one 128-bit DDR word per kernel
+    localparam integer FBYTES = NPIX * 2;         // 2,621,440 bytes/frame at 16 bpp
+    localparam integer NTOT   = NWORDS * NFRAMES; // 1,310,720 words = 21 MB of 256
     localparam integer ASTEP  = 8;
     localparam [31:0]  MAGIC  = 32'h30494C53;
 
@@ -229,8 +240,8 @@ module cam_frame_ft #(
         .kbase(kbase), .kvalid(kvalid), .line_start(line_start),
         .frame_start(frame_start), .frame_end(frame_end), .in_black(in_black)
     );
-    wire [63:0] kword = { kp7[9:2], kp6[9:2], kp5[9:2], kp4[9:2],
-                          kp3[9:2], kp2[9:2], kp1[9:2], kp0[9:2] };
+    wire [127:0] kword = { 6'd0, kp7, 6'd0, kp6, 6'd0, kp5, 6'd0, kp4,
+                           6'd0, kp3, 6'd0, kp2, 6'd0, kp1, 6'd0, kp0 };
 
     // ARM THE CAPTURE ONLY WHEN THE DRAIN IS ALREADY RUNNING.
     //
@@ -330,9 +341,28 @@ module cam_frame_ft #(
     end
 
     wire cfifo_full, cfifo_empty, cfifo_ovf;
-    wire [63:0] cfifo_dout;
-    reg  cfifo_rd = 1'b0;
-    cam_async_fifo #(.DW(64), .AW(8)) u_cfifo (
+    wire [127:0] cfifo_dout;
+    // cfifo_rd MUST be combinational, and this was a real, measured bug.
+    //
+    // cam_async_fifo is first-word-fall-through: rd_data is the head whenever
+    // !empty, and rd_en pops it at the clock edge -- so the consumer must SAMPLE
+    // AND POP IN THE SAME CYCLE. cfifo_rd used to be a register assigned inside
+    // the clocked block, so the pop landed one cycle after the sample. W_LO and
+    // W_HI therefore both latched the SAME kernel into the two halves of the DDR
+    // word, and the following kernel was popped without ever being used.
+    //
+    // Every frame captured through the DDR path before this was really 640 columns
+    // stretched to 1280 in 8-pixel blocks. It was invisible because there is no
+    // lens and the scene is featureless, and ddr_bist could not catch it because
+    // that test drives r_wdata from an internal counter and never goes through the
+    // FIFO. Proved after the fact on saved frames: 81920/81920 16-byte groups had
+    // low 8 == high 8, against 0.02% for the same test at a shifted alignment.
+    //
+    // AW 8 -> 10 as well. One kernel is now one DDR word, so the drain is 2 ui_clk
+    // cycles per kernel instead of 3 per two, and 1024 entries covers a full DDR3
+    // refresh stall (tRFC ~260 ns) with room to spare.
+    wire cfifo_rd;
+    cam_async_fifo #(.DW(128), .AW(10)) u_cfifo (
         .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(cap_wr),
         .wr_data(kword), .full(cfifo_full), .overflow(cfifo_ovf),
         .rd_clk(ui_clk), .rd_rst(ui_rst), .rd_en(cfifo_rd),
@@ -405,8 +435,8 @@ module cam_frame_ft #(
         .rd_data(ufifo_dout), .empty(ufifo_empty)
     );
 
-    reg [19:0] widx  = 20'd0;             // 0..NTOT-1, the whole burst
-    reg [16:0] fwidx = 17'd0;             // 0..NWORDS-1 within one frame
+    reg [20:0] widx  = 21'd0;             // 0..NTOT-1, the whole burst
+    reg [17:0] fwidx = 18'd0;             // 0..NWORDS-1 within one frame
     reg [3:0]  fidx  = 4'd0;              // which captured frame is streaming
     reg [127:0] rword = 128'd0;
     reg [2:0]  pw = 3'd0;                 // which 32-bit slice of rword
@@ -414,24 +444,23 @@ module cam_frame_ft #(
     reg [31:0] frame_idx = 32'd0;
 
     always @(posedge ui_clk) begin
-        cfifo_rd <= 1'b0;
         ufifo_wr <= 1'b0;
 
         if (ui_rst) begin
-            st <= W_WAIT; widx <= 20'd0; fwidx <= 17'd0; fidx <= 4'd0;
+            st <= W_WAIT; widx <= 21'd0; fwidx <= 18'd0; fidx <= 4'd0;
             r_addr <= 28'd0; r_cmd <= 3'd0;
             cmd_done <= 1'b0; dat_done <= 1'b0; pw <= 3'd0; hw <= 3'd0;
             frame_idx <= 32'd0;
         end else begin
             case (st)
             W_WAIT: if (init_calib_complete) begin
-                        st <= W_LO; widx <= 20'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+                        st <= W_LO; widx <= 21'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
                     end
+            // One kernel, one DDR word. cfifo_rd is asserted combinationally in
+            // this same cycle (see above), so the word sampled here is the word
+            // popped here.
             W_LO: if (!cfifo_empty) begin
-                      r_wdata[63:0] <= cfifo_dout; cfifo_rd <= 1'b1; st <= W_HI;
-                  end
-            W_HI: if (!cfifo_empty) begin
-                      r_wdata[127:64] <= cfifo_dout; cfifo_rd <= 1'b1;
+                      r_wdata  <= cfifo_dout;
                       cmd_done <= 1'b0; dat_done <= 1'b0; st <= W_ISSUE;
                   end
             W_ISSUE: begin
@@ -440,14 +469,14 @@ module cam_frame_ft #(
                 if ((cmd_done || (app_en && app_rdy)) &&
                     (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    if (widx == NTOT[19:0] - 20'd1) st <= W_DONE;
+                    if (widx == NTOT[20:0] - 21'd1) st <= W_DONE;
                     else begin
-                        widx <= widx + 20'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
+                        widx <= widx + 21'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
                     end
                 end
             end
             W_DONE: begin
-                widx <= 20'd0; fwidx <= 17'd0; fidx <= 4'd0;
+                widx <= 21'd0; fwidx <= 18'd0; fidx <= 4'd0;
                 r_addr <= 28'd0; r_cmd <= 3'd1;
                 hw <= 3'd0; st <= P_HDR;
             end
@@ -466,9 +495,9 @@ module cam_frame_ft #(
                 3'd1: ufifo_din <= frame_idx;
                 3'd2: ufifo_din <= {NROW[15:0], NCOL[15:0]};
                 3'd3: ufifo_din <= {28'd0, fidx};   // slot within the burst
-                3'd4: ufifo_din <= NBYTES;
-                3'd5: ufifo_din <= NBYTES/4;
-                3'd6: ufifo_din <= 32'd1;              // format: 8-bit mono
+                3'd4: ufifo_din <= FBYTES;
+                3'd5: ufifo_din <= FBYTES/4;
+                3'd6: ufifo_din <= 32'd2;              // format 2: 16-bit LE, 10 valid
                 default: ufifo_din <= ~MAGIC;
                 endcase
                 if (hw == 3'd7) begin hw <= 3'd0; st <= P_CMD; end
@@ -483,9 +512,9 @@ module cam_frame_ft #(
                 ufifo_wr  <= 1'b1;
                 ufifo_din <= rword[pw*32 +: 32];
                 if (pw == 3'd3) begin
-                    if (fwidx == NWORDS[16:0] - 17'd1) begin
+                    if (fwidx == NWORDS[17:0] - 18'd1) begin
                         // end of one frame -> emit the next frame's header
-                        fwidx     <= 17'd0;
+                        fwidx     <= 18'd0;
                         frame_idx <= frame_idx + 32'd1;
                         hw        <= 3'd0;
                         st        <= P_HDR;
@@ -495,7 +524,7 @@ module cam_frame_ft #(
                             fidx <= fidx + 4'd1; r_addr <= r_addr + ASTEP;
                         end
                     end else begin
-                        fwidx  <= fwidx + 17'd1;
+                        fwidx  <= fwidx + 18'd1;
                         r_addr <= r_addr + ASTEP;
                         st     <= P_CMD;
                     end
@@ -505,6 +534,9 @@ module cam_frame_ft #(
             endcase
         end
     end
+
+    // sample-and-pop in the same cycle -- FWFT requires it
+    assign cfifo_rd = (st == W_LO) && !cfifo_empty;
 
     //------------------------------------------------- the FT601 write master
     reg [1:0] ftrst_s = 2'b11;
