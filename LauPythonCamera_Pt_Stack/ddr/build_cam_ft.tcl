@@ -23,10 +23,35 @@ read_ip  $xci
 read_xdc $hello/pt_cam_rx.xdc
 read_xdc $here/pt_ft_plus_bottom_timed.xdc
 
-synth_design -top cam_frame_ft -part $part
+# EXPOSURE and the output name come from the environment so a sweep needs no
+# source edit: CAM_EXPOSURE is a Verilog literal (e.g. 16'h0640 = 1600 units of
+# 375 ns = 600 us), CAM_TAG suffixes the bitstream so points are not overwritten.
+set expo "16'h0640"
+if {[info exists ::env(CAM_EXPOSURE)]} { set expo $::env(CAM_EXPOSURE) }
+set tag ""
+if {[info exists ::env(CAM_TAG)]} { set tag $::env(CAM_TAG) }
+puts "### EXPOSURE = $expo   TAG = '$tag'"
+
+set trig 0
+if {[info exists ::env(CAM_TRIGGERED)]} { set trig $::env(CAM_TRIGGERED) }
+set trigus 7500
+if {[info exists ::env(CAM_TRIG_US)]} { set trigus $::env(CAM_TRIG_US) }
+set esweep 0
+if {[info exists ::env(CAM_EXPO_SWEEP)]} { set esweep $::env(CAM_EXPO_SWEEP) }
+puts "### TRIGGERED = $trig   TRIG_US = $trigus   EXPO_SWEEP = $esweep"
+
+synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo              -generic TRIGGERED=$trig -generic TRIG_US=$trigus              -generic EXPO_SWEEP=$esweep
 opt_design
 place_design
 route_design
+
+# Vivado 2025.2.1 on this machine intermittently dies with
+# EXCEPTION_ACCESS_VIOLATION inside write_bitstream's DRC (see the hs_err_pid*
+# files it drops in the repo root). Implementation is the expensive part and it
+# has already succeeded by this point, so checkpoint here: a crash at bitstream
+# time can then be recovered with open_checkpoint + write_bitstream instead of a
+# full 13-minute rebuild.
+write_checkpoint -force $outdir/cam_frame_ft${tag}_routed.dcp
 
 set wns [get_property SLACK [get_timing_paths -delay_type min_max]]
 puts "### WNS = $wns"
@@ -48,7 +73,7 @@ foreach grp [get_timing_paths -delay_type min_max -max_paths 6 -nworst 1 -sort_b
 report_timing_summary -file $outdir/timing_summary.rpt -quiet
 
 for {set try 1} {$try <= 4} {incr try} {
-    if {![catch {write_bitstream -force -bin_file $outdir/cam_frame_ft.bit} msg]} break
+    if {![catch {write_bitstream -force -bin_file $outdir/cam_frame_ft$tag.bit} msg]} break
     puts "### write_bitstream attempt $try failed: $msg"
 }
-puts "### CAM+DDR+FT601 BUILD OK -> $outdir/cam_frame_ft.bin"
+puts "### CAM+DDR+FT601 BUILD OK -> $outdir/cam_frame_ft$tag.bin"

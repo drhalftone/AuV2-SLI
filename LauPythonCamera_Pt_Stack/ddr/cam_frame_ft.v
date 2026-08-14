@@ -38,7 +38,32 @@ module cam_frame_ft #(
     parameter integer NCOL = 1280,
     parameter integer NROW = 1024,
     parameter [15:0]  EXPOSURE = 16'h0640,
-    parameter integer NFRAMES  = 8            // burst length; <=16 (fcnt is 4 bits)
+    parameter integer NFRAMES  = 8,           // burst length; <=16 (fcnt is 4 bits)
+    // TRIGGERED GLOBAL SHUTTER. 0 = free-running (the configuration that has
+    // always produced sane pixels), 1 = 192[4] set and the array held in reset
+    // until a rising edge on trigger0.
+    parameter integer TRIGGERED = 0,
+    // Trigger period in MICROSECONDS, and the whole point of the experiment.
+    //
+    // Every previous attempt at triggered mode fired trigger0 ONCE, seconds after
+    // configuration, and every frame came back 100% saturated at every exposure
+    // value tried. The array is documented as sitting in reset until trigger0,
+    // but the evidence says it integrates for that entire idle. Triggering
+    // CONTINUOUSLY bounds integration to one trigger period no matter what the
+    // array does while waiting, so if the idle is the cause, this looks like
+    // free-running -- and if it still saturates, the cause is elsewhere.
+    //
+    // Default 7500 us = 133 Hz, comfortably longer than the measured 6.860 ms
+    // readout so a trigger never lands inside the previous frame (the sensor
+    // ignores those, p14/p25).
+    parameter integer TRIG_US   = 7500,
+    // 1 = step exposure0 across the burst to measure brightness vs exposure.
+    parameter integer EXPO_SWEEP = 0,
+    // Frames to let pass before arming the capture. The FIRST frame after the
+    // trigger train starts is 100% saturated -- it integrated through the idle
+    // between the sequencer switching on and the first trigger -- and skipping
+    // it is what makes an 8-frame sweep usable rather than 7/8 usable.
+    parameter integer SKIP_FRAMES = 4
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -162,15 +187,90 @@ module cam_frame_ft #(
     wire       streaming;
     reg        stream_go = 1'b0;
     cam_boot_stage1 #(.CLK_HZ(100_000_000), .BAUD(1_000_000), .STOP_AT(45),
-                      .TRIGGERED(0), .EXPOSURE(EXPOSURE)) u_boot (
+                      .TRIGGERED(TRIGGERED), .EXPOSURE(EXPOSURE)) u_boot (
         .clk(clk), .rst_n(rst_n),
         .stream_go(stream_go), .streaming(streaming),
+        .expo_req(expo_req), .expo_val(expo_val),
         .led(boot_led), .usb_tx(), .usb_rx(1'b1),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
         .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),
-        .cam_clk_pll(cam_clk_pll), .cam_trigger(cam_trigger),
+        .cam_clk_pll(cam_clk_pll), .cam_trigger(),
         .cam_monitor(cam_monitor)
     );
+
+    // TRIGGER GENERATOR. cam_boot_stage1 ties its own cam_trigger to 3'b000, so
+    // the trigger line has to be driven here or triggered mode can never fire.
+    //
+    // Held low until `streaming` -- the sequencer is only switched on by the last
+    // ROM write (192 bit 0), and a trigger before that is simply lost. Starting
+    // the pulse train at `streaming` also makes the pre-first-trigger idle as
+    // short as the design allows, which is exactly the variable under test.
+    //
+    // The frame-period counter measures the interval between frame_starts, so in
+    // triggered mode it reports the TRIGGER period. That is a free cross-check
+    // that the trigger is really driving acquisition rather than the sensor
+    // free-running underneath us: expect 8 * TRIG_US, not 8 * 6.860 ms.
+    localparam integer TRIG_PER = TRIG_US * 100;      // clk = 100 MHz
+
+    // PULSE-WIDTH SWEEP ACROSS THE BURST -- eight exposure points, ONE build.
+    //
+    // Continuous triggering at 7.5 ms came back 100% saturated with exposure0 =
+    // 1600 (600 us), and the size of the error is the clue: integrating for the
+    // whole 7.5 ms interval instead of 600 us is 12.5x, which lands exactly on
+    // the 1023 ceiling given the measured pedestal ~151 and signal ~63. So
+    // exposure0 looks ignored in triggered mode, and something about the trigger
+    // interval sets integration instead.
+    //
+    // If the TRIGGER PULSE WIDTH is what sets it -- the "expose while the trigger
+    // is asserted" behaviour common on other sensors -- then brightness tracks
+    // the width. The burst captures 8 consecutive frames, so cycling the width
+    // over 8 triggers gets all eight points from a single capture rather than
+    // eight 13-minute builds:
+    //
+    //     50, 100, 200, 400, 800, 1600, 3200, 6400 us   (a 128x span)
+    //
+    // The capture arms on an arbitrary trigger, so the eight frames may come out
+    // ROTATED relative to this list. That is why the widths increase
+    // monotonically -- a rotation is obvious in the resulting brightness ramp,
+    // and the wrap point identifies the phase. Reading:
+    //
+    //   brightness tracks width          -> pulse width IS the exposure control
+    //   brightness tracks (period-width) -> integration runs while trigger is low
+    //   all eight identical              -> neither; integration is the whole
+    //                                       interval and width is irrelevant
+    reg [2:0]  tidx    = 3'd0;
+    reg [23:0] hi_cyc  = 24'd5_000;
+    always @(*) begin
+        case (tidx)
+        3'd0: hi_cyc = 24'd5_000;      //   50 us
+        3'd1: hi_cyc = 24'd10_000;     //  100 us
+        3'd2: hi_cyc = 24'd20_000;     //  200 us
+        3'd3: hi_cyc = 24'd40_000;     //  400 us
+        3'd4: hi_cyc = 24'd80_000;     //  800 us
+        3'd5: hi_cyc = 24'd160_000;    // 1600 us
+        3'd6: hi_cyc = 24'd320_000;    // 3200 us
+        default: hi_cyc = 24'd640_000; // 6400 us
+        endcase
+    end
+
+    reg [23:0] tcnt  = 24'd0;
+    reg        trig0 = 1'b0;
+    always @(posedge clk) begin
+        if (rst || !streaming) begin
+            tcnt  <= 24'd0;
+            trig0 <= 1'b0;
+            tidx  <= 3'd0;
+        end else begin
+            if (tcnt == TRIG_PER[23:0] - 24'd1) begin
+                tcnt <= 24'd0;
+                tidx <= tidx + 3'd1;
+            end else begin
+                tcnt <= tcnt + 24'd1;
+            end
+            trig0 <= (tcnt < hi_cyc);
+        end
+    end
+    assign cam_trigger = {2'b00, (TRIGGERED != 0) ? trig0 : 1'b0};
 
     wire        wordclk;
     wire [9:0]  d0_word, d1_word, d2_word, d3_word, sync_word;
@@ -225,6 +325,51 @@ module cam_frame_ft #(
         if (rst) fired <= 1'b0;
         else if (rdy_s[2] && !fired && !streaming) begin
             stream_go <= 1'b1; fired <= 1'b1;
+        end
+    end
+
+    // EXPOSURE SWEEP ACROSS THE BURST -- brightness vs exposure time in ONE
+    // capture instead of one bitstream per point.
+    //
+    // exposure0 units are mult_timer/f_pll = 27/72 MHz = 375 ns, so the table
+    // below spans 37.5 us to 4.80 ms. All of it fits inside the 6.86 ms frame.
+    // Free-running at 1600 (600 us) measures ~63 counts of signal over a ~151
+    // pedestal, so this should sweep from barely-above-pedestal to ~8x that.
+    //
+    // frame_end lives in wordclk and the SPI writer in clk, so the request
+    // crosses as a toggle + 2FF + edge detect. The value is registered alongside
+    // the request: taking it combinationally from the index would send the NEXT
+    // table entry, since the index advances on the same edge.
+    reg  fe_tog = 1'b0;
+    always @(posedge wordclk) if (frame_end) fe_tog <= ~fe_tog;
+    reg [2:0] fe_s = 3'b000;
+    always @(posedge clk) fe_s <= {fe_s[1:0], fe_tog};
+    wire fe_pulse = fe_s[2] ^ fe_s[1];
+
+    reg  [2:0]  eidx     = 3'd0;
+    reg  [15:0] expo_val = 16'd0;
+    reg         expo_req = 1'b0;
+    reg  [15:0] etab;
+    always @(*) begin
+        case (eidx)
+        3'd0: etab = 16'd100;      //   37.5 us
+        3'd1: etab = 16'd200;      //   75.0 us
+        3'd2: etab = 16'd400;      //  150.0 us
+        3'd3: etab = 16'd800;      //  300.0 us
+        3'd4: etab = 16'd1600;     //  600.0 us  (the free-running reference)
+        3'd5: etab = 16'd3200;     //  1.200 ms
+        3'd6: etab = 16'd6400;     //  2.400 ms
+        default: etab = 16'd12800; //  4.800 ms
+        endcase
+    end
+    always @(posedge clk) begin
+        expo_req <= 1'b0;
+        if (rst) begin
+            eidx <= 3'd0;
+        end else if ((EXPO_SWEEP != 0) && streaming && fe_pulse) begin
+            expo_val <= etab;
+            expo_req <= 1'b1;
+            eidx     <= eidx + 3'd1;
         end
     end
 
@@ -283,7 +428,13 @@ module cam_frame_ft #(
     reg [3:0]  fcnt = 4'd0;
     reg        cap  = 1'b0, cap_dn = 1'b0;
 
-    wire arm_now = frame_start && !cap && !cap_dn && arm_s[1];
+    reg [3:0] skipc = 4'd0;
+    always @(posedge wordclk) begin
+        if (wc_rst) skipc <= 4'd0;
+        else if (frame_end && skipc != SKIP_FRAMES[3:0]) skipc <= skipc + 4'd1;
+    end
+    wire arm_now = frame_start && !cap && !cap_dn && arm_s[1]
+                   && (skipc == SKIP_FRAMES[3:0]);
     wire cap_act = cap || arm_now;
     wire cap_wr  = cap_act && kvalid && (kcnt != NKERN[17:0]);
 

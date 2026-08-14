@@ -142,6 +142,19 @@ print("VERDICT bus       :", "BYTE-EXACT" if corrupt == 0 and repeats else "CHEC
 print("VERDICT duplication:", "NONE" if dup * 20 < groups else "DUPLICATED")
 print("VERDICT depth     :", "10-bit" if over == 0 and odd == 4 else "suspect")
 
+# ---- save RAW 16-bit, and do it before any display conversion.
+#
+# The PNGs below are 8-bit with a PER-FRAME min/max stretch: display only. An
+# earlier lit-vs-covered analysis was computed by inverting that stretch, which
+# is a second quantisation on top of the 10-bit data. It happened to be harmless
+# (row-mean error came out at 0.34 LSB against a 65 LSB effect) but quantitative
+# work should read these .bin files, not the pictures.
+for s in sorted(by_slot):
+    with open(OUT + r"\raw_slot%d_u16.bin" % s, "wb") as f:
+        f.write(by_slot[s][0][1])
+print("wrote raw_slot0..%d_u16.bin (%d x %d, 16-bit LE, 10 valid bits)"
+      % (max(by_slot), NCOL, NROW))
+
 try:
     from PIL import Image
     for s in sorted(by_slot):

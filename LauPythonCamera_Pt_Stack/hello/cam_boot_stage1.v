@@ -83,6 +83,13 @@ module cam_boot_stage1 #(
     input  wire       stream_go,   // pulse: perform the deferred reg 192 write
     output reg        streaming,   // set once that write has landed
 
+    // RUNTIME EXPOSURE. Pulse expo_req with a value on expo_val and reg 201
+    // (exposure0) is rewritten at the next opportunity. Exposure was previously
+    // a build-time ROM constant, so a brightness-vs-exposure curve cost one
+    // 13-minute bitstream per point; this makes it one capture.
+    input  wire        expo_req,
+    input  wire [15:0] expo_val,
+
     output reg  [7:0] led,
     output wire       usb_tx,
     input  wire       usb_rx,
@@ -223,7 +230,16 @@ module cam_boot_stage1 #(
                      P_R24  = 4'd3, P_W24  = 4'd4,
                      P_R112 = 4'd5, P_W112 = 4'd6,
                      P_RPT  = 4'd7, P_GAP  = 4'd8,
-                     P_STRM = 4'd9, P_STRMW = 4'd10;
+                     P_STRM = 4'd9, P_STRMW = 4'd10,
+                     P_EXPO = 4'd11, P_EXPOW = 4'd12;
+
+    // Pending exposure write. This FSM already owns the SPI bus after boot (it
+    // polls registers forever), so the write is injected into it rather than
+    // adding a second master and an arbiter. It is taken in P_GAP, which is
+    // where the FSM spends nearly all its time, so the latency is a few SPI
+    // transactions at 1 MHz SCK -- tens of microseconds against a 6.86 ms frame.
+    reg        expo_pend = 1'b0;
+    reg [15:0] expo_hold = 16'd0;
 
     reg [3:0]  ps  = P_WAIT;
     reg [26:0] ptm = 27'd0;
@@ -239,6 +255,7 @@ module cam_boot_stage1 #(
         if (rst) begin
             ps  <= P_WAIT; ptm <= 27'd0; r16 <= 16'd0; r24 <= 16'd0; r112 <= 16'd0;
             p_wr <= 1'b0; p_wdata <= 16'd0; streaming <= 1'b0;
+            expo_pend <= 1'b0; expo_hold <= 16'd0;
         end else begin
             case (ps)
             P_WAIT: if (!b_busy && started) ps <= P_R16;
@@ -249,10 +266,30 @@ module cam_boot_stage1 #(
             P_R112: if (!spi_busy) begin p_addr <= 9'd112; p_start <= 1'b1; ps <= P_W112; end
             P_W112: if (spi_done) begin r112 <= spi_rdata; ps <= P_RPT; end
             P_RPT:  begin msg_go <= 1'b1; ptm <= 27'd0; ps <= P_GAP; end
-            P_GAP:  if (ptm == POLL_CY[26:0] - 27'd1) begin
+            P_GAP:  if (expo_pend) begin
+                        ps <= P_EXPO;          // exposure writes preempt polling
+                    end else if (ptm == POLL_CY[26:0] - 27'd1) begin
                         ptm <= 27'd0;
                         ps  <= (stream_req && !streaming) ? P_STRM : P_R16;
                     end else ptm <= ptm + 27'd1;
+
+            // reg 201 = exposure0. Datasheet Table 8: a reconfiguration takes
+            // effect one frame later unless reg_seq_exposure_sync_mode is set,
+            // so the frame that follows this write still shows the OLD value.
+            // The sweep is monotonic precisely so that one-frame skew (and the
+            // arbitrary capture phase) is identifiable in the data.
+            P_EXPO:  if (!spi_busy) begin
+                        p_addr  <= 9'd201;
+                        p_wdata <= expo_hold;
+                        p_wr    <= 1'b1;
+                        p_start <= 1'b1;
+                        ps      <= P_EXPOW;
+                     end
+            P_EXPOW: if (spi_done) begin
+                        p_wr <= 1'b0;
+                        expo_pend <= 1'b0;
+                        ps <= P_GAP;
+                     end
             // rom[41] of cam_boot_seq, performed here instead: enable the
             // sequencer and the sensor starts exposing and reading out.
             // MUST carry the mode bits. This used to write a bare 0x0801, which
@@ -273,6 +310,10 @@ module cam_boot_stage1 #(
                     end
             default: ps <= P_WAIT;
             endcase
+            if (expo_req) begin
+                expo_pend <= 1'b1;
+                expo_hold <= expo_val;
+            end
         end
     end
 
