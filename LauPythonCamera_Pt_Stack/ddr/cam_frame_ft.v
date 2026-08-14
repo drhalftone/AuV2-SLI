@@ -79,7 +79,20 @@ module cam_frame_ft #(
     // mid-stream would need the change to land on a frame boundary in three
     // clock domains at once, and that is a separate problem from proving live
     // streaming works at all.
+    // LIVE = 1: continuous video through a DDR3 RING BUFFER.
+    //
+    // The first attempt streamed camera -> FIFO -> USB with DDR bypassed and
+    // could never work: the sensor reads out in a 4.55 ms burst at 576 MB/s
+    // against a 325 MB/s link, and the FIFO holds 0.6% of a frame. DDR is not a
+    // convenience here, it is the elasticity that absorbs that burst.
+    //
+    // So: the writer runs forever, cycling NSLOT frame slots, and the reader
+    // always jumps to the NEWEST completed frame rather than working through a
+    // queue -- for a live view, the freshest picture is the point and old frames
+    // are worthless. The writer SKIPS a frame rather than overwrite the slot the
+    // reader is using, so a slow reader costs dropped frames, never a torn one.
     parameter integer LIVE = 0,
+    parameter integer NSLOT = 4,          // ring depth; 4 x 2.62 MB = 10.5 MB
     // 1 = step exposure0 across the burst to measure brightness vs exposure.
     parameter integer EXPO_SWEEP = 0,
     // Frames to let pass before arming the capture. The FIRST frame after the
@@ -652,7 +665,7 @@ module cam_frame_ft #(
     // -- the failure mode this project keeps producing. After capture wf_done
     // sticks at nf_run, so every frame stays available and the reader loops the
     // set forever, exactly as before.
-    localparam [2:0] W_WAIT=0, W_LO=1, W_ISSUE=2, W_DONE=3;
+    localparam [2:0] W_WAIT=0, W_LO=1, W_ISSUE=2, W_DONE=3, W_NEXT=4;
     localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2;
     // live path: idle -> header -> stream a frame -> (pad on underrun)
     localparam [1:0] L_IDLE=0, L_HDR=1, L_RUN=2, L_PAD=3;
@@ -666,6 +679,15 @@ module cam_frame_ft #(
     reg [5:0]  wf  = 6'd0;          // frame being written
     reg [5:0]  wf_done = 6'd0;      // frames FULLY written -- the fence
     reg [5:0]  rf  = 6'd0;          // frame being read
+    // ---- ring-buffer state (LIVE mode)
+    reg        w_acc   = 1'b1;      // capturing this frame, or discarding it
+    reg        r_busy  = 1'b0;      // reader owns r_slot right now
+    reg [2:0]  w_slot  = 3'd0;      // slot being written
+    reg [2:0]  r_slot  = 3'd0;      // slot being read
+    reg [15:0] w_skip  = 16'd0;     // frames discarded because the reader was on
+                                    // that slot -- reported, never silent
+    reg [5:0]  wf_seen = 6'd0;      // wf_done value the reader last served
+    wire [2:0] w_next = (w_slot == NSLOT[2:0] - 3'd1) ? 3'd0 : w_slot + 3'd1;
 
     // Playback issues reads speculatively; the write phase is unchanged.
     reg  [17:0] rd_iss = 18'd0, rd_got = 18'd0;
@@ -678,7 +700,14 @@ module cam_frame_ft #(
     wire r_gnt = r_req && !w_req;
     wire r_ack = r_gnt && app_rdy;
     wire w_ack = w_req && app_rdy;
-    assign app_addr     = w_req ? waddr : raddr;
+    // Slot base addresses. ASTEP is the BL8 stride, so a slot spans
+    // NWORDS * ASTEP; 4 slots is 5.2 M, well inside the 28-bit address space.
+    wire [27:0] w_base = w_slot * (NWORDS[27:0] * ASTEP);
+    wire [27:0] r_base = r_slot * (NWORDS[27:0] * ASTEP);
+    wire [27:0] w_eff  = (LIVE != 0) ? (w_base + waddr) : waddr;
+    wire [27:0] r_eff  = (LIVE != 0) ? (r_base + raddr) : raddr;
+
+    assign app_addr     = w_req ? w_eff : r_eff;
     assign app_cmd      = w_req ? 3'd0  : 3'd1;   // 0 = write, 1 = read
     assign app_en       = w_req || r_gnt;
     assign app_wdf_data = r_wdata;
@@ -824,16 +853,28 @@ module cam_frame_ft #(
 
             //---------------------------------------------------------- writer
             case (stw)
-            W_WAIT: if (init_calib_complete && (LIVE == 0)) begin
+            W_WAIT: if (init_calib_complete) begin
                         stw <= W_LO; waddr <= 28'd0;
                         wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0;
                         nf_run <= nf_u2;
+                        w_slot <= 3'd0; w_acc <= 1'b1;
                     end
             // One kernel, one DDR word. cfifo_rd asserts combinationally in this
             // same cycle, so the word sampled here is the word popped here.
+            // A DISCARDED frame is still POPPED from the cfifo, one word per
+            // cycle. If it were merely left there the cfifo would overflow and
+            // the NEXT frame would be misaligned -- dropping a frame must cost
+            // nothing downstream.
             W_LO: if (!cfifo_empty) begin
                       r_wdata  <= cfifo_dout;
-                      cmd_done <= 1'b0; dat_done <= 1'b0; stw <= W_ISSUE;
+                      cmd_done <= 1'b0; dat_done <= 1'b0;
+                      if ((LIVE != 0) && !w_acc) begin
+                          // discard: advance without touching DDR
+                          if (wfw == NWORDS[17:0] - 18'd1) begin
+                              wfw <= 18'd0;
+                              stw <= W_NEXT;
+                          end else wfw <= wfw + 18'd1;
+                      end else stw <= W_ISSUE;
                   end
             W_ISSUE: begin
                 if (w_ack)                       cmd_done <= 1'b1;
@@ -841,11 +882,13 @@ module cam_frame_ft #(
                 if ((cmd_done || w_ack) &&
                     (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    waddr <= waddr + ASTEP;
+                    waddr <= (wfw == NWORDS[17:0] - 18'd1) ? 28'd0
+                                                          : waddr + ASTEP;
                     if (wfw == NWORDS[17:0] - 18'd1) begin
                         wfw     <= 18'd0;
                         wf_done <= wf_done + 6'd1;   // THIS frame is now readable
-                        if (wf == nf_run - 6'd1) stw <= W_DONE;
+                        if (LIVE != 0) stw <= W_NEXT;
+                        else if (wf == nf_run - 6'd1) stw <= W_DONE;
                         else begin wf <= wf + 6'd1; stw <= W_LO; end
                     end else begin
                         wfw <= wfw + 18'd1; stw <= W_LO;
@@ -853,6 +896,23 @@ module cam_frame_ft #(
                 end
             end
             W_DONE: ;                     // capture complete; reader carries on
+
+            // Choose the next slot and decide whether to keep the frame. The
+            // ONLY rule that matters: never write the slot the reader is
+            // currently streaming out of. Everything else is bookkeeping.
+            W_NEXT: begin
+                w_slot <= w_next;
+                // THE RULE: never write the slot the reader is streaming from.
+                // w_acc was declared and read but never assigned in the first
+                // draft, so it sat at 1 permanently and the writer would have
+                // overwritten a frame mid-read -- producing a torn image that
+                // still looks like a photograph, which is the failure mode this
+                // project keeps generating.
+                w_acc  <= !(r_busy && (w_next == r_slot));
+                if (r_busy && (w_next == r_slot) && (w_skip != 16'hFFFF))
+                    w_skip <= w_skip + 16'd1;
+                stw    <= W_LO;
+            end
             default: stw <= W_WAIT;
             endcase
 
@@ -867,7 +927,11 @@ module cam_frame_ft #(
             // PAD the output to NWORDS with zeros rather than emitting a short
             // frame. A padded frame is visibly wrong in one frame; a short one
             // desynchronises the host's parser for good. ldrop counts them.
-            if (LIVE != 0) begin
+            // The FIFO-only live path is retired: LIVE now streams through the
+            // DDR ring above. Kept disabled rather than deleted because its
+            // failure -- 576 MB/s burst into a 325 MB/s pipe -- is the reason the
+            // ring exists.
+            if (1'b0) begin
                 case (stl)
                 // DO NOT START A FRAME WE CANNOT FINISH.
                 //
@@ -947,7 +1011,20 @@ module cam_frame_ft #(
             // init_calib_complete never asserting is upstream of everything the
             // reader does, so if merely restructuring the FSM breaks it, the
             // cause is not the arbitration.
-            R_IDLE: if ((LIVE == 0) && (rf < wf_done) &&
+            // LIVE: jump to the NEWEST complete frame, do not queue. Old
+            // frames are worthless in a live view, and serving them in order
+            // would make the display lag further behind the longer it ran.
+            // r_busy tells the writer which slot is off-limits.
+            R_IDLE: if (LIVE != 0) begin
+                        if (wf_done != wf_seen) begin
+                            wf_seen <= wf_done;
+                            r_slot  <= (w_slot == 3'd0) ? (NSLOT[2:0] - 3'd1)
+                                                        : (w_slot - 3'd1);
+                            r_busy  <= 1'b1;
+                            raddr   <= 28'd0;
+                            hw <= 3'd0; str <= R_HDR;
+                        end
+                    end else if ((rf < wf_done) &&
                         ((CONCURRENT != 0) || (stw == W_DONE))) begin
                         hw <= 3'd0; str <= R_HDR;
                     end
@@ -957,7 +1034,8 @@ module cam_frame_ft #(
             R_HDR: if (!ufifo_afull) begin
                 ufifo_wr <= 1'b1;
                 if (hw == 3'd0)
-                    ufifo_din <= { {18'd0, nf_run, 2'd0, rf},
+                    ufifo_din <= { {18'd0, (LIVE != 0) ? 6'd1 : nf_run, 2'd0,
+                                   (LIVE != 0) ? {3'd0, r_slot} : rf},
                                    {NROW[15:0], NCOL[15:0]},
                                    frame_idx, MAGIC };
                 else
@@ -974,7 +1052,10 @@ module cam_frame_ft #(
             // merely issued.
             R_RUN: if (rd_got == NWORDS[17:0]) begin
                 frame_idx <= frame_idx + 32'd1;
-                if (rf == nf_run - 6'd1) begin
+                if (LIVE != 0) begin
+                    r_busy <= 1'b0;                  // slot released
+                    raddr  <= 28'd0;
+                end else if (rf == nf_run - 6'd1) begin
                     rf <= 6'd0; raddr <= 28'd0;      // wrap to frame 0
                 end else begin
                     rf <= rf + 6'd1;
@@ -989,9 +1070,11 @@ module cam_frame_ft #(
 
     // sample-and-pop in the same cycle -- FWFT requires it
     // sample-and-pop in the same cycle -- FWFT requires it
-    assign cfifo_rd = (LIVE != 0)
-                    ? ((stl == L_RUN) && !cfifo_empty && !ufifo_afull && !fs_pulse)
-                    : ((stw == W_LO) && !cfifo_empty);
+    // Both modes now pop in W_LO -- the ring writer discards a skipped frame by
+    // popping without writing DDR, so the cfifo drains either way. Leaving this
+    // pointed at the retired FIFO path would have starved the ring writer and
+    // stalled capture completely.
+    assign cfifo_rd = (stw == W_LO) && !cfifo_empty;
 
     //------------------------------------------------- the FT601 write master
     reg [1:0] ftrst_s = 2'b11;
