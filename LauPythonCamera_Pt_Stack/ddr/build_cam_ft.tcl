@@ -45,9 +45,12 @@ if {[info exists ::env(CAM_NFRAMES)]} { set nframes $::env(CAM_NFRAMES) }
 puts "### TRIGGERED = $trig   TRIG_US = $trigus   EXPO_SWEEP = $esweep"
 set conc 1
 if {[info exists ::env(CAM_CONCURRENT)]} { set conc $::env(CAM_CONCURRENT) }
-puts "### TRIG_CY = $trigcy   NFRAMES = $nframes   CONCURRENT = $conc"
+set live 0
+if {[info exists ::env(CAM_LIVE)]} { set live $::env(CAM_LIVE) }
+puts "### TRIG_CY = $trigcy   NFRAMES = $nframes   CONCURRENT = $conc   LIVE = $live"
 
-synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo              -generic TRIGGERED=$trig -generic TRIG_US=$trigus              -generic EXPO_SWEEP=$esweep -generic TRIG_CY=$trigcy              -generic NFRAMES=$nframes
+puts "### SYNTH: synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo -generic TRIGGERED=$trig -generic TRIG_US=$trigus -generic EXPO_SWEEP=$esweep -generic TRIG_CY=$trigcy -generic NFRAMES=$nframes -generic CONCURRENT=$conc -generic LIVE=$live"
+synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo -generic TRIGGERED=$trig -generic TRIG_US=$trigus -generic EXPO_SWEEP=$esweep -generic TRIG_CY=$trigcy -generic NFRAMES=$nframes -generic CONCURRENT=$conc -generic LIVE=$live
 # Tri-state enable: NOT sampled by the FT601, so the 1 ns set_output_delay
 # window does not apply to it. It only has to settle before the bus turnaround
 # completes, and ft601_sync_rx waits 3 dead cycles on each edge -- so 3 clock

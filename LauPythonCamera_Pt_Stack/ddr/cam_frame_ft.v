@@ -67,6 +67,19 @@ module cam_frame_ft #(
     //     two-FSM structure) -- isolates the FSM split from the arbitration
     // 1 = reader released as soon as a frame is finished (the real goal)
     parameter integer CONCURRENT = 1,
+    // LIVE MODE: stream continuously, camera -> FIFO -> USB, BYPASSING DDR.
+    //
+    // Scan mode captures N frames into DDR and replays them; live mode never
+    // stores. The camera produces 314 MB/s and the link carries ~325, so it
+    // fits, and it sidesteps the ring-buffer hazard where a continuous writer
+    // laps the reader. The cost is no elasticity: if the host stalls, pixels are
+    // gone, because the sensor will not wait.
+    //
+    // Build-time rather than a runtime command on purpose -- switching modes
+    // mid-stream would need the change to land on a frame boundary in three
+    // clock domains at once, and that is a separate problem from proving live
+    // streaming works at all.
+    parameter integer LIVE = 0,
     // 1 = step exposure0 across the burst to measure brightness vs exposure.
     parameter integer EXPO_SWEEP = 0,
     // Frames to let pass before arming the capture. The FIRST frame after the
@@ -351,6 +364,12 @@ module cam_frame_ft #(
     // crosses as a toggle + 2FF + edge detect. The value is registered alongside
     // the request: taking it combinationally from the index would send the NEXT
     // table entry, since the index advances on the same edge.
+    reg  fs_tog = 1'b0;
+    always @(posedge wordclk) if (frame_start) fs_tog <= ~fs_tog;
+    reg [2:0] fs_s = 3'b000;
+    always @(posedge ui_clk) fs_s <= {fs_s[1:0], fs_tog};
+    wire fs_pulse = fs_s[2] ^ fs_s[1];      // frame_start, in ui_clk
+
     reg  fe_tog = 1'b0;
     always @(posedge wordclk) if (frame_end) fe_tog <= ~fe_tog;
     reg [2:0] fe_s = 3'b000;
@@ -453,8 +472,16 @@ module cam_frame_ft #(
     // remainder that will never come. Gating on the FSM actually being in W_LO
     // makes the overflow flag mean something too: with no writes possible before
     // the arm, a set flag is now a real mid-frame drop and not a startup artifact.
+    reg [1:0] icc_w = 2'b00;
+    always @(posedge wordclk) icc_w <= {icc_w[0], init_calib_complete};
     reg [1:0] arm_s = 2'b00;
-    always @(posedge wordclk) arm_s <= {arm_s[0], (stw == W_LO)};
+    // In scan mode the capture may only arm once the DDR writer is draining
+    // (stw == W_LO). In LIVE mode the writer never runs at all, so gating on it
+    // would leave cap permanently disarmed, the cfifo empty, and the live path
+    // emitting nothing but zero-padded frames -- with ldrop climbing and no
+    // obvious cause. Live arms on calibration alone.
+    always @(posedge wordclk)
+        arm_s <= {arm_s[0], (LIVE != 0) ? icc_w[1] : (stw == W_LO)};
 
     // BURST CAPTURE -- NFRAMES consecutive frames, each bounded to exactly NKERN
     // kernels, then stop.
@@ -504,7 +531,9 @@ module cam_frame_ft #(
             else if (kvalid && kcnt != NKERN[17:0]) kcnt <= kcnt + 18'd1;
 
             if (frame_end) begin
-                if (fcnt == nf_cap - 6'd1) begin
+                if (LIVE != 0) begin
+                    fcnt <= 6'd0;          // live: stay armed, capture forever
+                end else if (fcnt == nf_cap - 6'd1) begin
                     cap <= 1'b0; cap_dn <= 1'b1;      // burst complete, one shot
                 end else fcnt <= fcnt + 6'd1;
             end
@@ -625,6 +654,12 @@ module cam_frame_ft #(
     // set forever, exactly as before.
     localparam [2:0] W_WAIT=0, W_LO=1, W_ISSUE=2, W_DONE=3;
     localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2;
+    // live path: idle -> header -> stream a frame -> (pad on underrun)
+    localparam [1:0] L_IDLE=0, L_HDR=1, L_RUN=2, L_PAD=3;
+    reg [1:0]  stl   = L_IDLE;
+    reg [17:0] lwidx = 18'd0;
+    reg [31:0] lidx  = 32'd0;
+    reg [15:0] ldrop = 16'd0;      // frames abandoned, reported in telemetry
     reg [2:0] stw = W_WAIT;         // writer
     reg [1:0] str = R_IDLE;         // reader
     reg [17:0] wfw = 18'd0;         // words written within the current frame
@@ -732,7 +767,7 @@ module cam_frame_ft #(
     // AFULL_MARGIN must exceed MAXOUT, and issuing stops on afull.
     localparam integer MAXOUT = 16;
 
-    wire ufifo_full, ufifo_afull, ufifo_empty, ufifo_ovf;
+    wire ufifo_full, ufifo_afull, ufifo_aempty, ufifo_empty, ufifo_ovf;
     wire [127:0] ufifo_dout;
     reg  [127:0] ufifo_din = 128'd0;
     reg          ufifo_wr = 1'b0;
@@ -741,6 +776,7 @@ module cam_frame_ft #(
     cam_async_fifo #(.DW(128), .AW(8), .AFULL_MARGIN(MAXOUT + 8)) u_ufifo (
         .wr_clk(ui_clk), .wr_rst(ui_rst), .wr_en(ufifo_wr),
         .wr_data(ufifo_din), .full(ufifo_full), .afull(ufifo_afull),
+        .aempty(ufifo_aempty),
         .overflow(ufifo_ovf),
         .rd_clk(ft_clk), .rd_rst(ft_rst), .rd_en(ufifo_rd),
         .rd_data(ufifo_dout), .empty(ufifo_empty)
@@ -788,7 +824,7 @@ module cam_frame_ft #(
 
             //---------------------------------------------------------- writer
             case (stw)
-            W_WAIT: if (init_calib_complete) begin
+            W_WAIT: if (init_calib_complete && (LIVE == 0)) begin
                         stw <= W_LO; waddr <= 28'd0;
                         wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0;
                         nf_run <= nf_u2;
@@ -820,6 +856,79 @@ module cam_frame_ft #(
             default: stw <= W_WAIT;
             endcase
 
+            //------------------------------------------------ live path (LIVE=1)
+            //
+            // Alignment is the whole problem. Each frame contributes exactly
+            // NWORDS kernels, so the word count alone would drift permanently
+            // the first time a word is lost -- the next frame's pixels would be
+            // used to finish this one and every frame after would be torn.
+            //
+            // So: resync on frame_start, and if the frame cannot be completed,
+            // PAD the output to NWORDS with zeros rather than emitting a short
+            // frame. A padded frame is visibly wrong in one frame; a short one
+            // desynchronises the host's parser for good. ldrop counts them.
+            if (LIVE != 0) begin
+                case (stl)
+                // DO NOT START A FRAME WE CANNOT FINISH.
+                //
+                // The first version started whenever the FIFO was merely not
+                // almost-full, then discovered mid-frame that the host could not
+                // keep up and padded the rest -- with a host sustaining 157 MB/s
+                // against the camera's 314, that meant EVERY frame arrived
+                // padded and not one was usable.
+                //
+                // The FIFO holds far less than a frame, so a drained FIFO at
+                // frame_start is the proxy for "the sink kept pace with the last
+                // frame". Skipping cleanly gives fewer, WHOLE frames; the
+                // alternative gives a full frame rate of ruined ones.
+                L_IDLE: if (fs_pulse) begin
+                            if (ufifo_aempty) begin
+                                hw <= 3'd0; lwidx <= 18'd0; stl <= L_HDR;
+                            end else if (ldrop != 16'hFFFF) begin
+                                ldrop <= ldrop + 16'd1;   // skipped, not torn
+                            end
+                        end
+
+                L_HDR: if (!ufifo_afull) begin
+                    ufifo_wr <= 1'b1;
+                    if (hw == 3'd0)
+                        ufifo_din <= { {18'd0, 6'd1, 2'd0, 6'd0},
+                                       {NROW[15:0], NCOL[15:0]},
+                                       lidx, MAGIC };
+                    else
+                        ufifo_din <= { ~MAGIC, 32'd2, FBYTES/4, FBYTES };
+                    if (hw == 3'd1) begin hw <= 3'd0; stl <= L_RUN; end
+                    else hw <= hw + 3'd1;
+                end
+
+                L_RUN: begin
+                    // a frame_start arriving mid-frame means words were lost
+                    if (fs_pulse) begin
+                        ldrop <= ldrop + 16'd1;
+                        stl   <= L_PAD;
+                    end else if (!cfifo_empty && !ufifo_afull) begin
+                        ufifo_wr  <= 1'b1;
+                        ufifo_din <= cfifo_dout;
+                        if (lwidx == NWORDS[17:0] - 18'd1) begin
+                            lidx <= lidx + 32'd1;
+                            stl  <= L_IDLE;
+                        end else lwidx <= lwidx + 18'd1;
+                    end
+                end
+
+                L_PAD: if (!ufifo_afull) begin
+                    ufifo_wr  <= 1'b1;
+                    ufifo_din <= 128'd0;
+                    if (lwidx == NWORDS[17:0] - 18'd1) begin
+                        lidx <= lidx + 32'd1;
+                        lwidx <= 18'd0;
+                        stl <= L_IDLE;
+                    end else lwidx <= lwidx + 18'd1;
+                end
+                default: stl <= L_IDLE;
+                endcase
+            end
+
             //---------------------------------------------------------- reader
             case (str)
             // rf < wf_done IS the safety argument. During capture it holds the
@@ -838,7 +947,7 @@ module cam_frame_ft #(
             // init_calib_complete never asserting is upstream of everything the
             // reader does, so if merely restructuring the FSM breaks it, the
             // cause is not the arbitration.
-            R_IDLE: if ((rf < wf_done) &&
+            R_IDLE: if ((LIVE == 0) && (rf < wf_done) &&
                         ((CONCURRENT != 0) || (stw == W_DONE))) begin
                         hw <= 3'd0; str <= R_HDR;
                     end
@@ -879,7 +988,10 @@ module cam_frame_ft #(
     end
 
     // sample-and-pop in the same cycle -- FWFT requires it
-    assign cfifo_rd = (stw == W_LO) && !cfifo_empty;
+    // sample-and-pop in the same cycle -- FWFT requires it
+    assign cfifo_rd = (LIVE != 0)
+                    ? ((stl == L_RUN) && !cfifo_empty && !ufifo_afull && !fs_pulse)
+                    : ((stw == W_LO) && !cfifo_empty);
 
     //------------------------------------------------- the FT601 write master
     reg [1:0] ftrst_s = 2'b11;
@@ -1083,9 +1195,11 @@ module cam_frame_ft #(
     // channel needs no reply direction of its own.
     reg [15:0] ccnt_s1 = 16'd0, ccnt_s2 = 16'd0;
     reg [3:0]  rxd_s1 = 4'd0, rxd_s2 = 4'd0;
+    reg [15:0] ldrop_s1 = 16'd0, ldrop_s2 = 16'd0;
     always @(posedge ui_clk) begin
         ccnt_s1 <= cmd_count; ccnt_s2 <= ccnt_s1;
         rxd_s1  <= rx_dbg;    rxd_s2  <= rxd_s1;
+        ldrop_s1 <= ldrop;    ldrop_s2 <= ldrop_s1;
     end
     // + rx_dbg{RXF#-ever-low, state} + frames-per-scan = 128 bits, 32 chars
     reg [5:0] nfr_s1 = 6'd0, nfr_s2 = 6'd0;
@@ -1093,7 +1207,8 @@ module cam_frame_ft #(
     wire [127:0] stat = { stw[2:0], (str != R_IDLE), init_calib_complete, aligned, streaming, cap_s[1],
                           covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
                           wtot_s2, wmin_s2, wmax_s2, expo_cur, ccnt_s2,
-                          rxd_s2, nfr_s2, cal_retry, 2'd0 };
+                          rxd_s2, nfr_s2, cal_retry,
+                          (LIVE != 0), (CONCURRENT != 0) };
 
     reg [127:0] shold = 128'd0;
     reg [4:0]  nib   = 5'd0;

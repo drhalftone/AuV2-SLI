@@ -35,7 +35,8 @@ module cam_async_fifo #(
     input  wire          wr_en,
     input  wire [DW-1:0] wr_data,
     output wire          full,
-    output wire          afull,               // <2 slots free -- see below
+    output wire          afull,               // <AFULL_MARGIN slots free
+    output wire          aempty,              // drained: <1/4 full
     output reg           overflow = 1'b0,     // sticky: a write was DROPPED
 
     input  wire          rd_clk,
@@ -87,6 +88,11 @@ module cam_async_fifo #(
     wire [AW:0] rbin_wr    = gray2bin(rgray_s2);
     wire [AW:0] occupancy  = wbin - rbin_wr;
     assign afull = (occupancy >= (DEPTH - AFULL_MARGIN));
+    // "Has the consumer kept up?" A live producer that commits to a frame it
+    // cannot finish must abandon it, so it needs to know BEFORE starting that the
+    // previous frame drained. The FIFO is far smaller than a frame, so an empty
+    // FIFO at frame start is the proxy for the sink keeping pace.
+    assign aempty = (occupancy < (DEPTH >> 2));
 
     always @(posedge wr_clk) begin
         if (wr_rst) begin
