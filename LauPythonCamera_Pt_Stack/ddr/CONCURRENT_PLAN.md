@@ -110,6 +110,38 @@ two-FSM structure with the *old* sequential behaviour.
 
 One build to halve the search space.
 
+## LIVE VIDEO: must go THROUGH DDR (2026-08-14)
+
+Bypassing DDR cannot work, and the reason is the sensor's **burst** profile, not
+average bandwidth:
+
+    camera burst   2.62 MB / 4.55 ms readout = 576 MB/s
+    USB 3.0 link                               325 MB/s
+    FIFO           1,024 words vs 163,840 per frame  (0.6% of a frame)
+
+Peak rate is ~2x the link and the FIFO holds <1% of a frame, so a frame cannot be
+delivered without frame-sized buffering. Lowering the frame rate does NOT help --
+it lengthens the gap between bursts without slowing the burst. Measured: at 60 Hz
+every frame still arrived padded.
+
+**Next architecture:** continuous capture into a DDR ring buffer with a reader
+draining completed frames — the concurrent design made to run forever. Open
+policy: when the reader falls behind, skip whole frames rather than let the writer
+overwrite one being read.
+
+## UNSUPPORTED RESULTS — build script was dropping generics
+
+`synth_design` never received `CONCURRENT` or `LIVE` while `puts` echoed the
+intended values from the environment. Both took RTL defaults. Therefore:
+
+- the sequential-vs-concurrent **latency A/B compared two identical builds**;
+  "concurrency buys nothing" is NOT established and must be re-run
+- the shortcut that "proved the FSM split was fine" was also CONCURRENT=1
+
+Still standing: concurrent capture is byte-exact (both builds were concurrent),
+and the MIG reset glitch was real. Fixed: generics passed, the build echoes the
+ACTUAL synth_design command, and the design reports LIVE/CONCURRENT in telemetry.
+
 ## Standing rules
 
 - Gate on **setup and hold**. The camera build only ever checked setup; hold violations
