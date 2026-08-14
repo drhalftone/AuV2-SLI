@@ -84,6 +84,7 @@ print("headers: %d   spacing (expect %d): %s" % (len(offs), FBYTES + HDR, gaps))
 
 checked = bad = 0
 frames = 0
+idxs = []
 for o in offs:
     if o + HDR + FBYTES > len(data):
         break
@@ -91,6 +92,7 @@ for o in offs:
     if h[7] != (~MAGIC & 0xFFFFFFFF) or h[4] != FBYTES:
         continue
     slot = h[3] & 0x3F
+    idxs.append(h[1])
     frames += 1
     # every 32-bit word must be {2'b0, slot[5:0], index[23:0]}
     words = struct.unpack_from("<%dI" % (FBYTES // 4), data, o + HDR)
@@ -110,7 +112,7 @@ for o in offs:
         print("  slot %2d: all %d words correct" % (slot, len(words)))
 
 print()
-print("frames checked : %d" % frames)
+print("frames checked : %d   frame_idx seen: %s" % (frames, idxs))
 print("words checked  : %d" % checked)
 print("words wrong    : %d" % bad)
 print()

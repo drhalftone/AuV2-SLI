@@ -16,7 +16,16 @@ read_ip  $xci
 read_xdc $here/pt_ddr_loop.xdc
 read_xdc $here/pt_ft_plus_bottom_timed.xdc
 
-synth_design -top ddr_loop_ft -part $part
+# GEN_DIV throttles the producer: a word every N ui_clk cycles. Default 3
+# (~533 MB/s) makes the WRITER the fast side, which does not exercise the case
+# that matters -- a reader outrunning the writer and reading frames that are not
+# there yet. Set CAM_GEN_DIV=16 (~100 MB/s) to make the READER 3x faster and
+# lean on the rf < wf_done fence hard.
+set gdiv 3
+if {[info exists ::env(CAM_GEN_DIV)]} { set gdiv $::env(CAM_GEN_DIV) }
+puts "### GEN_DIV = $gdiv"
+
+synth_design -top ddr_loop_ft -part $part -generic GEN_DIV=$gdiv
 opt_design
 place_design
 phys_opt_design

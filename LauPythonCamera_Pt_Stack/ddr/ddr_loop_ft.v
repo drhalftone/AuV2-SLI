@@ -199,8 +199,11 @@ module ddr_loop_ft #(
                              {2'b00, wf, base + 24'd1},
                              {2'b00, wf, base + 24'd0} };
 
-    reg [2:0] gdiv = 3'd0;
-    wire gen_rdy = (gdiv == 3'd0);
+    // 8 bits: a 3-bit counter silently truncated GEN_DIV (16 -> 0, dividing by
+    // 8), so the producer ran twice as fast as intended and the test did not
+    // starve the reader as much as it appeared to.
+    reg [7:0] gdiv = 8'd0;
+    wire gen_rdy = (gdiv == 8'd0);
 
     always @(posedge ui_clk) begin
         ufifo_wr <= 1'b0;
@@ -218,10 +221,10 @@ module ddr_loop_ft #(
             wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0; rf <= 6'd0;
             cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
             frame_idx <= 32'd0; rd_iss <= 18'd0; rd_got <= 18'd0;
-            outst <= 5'd0; gdiv <= 3'd0;
+            outst <= 5'd0; gdiv <= 8'd0;
         end else begin
-            if (gdiv == GEN_DIV[2:0] - 3'd1) gdiv <= 3'd0;
-            else                             gdiv <= gdiv + 3'd1;
+            if (gdiv == GEN_DIV[7:0] - 8'd1) gdiv <= 8'd0;
+            else                             gdiv <= gdiv + 8'd1;
 
             if (r_ack) begin
                 rd_iss <= rd_iss + 18'd1;
