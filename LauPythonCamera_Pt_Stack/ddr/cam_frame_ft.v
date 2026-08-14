@@ -450,7 +450,7 @@ module cam_frame_ft #(
     // makes the overflow flag mean something too: with no writes possible before
     // the arm, a set flag is now a real mid-frame drop and not a startup artifact.
     reg [1:0] arm_s = 2'b00;
-    always @(posedge wordclk) arm_s <= {arm_s[0], (st == W_LO)};
+    always @(posedge wordclk) arm_s <= {arm_s[0], (stw == W_LO)};
 
     // BURST CAPTURE -- NFRAMES consecutive frames, each bounded to exactly NKERN
     // kernels, then stop.
@@ -598,27 +598,53 @@ module cam_frame_ft #(
     wire [127:0] app_rd_data;
     wire        app_rd_data_valid, app_rd_data_end;
 
-    reg [27:0]  r_addr = 28'd0;
-    reg [2:0]   r_cmd  = 3'd0;
+    reg [27:0]  waddr = 28'd0;      // writer pointer
+    reg [27:0]  raddr = 28'd0;      // reader pointer, chases the writer
     reg [127:0] r_wdata = 128'd0;
     reg         cmd_done = 1'b0, dat_done = 1'b0;
 
-    localparam [3:0] W_WAIT=0, W_LO=1, W_HI=2, W_ISSUE=3, W_DONE=4,
-                     P_HDR=5, P_RUN=6;
-    reg [3:0] st = W_WAIT;
+    // CONCURRENT CAPTURE AND PLAYBACK.
+    //
+    // These were one FSM in sequence: write all N frames, then replay them. A
+    // scan cost capture PLUS download -- 200 ms + 182 ms at 24 frames. Run
+    // together, the download trails capture by one frame and a scan finishes in
+    // ~205 ms.
+    //
+    // The MIG has ONE command port and both sides need it. THE WRITER ALWAYS
+    // WINS: a dropped camera word is gone forever, a stalled reader merely
+    // catches up. Never invert this.
+    //
+    // The reader may only touch frames the writer has FINISHED (rf < wf_done).
+    // A frame read mid-write is a torn image that still looks like a photograph
+    // -- the failure mode this project keeps producing. After capture wf_done
+    // sticks at nf_run, so every frame stays available and the reader loops the
+    // set forever, exactly as before.
+    localparam [2:0] W_WAIT=0, W_LO=1, W_ISSUE=2, W_DONE=3;
+    localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2;
+    reg [2:0] stw = W_WAIT;         // writer
+    reg [1:0] str = R_IDLE;         // reader
+    reg [17:0] wfw = 18'd0;         // words written within the current frame
+    reg [5:0]  wf  = 6'd0;          // frame being written
+    reg [5:0]  wf_done = 6'd0;      // frames FULLY written -- the fence
+    reg [5:0]  rf  = 6'd0;          // frame being read
 
     // Playback issues reads speculatively; the write phase is unchanged.
     reg  [17:0] rd_iss = 18'd0, rd_got = 18'd0;
     reg  [4:0]  outst  = 5'd0;
-    wire issue_rd = (st == P_RUN) && (rd_iss != NWORDS[17:0])
-                    && (outst < MAXOUT[4:0]) && !ufifo_afull;
-    wire issuing = (st == W_ISSUE) || issue_rd;
-    assign app_addr     = r_addr;
-    assign app_cmd      = r_cmd;
-    assign app_en       = (st == W_ISSUE) ? !cmd_done : issue_rd;
+    wire w_req = (stw == W_ISSUE) && !cmd_done;
+    wire r_req = (str == R_RUN) && (rd_iss != NWORDS[17:0])
+                 && (outst < MAXOUT[4:0]) && !ufifo_afull;
+    // Writer priority. r_ack must NOT count a grant that went to the writer,
+    // or the reader would advance its pointer on a cycle it did not get.
+    wire r_gnt = r_req && !w_req;
+    wire r_ack = r_gnt && app_rdy;
+    wire w_ack = w_req && app_rdy;
+    assign app_addr     = w_req ? waddr : raddr;
+    assign app_cmd      = w_req ? 3'd0  : 3'd1;   // 0 = write, 1 = read
+    assign app_en       = w_req || r_gnt;
     assign app_wdf_data = r_wdata;
-    assign app_wdf_wren = (st == W_ISSUE) && !dat_done;
-    assign app_wdf_end  = (st == W_ISSUE) && !dat_done;
+    assign app_wdf_wren = (stw == W_ISSUE) && !dat_done;
+    assign app_wdf_end  = (stw == W_ISSUE) && !dat_done;
 
     mig_ddr3 u_mig (
         .ddr3_addr(ddr3_addr), .ddr3_ba(ddr3_ba),
@@ -675,8 +701,6 @@ module cam_frame_ft #(
         .rd_data(ufifo_dout), .empty(ufifo_empty)
     );
 
-    reg [17:0] fwidx = 18'd0;             // 0..NWORDS-1 within one frame
-    reg [5:0]  fidx  = 6'd0;              // frame index, write phase and playback
     reg [5:0]  nf_run = 6'd0;             // frames in the burst actually captured
     reg [2:0]  hw = 3'd0;                 // header word index
     reg [31:0] frame_idx = 32'd0;
@@ -685,84 +709,87 @@ module cam_frame_ft #(
         ufifo_wr <= 1'b0;
 
         // app_rd_data_valid is not back-pressurable: take it the cycle it is
-        // presented or lose it. Guarded by AFULL_MARGIN > MAXOUT above.
-        if (!ui_rst && (st == P_RUN) && app_rd_data_valid) begin
+        // presented or lose it. Guarded by AFULL_MARGIN > MAXOUT.
+        if (!ui_rst && (str == R_RUN) && app_rd_data_valid) begin
             ufifo_wr  <= 1'b1;
             ufifo_din <= app_rd_data;
             rd_got    <= rd_got + 18'd1;
         end
 
-        if (rearm_u && !ui_rst) begin
-            // restart the write phase; the playback pointers are re-initialised
-            // by W_DONE when the new burst completes
-            st <= W_LO; fwidx <= 18'd0; fidx <= 6'd0; nf_run <= nf_u2;
-            r_addr <= 28'd0; r_cmd <= 3'd0;
-            cmd_done <= 1'b0; dat_done <= 1'b0;
-        end else if (ui_rst) begin
-            st <= W_WAIT; fwidx <= 18'd0; fidx <= 6'd0; nf_run <= 6'd0;
-            r_addr <= 28'd0; r_cmd <= 3'd0;
-            cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
+        if (ui_rst) begin
+            stw <= W_WAIT; str <= R_IDLE;
+            waddr <= 28'd0; raddr <= 28'd0;
+            wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0; rf <= 6'd0;
+            nf_run <= 6'd0; cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
             frame_idx <= 32'd0; rd_iss <= 18'd0; rd_got <= 18'd0; outst <= 5'd0;
+        end else if (rearm_u) begin
+            // New scan: rewind BOTH sides. wf_done back to 0 re-arms the fence,
+            // otherwise the reader would immediately serve frames left from the
+            // previous scan before any new data had landed.
+            stw <= W_LO; str <= R_IDLE;
+            waddr <= 28'd0; raddr <= 28'd0;
+            wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0; rf <= 6'd0;
+            nf_run <= nf_u2; cmd_done <= 1'b0; dat_done <= 1'b0;
+            rd_iss <= 18'd0; rd_got <= 18'd0; outst <= 5'd0;
         end else begin
-            // one read accepted by the MIG, one word returned
-            if (issue_rd && app_rdy) begin
+            // outstanding-read accounting, on the READER's grants only
+            if (r_ack) begin
                 rd_iss <= rd_iss + 18'd1;
-                r_addr <= r_addr + ASTEP;
+                raddr  <= raddr + ASTEP;
                 if (!app_rd_data_valid) outst <= outst + 5'd1;
-            end else if (app_rd_data_valid && (st == P_RUN) && (outst != 5'd0)) begin
+            end else if (app_rd_data_valid && (str == R_RUN) && (outst != 5'd0)) begin
                 outst <= outst - 5'd1;
             end
 
-            case (st)
+            //---------------------------------------------------------- writer
+            case (stw)
             W_WAIT: if (init_calib_complete) begin
-                        st <= W_LO; fwidx <= 18'd0; fidx <= 6'd0;
-                        nf_run <= nf_u2; r_addr <= 28'd0; r_cmd <= 3'd0;
+                        stw <= W_LO; waddr <= 28'd0;
+                        wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0;
+                        nf_run <= nf_u2;
                     end
-            // One kernel, one DDR word. cfifo_rd is asserted combinationally in
-            // this same cycle (see above), so the word sampled here is the word
-            // popped here.
+            // One kernel, one DDR word. cfifo_rd asserts combinationally in this
+            // same cycle, so the word sampled here is the word popped here.
             W_LO: if (!cfifo_empty) begin
                       r_wdata  <= cfifo_dout;
-                      cmd_done <= 1'b0; dat_done <= 1'b0; st <= W_ISSUE;
+                      cmd_done <= 1'b0; dat_done <= 1'b0; stw <= W_ISSUE;
                   end
             W_ISSUE: begin
-                if (app_en && app_rdy)           cmd_done <= 1'b1;
+                if (w_ack)                       cmd_done <= 1'b1;
                 if (app_wdf_wren && app_wdf_rdy) dat_done <= 1'b1;
-                if ((cmd_done || (app_en && app_rdy)) &&
+                if ((cmd_done || w_ack) &&
                     (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    // one frame's worth, nf_run times
-                    if (fwidx == NWORDS[17:0] - 18'd1) begin
-                        fwidx <= 18'd0;
-                        if (fidx == nf_run - 6'd1) st <= W_DONE;
-                        else begin
-                            fidx <= fidx + 6'd1;
-                            r_addr <= r_addr + ASTEP; st <= W_LO;
-                        end
+                    waddr <= waddr + ASTEP;
+                    if (wfw == NWORDS[17:0] - 18'd1) begin
+                        wfw     <= 18'd0;
+                        wf_done <= wf_done + 6'd1;   // THIS frame is now readable
+                        if (wf == nf_run - 6'd1) stw <= W_DONE;
+                        else begin wf <= wf + 6'd1; stw <= W_LO; end
                     end else begin
-                        fwidx <= fwidx + 18'd1;
-                        r_addr <= r_addr + ASTEP; st <= W_LO;
+                        wfw <= wfw + 18'd1; stw <= W_LO;
                     end
                 end
             end
-            W_DONE: begin
-                fwidx <= 18'd0; fidx <= 6'd0;
-                r_addr <= 28'd0; r_cmd <= 3'd1;
-                hw <= 3'd0; st <= P_HDR;
-            end
+            W_DONE: ;                     // capture complete; reader carries on
+            default: stw <= W_WAIT;
+            endcase
 
-            // 8-word header, then the frame, then straight into the next header.
-            // The FT601 pulls continuously and the captured burst never changes,
-            // so the host sees frames 0..NFRAMES-1 repeating forever at link rate.
-            // Word 3 carries the SLOT (0..NFRAMES-1) so the host knows which
-            // captured frame it holds; frame_idx keeps counting across wraps, and
-            // slot == frame_idx mod NFRAMES. Two frames sharing a slot must be
-            // byte-identical -- that is the bus integrity check.
-            // header as 2 x 128-bit entries, little-endian word order
-            P_HDR: if (!ufifo_afull) begin
+            //---------------------------------------------------------- reader
+            case (str)
+            // rf < wf_done IS the safety argument. During capture it holds the
+            // reader behind the writer; afterwards wf_done == nf_run so every
+            // frame is available and the reader loops indefinitely.
+            R_IDLE: if (rf < wf_done) begin
+                        hw <= 3'd0; str <= R_HDR;
+                    end
+
+            // header as 2 x 128-bit entries, little-endian word order. Word 3
+            // carries the slot and the scan length, so a scan is self-describing.
+            R_HDR: if (!ufifo_afull) begin
                 ufifo_wr <= 1'b1;
                 if (hw == 3'd0)
-                    ufifo_din <= { {18'd0, nf_run, 2'd0, fidx},
+                    ufifo_din <= { {18'd0, nf_run, 2'd0, rf},
                                    {NROW[15:0], NCOL[15:0]},
                                    frame_idx, MAGIC };
                 else
@@ -770,30 +797,30 @@ module cam_frame_ft #(
                 if (hw == 3'd1) begin
                     hw <= 3'd0;
                     rd_iss <= 18'd0; rd_got <= 18'd0;
-                    st <= P_RUN;
+                    str <= R_RUN;
                 end else hw <= hw + 3'd1;
             end
 
-            // Reads are issued up to MAXOUT deep and their data is accepted the
-            // cycle it returns; the frame ends when rd_got reaches NWORDS.
-            P_RUN: if (rd_got == NWORDS[17:0]) begin
+            // Reads issued up to MAXOUT deep; the frame ends when rd_got reaches
+            // NWORDS, i.e. when the DATA is back -- not when the last read was
+            // merely issued.
+            R_RUN: if (rd_got == NWORDS[17:0]) begin
                 frame_idx <= frame_idx + 32'd1;
-                hw <= 3'd0;
-                st <= P_HDR;
-                if (fidx == nf_run - 6'd1) begin
-                    fidx <= 6'd0; r_addr <= 28'd0;      // wrap to frame 0
+                if (rf == nf_run - 6'd1) begin
+                    rf <= 6'd0; raddr <= 28'd0;      // wrap to frame 0
                 end else begin
-                    fidx <= fidx + 6'd1;
+                    rf <= rf + 6'd1;
                 end
+                str <= R_IDLE;
             end
 
-            default: st <= W_WAIT;
+            default: str <= R_IDLE;
             endcase
         end
     end
 
     // sample-and-pop in the same cycle -- FWFT requires it
-    assign cfifo_rd = (st == W_LO) && !cfifo_empty;
+    assign cfifo_rd = (stw == W_LO) && !cfifo_empty;
 
     //------------------------------------------------- the FT601 write master
     reg [1:0] ftrst_s = 2'b11;
@@ -1004,7 +1031,7 @@ module cam_frame_ft #(
     // + rx_dbg{RXF#-ever-low, state} + frames-per-scan = 128 bits, 32 chars
     reg [5:0] nfr_s1 = 6'd0, nfr_s2 = 6'd0;
     always @(posedge ui_clk) begin nfr_s1 <= nframes_r; nfr_s2 <= nfr_s1; end
-    wire [127:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
+    wire [127:0] stat = { stw[2:0], (str != R_IDLE), init_calib_complete, aligned, streaming, cap_s[1],
                           covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
                           wtot_s2, wmin_s2, wmax_s2, expo_cur, ccnt_s2,
                           rxd_s2, nfr_s2, 6'd0 };
@@ -1050,7 +1077,7 @@ module cam_frame_ft #(
         led[6] <= init_calib_complete;
         led[5] <= aligned;
         led[4] <= cap_s[1];
-        led[3] <= (st >= P_HDR);          // streaming to USB
+        led[3] <= (str != R_IDLE);        // streaming to USB
         led[2] <= streaming;
         led[1] <= covf_s[1];              // sensor->DDR FIFO overflowed
         led[0] <= uovf_s[1];              // DDR->USB FIFO overflowed
