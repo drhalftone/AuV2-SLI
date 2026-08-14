@@ -38,7 +38,7 @@ module cam_frame_ft #(
     parameter integer NCOL = 1280,
     parameter integer NROW = 1024,
     parameter [15:0]  EXPOSURE = 16'h0640,
-    parameter integer NFRAMES  = 8,           // burst length; <=16 (fcnt is 4 bits)
+    parameter integer NFRAMES  = 24,          // burst length; <=31 (fcnt is 5 bits)
     // TRIGGERED GLOBAL SHUTTER. 0 = free-running (the configuration that has
     // always produced sane pixels), 1 = 192[4] set and the array held in reset
     // until a rising edge on trigger0.
@@ -57,6 +57,12 @@ module cam_frame_ft #(
     // readout so a trigger never lands inside the previous frame (the sensor
     // ignores those, p14/p25).
     parameter integer TRIG_US   = 7500,
+    // Trigger period in CLOCK CYCLES, overriding TRIG_US when non-zero. 120 Hz
+    // is 8.33333 ms = 833,333 cycles of the 100 MHz clock, which is not a whole
+    // number of microseconds -- so an exact rate cannot be expressed in TRIG_US.
+    // 833,333 gives 120.00005 Hz, i.e. 0.4 ppm from the counter. Absolute
+    // accuracy is then set by the board crystal (tens of ppm), not by us.
+    parameter integer TRIG_CY   = 0,
     // 1 = step exposure0 across the burst to measure brightness vs exposure.
     parameter integer EXPO_SWEEP = 0,
     // Frames to let pass before arming the capture. The FIRST frame after the
@@ -210,7 +216,7 @@ module cam_frame_ft #(
     // triggered mode it reports the TRIGGER period. That is a free cross-check
     // that the trigger is really driving acquisition rather than the sensor
     // free-running underneath us: expect 8 * TRIG_US, not 8 * 6.860 ms.
-    localparam integer TRIG_PER = TRIG_US * 100;      // clk = 100 MHz
+    localparam integer TRIG_PER = (TRIG_CY != 0) ? TRIG_CY : (TRIG_US * 100);
 
     // PULSE-WIDTH SWEEP ACROSS THE BURST -- eight exposure points, ONE build.
     //
@@ -425,7 +431,7 @@ module cam_frame_ft #(
     // reload value is 1, not 0. arm_now covers the same case on the very first
     // frame, when cap has not yet been registered high.
     reg [17:0] kcnt = 18'd0;
-    reg [3:0]  fcnt = 4'd0;
+    reg [4:0]  fcnt = 5'd0;
     reg        cap  = 1'b0, cap_dn = 1'b0;
 
     reg [3:0] skipc = 4'd0;
@@ -440,7 +446,7 @@ module cam_frame_ft #(
 
     always @(posedge wordclk) begin
         if (wc_rst) begin
-            cap <= 1'b0; cap_dn <= 1'b0; kcnt <= 18'd0; fcnt <= 4'd0;
+            cap <= 1'b0; cap_dn <= 1'b0; kcnt <= 18'd0; fcnt <= 5'd0;
         end else if (arm_now) begin
             cap  <= 1'b1;
             kcnt <= kvalid ? 18'd1 : 18'd0;
@@ -449,45 +455,62 @@ module cam_frame_ft #(
             else if (kvalid && kcnt != NKERN[17:0]) kcnt <= kcnt + 18'd1;
 
             if (frame_end) begin
-                if (fcnt == NFRAMES[3:0] - 4'd1) begin
+                if (fcnt == NFRAMES[4:0] - 5'd1) begin
                     cap <= 1'b0; cap_dn <= 1'b1;      // burst complete, one shot
-                end else fcnt <= fcnt + 4'd1;
+                end else fcnt <= fcnt + 5'd1;
             end
         end
     end
 
-    // FRAME PERIOD, measured -- not derived from the register programming.
+    // FRAME-RATE MONITOR -- every interval, continuously, in windows of NWIN.
     //
-    // Counts wordclk cycles between the 1st and 9th frame_start, i.e. exactly 8
-    // frame periods, then latches and stops. wordclk is the sensor's own recovered
-    // 72.000 MHz (720 Mbps / 10), so
+    // Measures the wordclk cycles between successive frame_starts and, over each
+    // window of NWIN frames, accumulates the total and tracks the MIN and MAX
+    // single interval. A mean alone cannot tell a steady 120 Hz from one that
+    // drops a frame and runs the rest early, so min/max is the part that makes
+    // this a check rather than an assertion: for a clean run they must equal the
+    // mean to within a cycle or two.
     //
-    //     fps = 8 * 72e6 / fper_lat
+    // Continuous windows mean the benchmark repeats forever -- read COM6 for as
+    // long as you like and every line is another independent NWIN-frame run.
+    // This is deliberately NOT tied to the DDR capture: frame timing is a
+    // property of the sensor and trigger, and re-arming a one-shot capture would
+    // limit the benchmark to a single window per bitstream load.
     //
-    // Measuring across 8 periods rather than 1 divides the +/-1 cycle quantisation
-    // by eight and averages any frame-to-frame jitter. fper_lat is written once and
-    // then never changes, so sampling all 32 bits into ui_clk needs no gray coding
-    // -- but it is only safe BECAUSE it is static; do not make it free-running.
-    reg [31:0] fper_cnt = 32'd0, fper_lat = 32'd0;
-    reg [3:0]  fper_n   = 4'd0;
-    reg        fper_run = 1'b0, fper_dn = 1'b0;
+    // wordclk is the sensor's recovered 72.000 MHz, so
+    //     fps = NWIN * 72e6 / wtot
+    localparam integer NWIN = 24;
+
+    reg [19:0] icnt = 20'd0;                       // cycles since last frame_start
+    reg [27:0] wtot = 28'd0;
+    reg [19:0] wmin = 20'hFFFFF, wmax = 20'd0;
+    reg [4:0]  wn   = 5'd0;
+    reg        wgo  = 1'b0;                        // first frame_start has no interval
+    reg [27:0] wtot_l = 28'd0;                     // latched, stable for a whole window
+    reg [19:0] wmin_l = 20'd0, wmax_l = 20'd0;
+
+    wire [19:0] iv    = icnt + 20'd1;              // exact interval, no off-by-one
+    wire [27:0] tot_n = wtot + {8'd0, iv};
+    wire [19:0] min_n = (iv < wmin) ? iv : wmin;
+    wire [19:0] max_n = (iv > wmax) ? iv : wmax;
+
     always @(posedge wordclk) begin
         if (wc_rst) begin
-            fper_cnt <= 32'd0; fper_lat <= 32'd0; fper_n <= 4'd0;
-            fper_run <= 1'b0;  fper_dn  <= 1'b0;
-        end else begin
-            if (fper_run) fper_cnt <= fper_cnt + 32'd1;
-            if (frame_start) begin
-                if (!fper_run && !fper_dn) begin
-                    fper_run <= 1'b1; fper_cnt <= 32'd0; fper_n <= 4'd0;
-                end else if (fper_run) begin
-                    if (fper_n == 4'd7) begin
-                        fper_lat <= fper_cnt;      // 8 periods elapsed
-                        fper_run <= 1'b0;
-                        fper_dn  <= 1'b1;
-                    end else fper_n <= fper_n + 4'd1;
-                end
+            icnt <= 20'd0; wtot <= 28'd0; wmin <= 20'hFFFFF; wmax <= 20'd0;
+            wn <= 5'd0; wgo <= 1'b0;
+            wtot_l <= 28'd0; wmin_l <= 20'd0; wmax_l <= 20'd0;
+        end else if (frame_start) begin
+            icnt <= 20'd0;
+            if (!wgo) begin
+                wgo <= 1'b1;
+            end else if (wn == NWIN[4:0] - 5'd1) begin
+                wtot_l <= tot_n; wmin_l <= min_n; wmax_l <= max_n;
+                wtot <= 28'd0; wmin <= 20'hFFFFF; wmax <= 20'd0; wn <= 5'd0;
+            end else begin
+                wtot <= tot_n; wmin <= min_n; wmax <= max_n; wn <= wn + 5'd1;
             end
+        end else begin
+            icnt <= icnt + 20'd1;
         end
     end
 
@@ -586,9 +609,9 @@ module cam_frame_ft #(
         .rd_data(ufifo_dout), .empty(ufifo_empty)
     );
 
-    reg [20:0] widx  = 21'd0;             // 0..NTOT-1, the whole burst
+    reg [21:0] widx  = 22'd0;             // 0..NTOT-1, the whole burst
     reg [17:0] fwidx = 18'd0;             // 0..NWORDS-1 within one frame
-    reg [3:0]  fidx  = 4'd0;              // which captured frame is streaming
+    reg [4:0]  fidx  = 5'd0;              // which captured frame is streaming
     reg [127:0] rword = 128'd0;
     reg [2:0]  pw = 3'd0;                 // which 32-bit slice of rword
     reg [2:0]  hw = 3'd0;                 // header word index
@@ -598,14 +621,14 @@ module cam_frame_ft #(
         ufifo_wr <= 1'b0;
 
         if (ui_rst) begin
-            st <= W_WAIT; widx <= 21'd0; fwidx <= 18'd0; fidx <= 4'd0;
+            st <= W_WAIT; widx <= 22'd0; fwidx <= 18'd0; fidx <= 5'd0;
             r_addr <= 28'd0; r_cmd <= 3'd0;
             cmd_done <= 1'b0; dat_done <= 1'b0; pw <= 3'd0; hw <= 3'd0;
             frame_idx <= 32'd0;
         end else begin
             case (st)
             W_WAIT: if (init_calib_complete) begin
-                        st <= W_LO; widx <= 21'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
+                        st <= W_LO; widx <= 22'd0; r_addr <= 28'd0; r_cmd <= 3'd0;
                     end
             // One kernel, one DDR word. cfifo_rd is asserted combinationally in
             // this same cycle (see above), so the word sampled here is the word
@@ -620,14 +643,14 @@ module cam_frame_ft #(
                 if ((cmd_done || (app_en && app_rdy)) &&
                     (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    if (widx == NTOT[20:0] - 21'd1) st <= W_DONE;
+                    if (widx == NTOT[21:0] - 22'd1) st <= W_DONE;
                     else begin
-                        widx <= widx + 21'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
+                        widx <= widx + 22'd1; r_addr <= r_addr + ASTEP; st <= W_LO;
                     end
                 end
             end
             W_DONE: begin
-                widx <= 21'd0; fwidx <= 18'd0; fidx <= 4'd0;
+                widx <= 22'd0; fwidx <= 18'd0; fidx <= 5'd0;
                 r_addr <= 28'd0; r_cmd <= 3'd1;
                 hw <= 3'd0; st <= P_HDR;
             end
@@ -645,7 +668,7 @@ module cam_frame_ft #(
                 3'd0: ufifo_din <= MAGIC;
                 3'd1: ufifo_din <= frame_idx;
                 3'd2: ufifo_din <= {NROW[15:0], NCOL[15:0]};
-                3'd3: ufifo_din <= {28'd0, fidx};   // slot within the burst
+                3'd3: ufifo_din <= {27'd0, fidx};   // slot within the burst
                 3'd4: ufifo_din <= FBYTES;
                 3'd5: ufifo_din <= FBYTES/4;
                 3'd6: ufifo_din <= 32'd2;              // format 2: 16-bit LE, 10 valid
@@ -669,10 +692,10 @@ module cam_frame_ft #(
                         frame_idx <= frame_idx + 32'd1;
                         hw        <= 3'd0;
                         st        <= P_HDR;
-                        if (fidx == NFRAMES[3:0] - 4'd1) begin
-                            fidx <= 4'd0; r_addr <= 28'd0;   // wrap to frame 0
+                        if (fidx == NFRAMES[4:0] - 5'd1) begin
+                            fidx <= 5'd0; r_addr <= 28'd0;   // wrap to frame 0
                         end else begin
-                            fidx <= fidx + 4'd1; r_addr <= r_addr + ASTEP;
+                            fidx <= fidx + 5'd1; r_addr <= r_addr + ASTEP;
                         end
                     end else begin
                         fwidx  <= fwidx + 18'd1;
@@ -785,18 +808,24 @@ module cam_frame_ft #(
     end
     reg [7:0] ftw_s1=0, ftw_s2=0, ftc_s1=0, ftc_s2=0;
     reg [1:0] txe_s = 2'b00;
-    reg [31:0] fper_s1 = 32'd0, fper_s2 = 32'd0;
+    reg [27:0] wtot_s1 = 28'd0, wtot_s2 = 28'd0;
+    reg [19:0] wmin_s1 = 20'd0, wmin_s2 = 20'd0;
+    reg [19:0] wmax_s1 = 20'd0, wmax_s2 = 20'd0;
     always @(posedge ui_clk) begin
         ftw_s1 <= ftw[23:16]; ftw_s2 <= ftw_s1;
         ftc_s1 <= ftc[23:16]; ftc_s2 <= ftc_s1;
         txe_s  <= {txe_s[0], ft_txe};
-        fper_s1 <= fper_lat; fper_s2 <= fper_s1;   // static once written
+        // each latched value is stable for a whole window (~200 ms), so a
+        // plain 2FF sync is safe on all of them -- no gray coding needed
+        wtot_s1 <= wtot_l; wtot_s2 <= wtot_s1;
+        wmin_s1 <= wmin_l; wmin_s2 <= wmin_s1;
+        wmax_s1 <= wmax_l; wmax_s2 <= wmax_s1;
     end
 
+    // 4 + 8 + 28 + 20 + 20 = 80 bits = 20 hex chars
     wire [79:0] stat = { st, init_calib_complete, aligned, streaming, cap_s[1],
                          covf_s[1], uovf_s[1], ufifo_empty, txe_s[1],
-                         frame_idx[3:0], widx[15:0], ftw_s2, ftc_s2,
-                         fper_s2 };
+                         wtot_s2, wmin_s2, wmax_s2 };
 
     reg [79:0] shold = 80'd0;
     reg [4:0]  nib   = 5'd0;

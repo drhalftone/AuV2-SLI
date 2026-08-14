@@ -38,9 +38,14 @@ set trigus 7500
 if {[info exists ::env(CAM_TRIG_US)]} { set trigus $::env(CAM_TRIG_US) }
 set esweep 0
 if {[info exists ::env(CAM_EXPO_SWEEP)]} { set esweep $::env(CAM_EXPO_SWEEP) }
+set trigcy 0
+if {[info exists ::env(CAM_TRIG_CY)]} { set trigcy $::env(CAM_TRIG_CY) }
+set nframes 24
+if {[info exists ::env(CAM_NFRAMES)]} { set nframes $::env(CAM_NFRAMES) }
 puts "### TRIGGERED = $trig   TRIG_US = $trigus   EXPO_SWEEP = $esweep"
+puts "### TRIG_CY = $trigcy   NFRAMES = $nframes"
 
-synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo              -generic TRIGGERED=$trig -generic TRIG_US=$trigus              -generic EXPO_SWEEP=$esweep
+synth_design -top cam_frame_ft -part $part -generic EXPOSURE=$expo              -generic TRIGGERED=$trig -generic TRIG_US=$trigus              -generic EXPO_SWEEP=$esweep -generic TRIG_CY=$trigcy              -generic NFRAMES=$nframes
 opt_design
 place_design
 route_design
