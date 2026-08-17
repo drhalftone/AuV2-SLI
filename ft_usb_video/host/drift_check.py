@@ -21,17 +21,16 @@ only as good as the structure present. Two guards:
     case, so it sets the scale a real match has to reach. A shift whose quality
     is far below the control is not evidence.
 """
-import ctypes, struct, time
+import ctypes, time
 import numpy as np
 import ftd3xx
 from ftd3xx.defines import FT_OPEN_BY_INDEX
 
-NCOL, NROW = 1280, 1024
-NPIX = NCOL * NROW
+import campack
+
+NCOL, NROW = campack.NCOL, campack.NROW
+NPIX = campack.NPIX
 NKERN = NPIX // 8
-FBYTES = NPIX * 2
-HDR = 32
-MAGIC = 0x30494C53
 NWANT = 12
 
 d = ftd3xx.create(0, FT_OPEN_BY_INDEX)
@@ -50,18 +49,9 @@ while len(data) < 90_000_000 and time.time() - t0 < 10:
 d.close()
 print("captured %.1f MB in %.1f s" % (len(data) / 1e6, time.time() - t0))
 
-mag = struct.pack("<I", MAGIC)
-frames = []
-i = 0
-while len(frames) < NWANT:
-    i = data.find(mag, i)
-    if i < 0 or i + HDR + FBYTES > len(data): break
-    h = struct.unpack_from("<8I", data, i)
-    if h[7] != (~MAGIC & 0xFFFFFFFF):
-        i += 4; continue
-    a = np.frombuffer(bytes(data[i + HDR:i + HDR + FBYTES]), dtype="<u2")
-    frames.append((h[1], h[3] & 0x3F, a.astype(np.float32).reshape(NKERN, 8).mean(axis=1)))
-    i += HDR + FBYTES
+frames = [(h["frame_idx"], h["slot"],
+           f.astype(np.float32).reshape(NKERN, 8).mean(axis=1))
+          for h, f in campack.iter_frames(data, want=NWANT)]
 print("parsed %d frames (reduced to %d kernel means each)\n" % (len(frames), NKERN))
 if len(frames) < 2:
     raise SystemExit("need at least 2 frames")

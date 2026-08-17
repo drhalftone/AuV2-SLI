@@ -28,11 +28,16 @@ from PIL import Image, ImageTk
 import ftd3xx
 from ftd3xx.defines import FT_OPEN_BY_INDEX
 
+import campack
+
 IN_PIPE, OUT_PIPE = 0x82, 0x02
 MAGIC = 0x30494C53
 NCOL, NROW = 1280, 1024
 NPIX = NCOL * NROW
-FBYTES = NPIX * 2
+# Payload is DENSE PACKED 10-BIT now (4 px in 5 bytes), not 10-bit in u16, so a
+# frame is 1.64 MB rather than 2.62 MB. That 37.5% was pure zero padding, and
+# removing it is what puts 120 Hz inside the link's budget.
+FBYTES = campack.FBYTES_PACK10
 HDR = 32
 CH = 1 << 22
 EXPO_UNIT_US = 0.375
@@ -107,7 +112,7 @@ class Reader(threading.Thread):
         self.cam = cam
         self.stop = threading.Event()
         self.lock = threading.Lock()
-        self.latest = None            # (slot, frame_idx, bytes)
+        self.latest = None            # (slot, frame_idx, bytes, fmt)
         self.bytes_total = 0
         self.frames_seen = 0
         self.frames_shown = 0
@@ -131,8 +136,11 @@ class Reader(threading.Thread):
                 if pos + HDR + FBYTES <= len(acc):
                     h = struct.unpack_from("<8I", acc, pos)
                     if h[7] == (~MAGIC & 0xFFFFFFFF) and h[4] == FBYTES:
+                        # h[6] is the payload format; carry it rather than assume
+                        # one, because reading packed bytes as u16 does not fail
+                        # loudly -- it just paints a plausible wrong picture.
                         last = (h[3] & 0x3F, h[1],
-                                bytes(acc[pos + HDR: pos + HDR + FBYTES]))
+                                bytes(acc[pos + HDR: pos + HDR + FBYTES]), h[6])
                         break
                 pos = acc.rfind(magic, 0, pos)
 
@@ -162,6 +170,8 @@ class App:
         self.last_frames = 0
         self.shown = 0
         self.auto = tk.BooleanVar(value=True)
+        self.slo = None
+        self.shi = None
 
         root.title("PYTHON1300 live -- Ft+")
         self.canvas = tk.Label(root, bg="black")
@@ -195,13 +205,27 @@ class App:
     def tick(self):
         f = self.reader.take()
         if f is not None:
-            slot, idx, raw = f
-            a = np.frombuffer(raw, dtype="<u2").reshape(NROW, NCOL)
+            slot, idx, raw, fmt = f
+            a = campack.to_frame(raw, fmt)
             if self.auto.get():
-                lo = int(a.min())
-                hi = int(a.max())
-                span = max(hi - lo, 1)
-                img = ((a.astype(np.int32) - lo) * 255 // span).astype(np.uint8)
+                # SLOW-ADAPTING scale, not per-frame. Normalising each frame to
+                # its own min/max remaps the whole image whenever those extremes
+                # move -- one hot pixel, sensor noise or ambient flicker is
+                # enough -- and the result looks exactly like the display
+                # flickering. The mapping now eases toward the measured range so
+                # it is stable frame to frame, and percentiles are used instead
+                # of min/max so a single outlying pixel cannot drive it.
+                lo = float(np.percentile(a, 1))
+                hi = float(np.percentile(a, 99))
+                if self.slo is None:
+                    self.slo, self.shi = lo, hi
+                else:
+                    k = 0.05                      # ~20-frame time constant
+                    self.slo += k * (lo - self.slo)
+                    self.shi += k * (hi - self.shi)
+                span = max(self.shi - self.slo, 1.0)
+                img = np.clip((a.astype(np.float32) - self.slo) * (255.0 / span),
+                              0, 255).astype(np.uint8)
             else:
                 img = (a >> 2).astype(np.uint8)      # 10-bit -> 8-bit, no stretch
             im = Image.fromarray(img).resize((DISP_W, DISP_H))

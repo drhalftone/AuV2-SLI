@@ -141,11 +141,20 @@ module cam_frame_ft #(
     // kernel is now one DDR write. That is not just tidy, it deletes the two-read
     // W_LO/W_HI pairing that was silently corrupting every captured frame (see the
     // cfifo_rd note below).
+    // DENSE 10-BIT PACKING. The sensor is 10-bit and the payload used to ship it
+    // in 16-bit words, so 37.5% of every byte moved -- through DDR and over USB --
+    // was zero padding. At 120 Hz that padding is the difference between fitting
+    // and not: 16 bpp needs 314.6 MB/s where the link delivers ~232, while packed
+    // needs 196.6 MB/s. Packing is LOSSLESS; nothing is thrown away.
+    //
+    // The ratio is what makes it tractable: 8 pixels x 10 bits = 80 bits, so
+    // 8 kernels = 640 bits = EXACTLY five 128-bit DDR words, and a frame is
+    // 20,480 such groups with nothing left over.
     localparam integer NPIX   = NCOL * NROW;      // 1,310,720 pixels
     localparam integer NKERN  = NPIX / 8;         // 163,840 kernels per frame
-    localparam integer NWORDS = NKERN;            // one 128-bit DDR word per kernel
-    localparam integer FBYTES = NPIX * 2;         // 2,621,440 bytes/frame at 16 bpp
-    localparam integer NTOT   = NWORDS * NFRAMES; // 1,310,720 words = 21 MB of 256
+    localparam integer NWORDS = (NKERN * 5) / 8;  // 102,400 DDR words per frame
+    localparam integer FBYTES = (NPIX * 10) / 8;  // 1,638,400 bytes/frame at 10 bpp
+    localparam integer NTOT   = NWORDS * NFRAMES; //   819,200 words = 13 MB of 256
     localparam integer ASTEP  = 8;
     localparam [31:0]  MAGIC  = 32'h30494C53;
 
@@ -470,8 +479,23 @@ module cam_frame_ft #(
         .kbase(kbase), .kvalid(kvalid), .line_start(line_start),
         .frame_start(frame_start), .frame_end(frame_end), .in_black(in_black)
     );
-    wire [127:0] kword = { 6'd0, kp7, 6'd0, kp6, 6'd0, kp5, 6'd0, kp4,
-                           6'd0, kp3, 6'd0, kp2, 6'd0, kp1, 6'd0, kp0 };
+    // ONE KERNEL, PACKED: 8 pixels x 10 bits = 80 bits = 10 bytes.
+    //
+    // Layout is the conventional packed-10 tiling -- four pixels in five bytes:
+    // four bytes of the high 8 bits, then one byte holding the four pairs of low
+    // bits, least-significant pixel first. Chosen over a raw bit-shift because it
+    // makes the HOST side a vectorised numpy reshape rather than a bit-crawl, and
+    // 4 px / 5 B tiles exactly into the 5-word group (64 px = 80 B).
+    //
+    // Byte order matters and follows what the old format established: kp0 sat in
+    // the LOW 16 bits and the host read it first, so byte 0 of the stream is the
+    // LOW byte here too. Verilog concatenation is MSB-first, so the first byte
+    // out is the RIGHTMOST term.
+    wire [7:0] pa0 = kp0[9:2], pa1 = kp1[9:2], pa2 = kp2[9:2], pa3 = kp3[9:2];
+    wire [7:0] pa4 = { kp3[1:0], kp2[1:0], kp1[1:0], kp0[1:0] };
+    wire [7:0] pb0 = kp4[9:2], pb1 = kp5[9:2], pb2 = kp6[9:2], pb3 = kp7[9:2];
+    wire [7:0] pb4 = { kp7[1:0], kp6[1:0], kp5[1:0], kp4[1:0] };
+    wire [79:0] kpk = { pb4, pb3, pb2, pb1, pb0, pa4, pa3, pa2, pa1, pa0 };
 
     // ARM THE CAPTURE ONLY WHEN THE DRAIN IS ALREADY RUNNING.
     //
@@ -634,6 +658,82 @@ module cam_frame_ft #(
         end
     end
 
+    //------------------------------------------------- 80-bit -> 128-bit packer
+    //
+    // Kernels are 80 bits, DDR words are 128, so words come out on 5 of every 8
+    // kernels. A holding register accumulates and spills whenever 128 bits are
+    // available; it never backs up, because one kernel can complete at most one
+    // word (80 < 128) and kernels arrive only every other wordclk.
+    //
+    // 207 bits is the true worst case: 127 left over plus a fresh 80.
+    //
+    // This also RELIEVES the cfifo rather than loading it. The FIFO now takes 5
+    // writes per 8 kernels instead of 8, so its 1024 entries cover ~45 us of
+    // sensor burst instead of 28 -- useful, given the LUTRAM finding that its
+    // depth cannot be increased.
+    // IT IS A GROUP BUILDER, NOT A BIT SHIFTER, and that distinction is what
+    // makes it fit. The obvious version -- a 208-bit accumulator spilling via
+    // `<< pk_n` -- synthesises a 208-bit VARIABLE BARREL SHIFTER, and it would
+    // not place: this design already spends 2789 LUTs on distributed-RAM FIFOs
+    // (see the cfifo note), and the shifter drove demand for LUTRAM-capable
+    // slices to 202% of the device. Every shift below is by a CONSTANT, which
+    // costs wiring rather than logic.
+    //
+    // Fill one 640-bit group over 8 kernels, then drain it as five words while
+    // the next group fills. A group completes every 16 wordclks (kernels arrive
+    // every other cycle) and drains in 5, so the two never collide.
+    //
+    // shreg_extract = "no" keeps these out of SRLs -- they would land back in
+    // the very SLICEMs the FIFOs need.
+    (* shreg_extract = "no" *) reg [639:0] gbuf = 640'd0;   // filling
+    (* shreg_extract = "no" *) reg [639:0] gout = 640'd0;   // draining
+    reg [2:0] gcnt  = 3'd0;         // kernels gathered into gbuf
+    reg [2:0] gw    = 3'd0;         // words left to emit from gout
+    reg       gsof  = 1'b0;         // gout's first word begins a frame
+    reg       gsofp = 1'b0;         // gbuf begins a frame
+
+    // Kernel 0 must end up in the LOW bits so it leaves first. Inserting at the
+    // top and shifting down by a fixed 80 puts it there after 8 kernels.
+    wire [639:0] gnext = {kpk, gbuf[639:80]};
+
+    wire         pk_emit = (gw != 3'd0);
+    wire [128:0] pk_word = {gsof, gout[127:0]};
+
+    always @(posedge wordclk) begin
+        if (wc_rst) begin
+            gbuf <= 640'd0; gout <= 640'd0;
+            gcnt <= 3'd0; gw <= 3'd0; gsof <= 1'b0; gsofp <= 1'b0;
+        end else begin
+            if (gw != 3'd0) begin
+                gout <= {128'd0, gout[639:128]};
+                gw   <= gw - 3'd1;
+                gsof <= 1'b0;              // only the first word carries SOF
+            end
+            if (cap_wr) begin
+                gbuf <= gnext;
+                if (sof_tag) begin
+                    // A FRAME ALWAYS STARTS A FRESH GROUP. NKERN is a multiple
+                    // of 8 so an intact frame ends on a group boundary anyway --
+                    // but if kernels were lost, carrying the residue would shift
+                    // every pixel of the next frame by part of a word. Restarting
+                    // the count keeps each frame independently aligned, the same
+                    // rule the DDR writer enforces one level up. The stale low
+                    // bits of gbuf are shifted out by the next seven kernels.
+                    gcnt  <= 3'd1;
+                    gsofp <= 1'b1;
+                end else if (gcnt == 3'd7) begin
+                    gcnt  <= 3'd0;
+                    gout  <= gnext;        // hand the finished group to the drain
+                    gw    <= 3'd5;
+                    gsof  <= gsofp;
+                    gsofp <= 1'b0;
+                end else begin
+                    gcnt <= gcnt + 3'd1;
+                end
+            end
+        end
+    end
+
     wire cfifo_full, cfifo_empty, cfifo_ovf;
     // 129 bits: {sof_tag, kernel}. See sof_tag above -- the frame boundary has
     // to travel with the data, not alongside it.
@@ -679,10 +779,22 @@ module cam_frame_ft #(
     // It does not need to be: depth only buys time against a rate deficit, and
     // the single-cycle writer below removes the deficit itself -- 100 M
     // kernels/s against 36 M/s needed, a 2.8x margin where there was 1.39x.
+    //
+    // AW 10 -> 9, and the BINDING LIMIT IS GEOMETRIC, not logical. wordclk comes
+    // off a BUFR -- a REGIONAL buffer spanning ONE clock region -- so this RAM is
+    // confined to that region's ~600 LUTRAM-capable slices. At 1K x 129 it wants
+    // 688 RAM64M on its own, and the packer's registers share the region, so the
+    // placer reported 1148% of the constrained region and gave up.
+    //
+    // Packing already paid for the halving: an entry now holds 1.6 kernels
+    // rather than 1, so 512 entries buffer 819 kernels (~23 us of sensor burst)
+    // against the 1024 kernels (~28 us) of the pre-packing design. Near enough
+    // the same elasticity for half the silicon, and the single-cycle writer
+    // needs far less of it than the two-cycle one did.
     wire cfifo_rd;
-    cam_async_fifo #(.DW(129), .AW(10)) u_cfifo (
-        .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(cap_wr),
-        .wr_data({sof_tag, kword}), .full(cfifo_full), .overflow(cfifo_ovf),
+    cam_async_fifo #(.DW(129), .AW(9)) u_cfifo (
+        .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(pk_emit),
+        .wr_data(pk_word), .full(cfifo_full), .overflow(cfifo_ovf),
         .rd_clk(ui_clk), .rd_rst(ui_rst), .rd_en(cfifo_rd),
         .rd_data(cfifo_dout), .empty(cfifo_empty)
     );
@@ -1178,7 +1290,11 @@ module cam_frame_ft #(
                                    {NROW[15:0], NCOL[15:0]},
                                    frame_idx, MAGIC };
                 else
-                    ufifo_din <= { ~MAGIC, 32'd2, FBYTES/4, FBYTES };
+                    // Format 3 = DENSE PACKED 10-BIT (4 px in 5 bytes). Format 2
+                    // was 10-bit right-aligned in 16-bit words. The host MUST
+                    // switch on this rather than assume, or it will read packed
+                    // bytes as u16 and produce a convincing-looking wrong image.
+                    ufifo_din <= { ~MAGIC, 32'd3, FBYTES/4, FBYTES };
                 if (hw == 3'd1) begin
                     hw <= 3'd0;
                     rd_iss <= 18'd0; rd_got <= 18'd0;
