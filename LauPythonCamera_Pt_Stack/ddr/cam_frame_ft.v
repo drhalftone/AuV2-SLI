@@ -494,7 +494,7 @@ module cam_frame_ft #(
     // emitting nothing but zero-padded frames -- with ldrop climbing and no
     // obvious cause. Live arms on calibration alone.
     always @(posedge wordclk)
-        arm_s <= {arm_s[0], (LIVE != 0) ? icc_w[1] : (stw == W_LO)};
+        arm_s <= {arm_s[0], (LIVE != 0) ? icc_w[1] : (stw == W_RUN)};
 
     // BURST CAPTURE -- NFRAMES consecutive frames, each bounded to exactly NKERN
     // kernels, then stop.
@@ -530,7 +530,36 @@ module cam_frame_ft #(
     wire arm_now = frame_start && !cap && !cap_dn && arm_s[1]
                    && (skipc == SKIP_FRAMES[3:0]);
     wire cap_act = cap || arm_now;
-    wire cap_wr  = cap_act && kvalid && (kcnt != NKERN[17:0]);
+
+    // THE FIRST KERNEL OF A FRAME MUST NOT BE JUDGED BY THE PREVIOUS FRAME'S
+    // COUNT. kcnt saturates at NKERN every single frame -- the sensor delivers
+    // exactly NKERN image kernels plus black rows -- and it is only RELOADED at
+    // the clock edge. So on the frame_start cycle the guard below still saw the
+    // OLD, saturated kcnt and suppressed the write, while the reload below
+    // asserted kcnt = 1 as though that kernel had been taken. Every frame was
+    // one kernel -- eight pixels -- short, and the count claimed otherwise.
+    //
+    // On its own that is 8 px/frame; at 120 Hz it walks a whole row every 1.3 s.
+    // It is not the largest term here (a cfifo overflow loses far more) but it
+    // is a permanent, silent, systematic deficit, and the SOF resync downstream
+    // cannot correct a count that lies about what it wrote.
+    wire        kreload  = arm_now || (cap && frame_start);
+    wire [17:0] kcnt_eff = kreload ? 18'd0 : kcnt;
+    wire cap_wr  = cap_act && kvalid && (kcnt_eff != NKERN[17:0]);
+
+    // START-OF-FRAME TAG, travelling WITH the kernel.
+    //
+    // The writer on the far side of the cfifo needs to know where a frame
+    // begins. It cannot use frame_start: that crosses to ui_clk through a
+    // toggle and two flip-flops in ~3 cycles, while the kernel it refers to is
+    // queued behind up to 2047 entries of FIFO. The pulse overtakes its own
+    // data and would cut frames in the wrong place -- which is exactly why the
+    // retired FIFO-path resync could not simply be moved over.
+    //
+    // So the boundary rides IN the data. One extra bit, set on the first kernel
+    // actually written in each frame, is unambiguous no matter how deep the
+    // FIFO is or how long the writer stalls.
+    wire sof_tag = cap_wr && (kcnt_eff == 18'd0);
 
     always @(posedge wordclk) begin
         if (wc_rst || rearm_w) begin
@@ -606,7 +635,9 @@ module cam_frame_ft #(
     end
 
     wire cfifo_full, cfifo_empty, cfifo_ovf;
-    wire [127:0] cfifo_dout;
+    // 129 bits: {sof_tag, kernel}. See sof_tag above -- the frame boundary has
+    // to travel with the data, not alongside it.
+    wire [128:0] cfifo_dout;
     // cfifo_rd MUST be combinational, and this was a real, measured bug.
     //
     // cam_async_fifo is first-word-fall-through: rd_data is the head whenever
@@ -626,10 +657,32 @@ module cam_frame_ft #(
     // AW 8 -> 10 as well. One kernel is now one DDR word, so the drain is 2 ui_clk
     // cycles per kernel instead of 3 per two, and 1024 entries covers a full DDR3
     // refresh stall (tRFC ~260 ns) with room to spare.
+    //
+    // DEPTH STAYS AT 1024, AND THE REASON IS WORTH RECORDING.
+    //
+    // 1024 entries is 28 us of camera data: enough for a refresh stall, not for
+    // a sustained shortfall across the sensor's 4.55 ms readout burst -- which
+    // is what was actually happening. The writer's old two-cycle handshake
+    // capped it at 50 M kernels/s against a 36 M/s burst, so any MIG stall
+    // pushed it under and the rest of the readout was dropped. Measured effect:
+    // delivered frames sat hundreds of rows out of registration, each at its
+    // own offset.
+    //
+    // AW 10 -> 11 was tried as margin and FAILED TO PLACE: 239% of the device's
+    // LUTRAM-capable slices. This FIFO is built from distributed RAM, not block
+    // RAM, and the `ram_style = "block"` attribute on its memory is INEFFECTIVE
+    // -- first-word-fall-through is implemented with a COMBINATIONAL read
+    // (assign rd_data = mem[...]) and block RAM has no asynchronous read port,
+    // so the tool has no choice. Deepening this FIFO costs LUTs quadratically
+    // and is not available without restructuring it around a registered read.
+    //
+    // It does not need to be: depth only buys time against a rate deficit, and
+    // the single-cycle writer below removes the deficit itself -- 100 M
+    // kernels/s against 36 M/s needed, a 2.8x margin where there was 1.39x.
     wire cfifo_rd;
-    cam_async_fifo #(.DW(128), .AW(10)) u_cfifo (
+    cam_async_fifo #(.DW(129), .AW(10)) u_cfifo (
         .wr_clk(wordclk), .wr_rst(wc_rst), .wr_en(cap_wr),
-        .wr_data(kword), .full(cfifo_full), .overflow(cfifo_ovf),
+        .wr_data({sof_tag, kword}), .full(cfifo_full), .overflow(cfifo_ovf),
         .rd_clk(ui_clk), .rd_rst(ui_rst), .rd_en(cfifo_rd),
         .rd_data(cfifo_dout), .empty(cfifo_empty)
     );
@@ -646,7 +699,8 @@ module cam_frame_ft #(
 
     reg [27:0]  waddr = 28'd0;      // writer pointer
     reg [27:0]  raddr = 28'd0;      // reader pointer, chases the writer
-    reg [127:0] r_wdata = 128'd0;
+    // r_wdata is gone: app_wdf_data is driven straight from the FIFO head, which
+    // FWFT holds stable until the pop. The staging register was the second cycle.
     reg         cmd_done = 1'b0, dat_done = 1'b0;
 
     // CONCURRENT CAPTURE AND PLAYBACK.
@@ -665,7 +719,17 @@ module cam_frame_ft #(
     // -- the failure mode this project keeps producing. After capture wf_done
     // sticks at nf_run, so every frame stays available and the reader loops the
     // set forever, exactly as before.
-    localparam [2:0] W_WAIT=0, W_LO=1, W_ISSUE=2, W_DONE=3, W_NEXT=4;
+    // W_LO/W_ISSUE (pop in one cycle, issue in the next) became a single W_RUN
+    // that pops AND issues in the SAME cycle, refilling from the FIFO on the
+    // completion cycle. The old split cost two ui_clk cycles per kernel, capping
+    // the writer at 50 M kernels/s against a 36 M/s sensor burst -- a 39% margin
+    // that any MIG stall ate, after which the cfifo (28 us deep) overflowed and
+    // the rest of the readout was lost. cam_async_fifo's own header assumed a
+    // 100 M/s drain; the two-cycle handshake quietly halved it.
+    //
+    // W_PAD finishes a slot whose frame arrived short, so the host always gets
+    // exactly NWORDS words per frame.
+    localparam [2:0] W_WAIT=0, W_RUN=1, W_PAD=2, W_DONE=3, W_NEXT=4;
     localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2;
     // live path: idle -> header -> stream a frame -> (pad on underrun)
     localparam [1:0] L_IDLE=0, L_HDR=1, L_RUN=2, L_PAD=3;
@@ -692,7 +756,39 @@ module cam_frame_ft #(
     // Playback issues reads speculatively; the write phase is unchanged.
     reg  [17:0] rd_iss = 18'd0, rd_got = 18'd0;
     reg  [4:0]  outst  = 5'd0;
-    wire w_req = (stw == W_ISSUE) && !cmd_done;
+    reg  [23:0] kdrop  = 24'd0;     // surplus kernels discarded to realign
+
+    //-------------------------------------------------- SOF-based framing
+    // cam_async_fifo is first-word-fall-through, so the head is visible BEFORE
+    // it is popped. That is what makes this work without a holding register:
+    // the writer can look at the incoming kernel's SOF tag and decide what the
+    // word means before committing to it.
+    //
+    // Three cases, and they are the whole realignment rule:
+    //   wfw == 0 and NOT a frame start -> surplus (black rows, or the tail of a
+    //        frame we skipped). Discard it. A slot must BEGIN on a frame start.
+    //   wfw != 0 and IS a frame start  -> the frame in progress came up short.
+    //        Pad the slot out rather than emit a short frame: a padded frame is
+    //        visibly wrong for one frame, a short one desynchronises the host's
+    //        parser permanently.
+    //   otherwise -> the word belongs in the slot.
+    //
+    // This is what the DDR path never had. The retired FIFO path resynchronised
+    // on fs_pulse, but fs_pulse cannot be reused here: it crosses to ui_clk in
+    // ~3 cycles while its kernel is still queued behind the FIFO, so it cuts in
+    // the wrong place. The tag rides with the data instead.
+    wire head_ok  = !cfifo_empty;
+    wire head_sof = cfifo_dout[128];
+    wire w_drop   = (stw == W_RUN) && head_ok && (wfw == 18'd0) && !head_sof;
+    wire w_short  = (stw == W_RUN) && head_ok && (wfw != 18'd0) &&  head_sof;
+    wire w_take   = (stw == W_RUN) && head_ok && !w_drop && !w_short;
+    // LIVE skips a frame rather than overwrite the slot the reader is on. A
+    // skipped frame still walks the counters, it just never touches DDR.
+    wire w_ddr    = (LIVE == 0) || w_acc;
+    wire w_padw   = (stw == W_PAD);
+
+    wire w_req = (((w_take && w_ddr) || w_padw)) && !cmd_done;
+    wire w_wrq = (((w_take && w_ddr) || w_padw)) && !dat_done;
     wire r_req = (str == R_RUN) && (rd_iss != NWORDS[17:0])
                  && (outst < MAXOUT[4:0]) && !ufifo_afull;
     // Writer priority. r_ack must NOT count a grant that went to the writer,
@@ -700,6 +796,12 @@ module cam_frame_ft #(
     wire r_gnt = r_req && !w_req;
     wire r_ack = r_gnt && app_rdy;
     wire w_ack = w_req && app_rdy;
+    // Command and data are accepted independently, so both are tracked; a word
+    // that never goes to DDR (a skipped frame) completes immediately.
+    wire w_cmd_ok = cmd_done || w_ack;
+    wire w_dat_ok = dat_done || (w_wrq && app_wdf_rdy);
+    wire w_fire   = w_padw ? (w_cmd_ok && w_dat_ok)
+                           : (w_take && (!w_ddr || (w_cmd_ok && w_dat_ok)));
     // Slot base addresses. ASTEP is the BL8 stride, so a slot spans
     // NWORDS * ASTEP; 4 slots is 5.2 M, well inside the 28-bit address space.
     wire [27:0] w_base = w_slot * (NWORDS[27:0] * ASTEP);
@@ -710,9 +812,13 @@ module cam_frame_ft #(
     assign app_addr     = w_req ? w_eff : r_eff;
     assign app_cmd      = w_req ? 3'd0  : 3'd1;   // 0 = write, 1 = read
     assign app_en       = w_req || r_gnt;
-    assign app_wdf_data = r_wdata;
-    assign app_wdf_wren = (stw == W_ISSUE) && !dat_done;
-    assign app_wdf_end  = (stw == W_ISSUE) && !dat_done;
+    // Straight off the FIFO head -- no r_wdata staging register. FWFT holds the
+    // head stable until it is popped, and the pop happens on the completion
+    // cycle, so the data is valid for exactly as long as the MIG needs it. This
+    // is what removes the second cycle per kernel.
+    assign app_wdf_data = w_padw ? 128'd0 : cfifo_dout[127:0];
+    assign app_wdf_wren = w_wrq;
+    assign app_wdf_end  = w_wrq;
 
     mig_ddr3 u_mig (
         .ddr3_addr(ddr3_addr), .ddr3_ba(ddr3_ba),
@@ -836,7 +942,7 @@ module cam_frame_ft #(
             // New scan: rewind BOTH sides. wf_done back to 0 re-arms the fence,
             // otherwise the reader would immediately serve frames left from the
             // previous scan before any new data had landed.
-            stw <= W_LO; str <= R_IDLE;
+            stw <= W_RUN; str <= R_IDLE;
             waddr <= 28'd0; raddr <= 28'd0;
             wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0; rf <= 6'd0;
             nf_run <= nf_u2; cmd_done <= 1'b0; dat_done <= 1'b0;
@@ -854,45 +960,69 @@ module cam_frame_ft #(
             //---------------------------------------------------------- writer
             case (stw)
             W_WAIT: if (init_calib_complete) begin
-                        stw <= W_LO; waddr <= 28'd0;
+                        stw <= W_RUN; waddr <= 28'd0;
                         wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0;
                         nf_run <= nf_u2;
                         w_slot <= 3'd0; w_acc <= 1'b1;
                     end
-            // One kernel, one DDR word. cfifo_rd asserts combinationally in this
-            // same cycle, so the word sampled here is the word popped here.
-            // A DISCARDED frame is still POPPED from the cfifo, one word per
-            // cycle. If it were merely left there the cfifo would overflow and
-            // the NEXT frame would be misaligned -- dropping a frame must cost
-            // nothing downstream.
-            W_LO: if (!cfifo_empty) begin
-                      r_wdata  <= cfifo_dout;
-                      cmd_done <= 1'b0; dat_done <= 1'b0;
-                      if ((LIVE != 0) && !w_acc) begin
-                          // discard: advance without touching DDR
-                          if (wfw == NWORDS[17:0] - 18'd1) begin
-                              wfw <= 18'd0;
-                              stw <= W_NEXT;
-                          end else wfw <= wfw + 18'd1;
-                      end else stw <= W_ISSUE;
-                  end
-            W_ISSUE: begin
-                if (w_ack)                       cmd_done <= 1'b1;
-                if (app_wdf_wren && app_wdf_rdy) dat_done <= 1'b1;
-                if ((cmd_done || w_ack) &&
-                    (dat_done || (app_wdf_wren && app_wdf_rdy))) begin
+            // ONE KERNEL, ONE DDR WORD, ONE CYCLE. app_wdf_data comes straight
+            // off the FIFO head and cfifo_rd asserts combinationally on the
+            // completion cycle, so the next kernel is fetched in the very cycle
+            // the current one retires -- no idle pop cycle between writes.
+            //
+            // A DISCARDED frame (LIVE, reader owns the next slot) still walks
+            // the counters and still drains the FIFO; it just never touches
+            // DDR. Dropping a frame must cost nothing downstream.
+            W_RUN: begin
+                if (w_drop) begin
+                    // Surplus kernel at a slot boundary -- popped combinationally
+                    // above. This is the realignment actually happening, so it
+                    // is counted rather than silent.
+                    if (kdrop != 24'hFFFFFF) kdrop <= kdrop + 24'd1;
+                end else if (w_short) begin
+                    // A frame start arrived mid-slot: the frame under way lost
+                    // kernels. Never emit a short frame.
+                    if (ldrop != 16'hFFFF) ldrop <= ldrop + 16'd1;
+                    cmd_done <= 1'b0; dat_done <= 1'b0;
+                    if (w_ddr) stw <= W_PAD;    // finish the slot with zeros
+                    else       stw <= W_NEXT;   // nothing was written; move on
+                end else if (w_fire) begin
+                    cmd_done <= 1'b0; dat_done <= 1'b0;
+                    if (w_ddr)
+                        waddr <= (wfw == NWORDS[17:0] - 18'd1) ? 28'd0
+                                                              : waddr + ASTEP;
+                    if (wfw == NWORDS[17:0] - 18'd1) begin
+                        wfw <= 18'd0;
+                        // Only a frame that actually reached DDR is readable.
+                        if (w_ddr) wf_done <= wf_done + 6'd1;
+                        if (LIVE != 0) stw <= W_NEXT;
+                        else if (wf == nf_run - 6'd1) stw <= W_DONE;
+                        else wf <= wf + 6'd1;
+                    end else wfw <= wfw + 18'd1;
+                end else begin
+                    if (w_ack)                cmd_done <= 1'b1;
+                    if (w_wrq && app_wdf_rdy) dat_done <= 1'b1;
+                end
+            end
+
+            // Pad the remainder of a short frame's slot with zeros. The host
+            // then always sees exactly NWORDS words per frame and its parser
+            // stays locked; ring_check's "padded" count makes these visible.
+            W_PAD: begin
+                if (w_fire) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
                     waddr <= (wfw == NWORDS[17:0] - 18'd1) ? 28'd0
                                                           : waddr + ASTEP;
                     if (wfw == NWORDS[17:0] - 18'd1) begin
                         wfw     <= 18'd0;
-                        wf_done <= wf_done + 6'd1;   // THIS frame is now readable
+                        wf_done <= wf_done + 6'd1;
                         if (LIVE != 0) stw <= W_NEXT;
                         else if (wf == nf_run - 6'd1) stw <= W_DONE;
-                        else begin wf <= wf + 6'd1; stw <= W_LO; end
-                    end else begin
-                        wfw <= wfw + 18'd1; stw <= W_LO;
-                    end
+                        else begin wf <= wf + 6'd1; stw <= W_RUN; end
+                    end else wfw <= wfw + 18'd1;
+                end else begin
+                    if (w_ack)                cmd_done <= 1'b1;
+                    if (w_wrq && app_wdf_rdy) dat_done <= 1'b1;
                 end
             end
             W_DONE: ;                     // capture complete; reader carries on
@@ -911,7 +1041,7 @@ module cam_frame_ft #(
                 w_acc  <= !(r_busy && (w_next == r_slot));
                 if (r_busy && (w_next == r_slot) && (w_skip != 16'hFFFF))
                     w_skip <= w_skip + 16'd1;
-                stw    <= W_LO;
+                stw    <= W_RUN;
             end
             default: stw <= W_WAIT;
             endcase
@@ -972,7 +1102,7 @@ module cam_frame_ft #(
                         stl   <= L_PAD;
                     end else if (!cfifo_empty && !ufifo_afull) begin
                         ufifo_wr  <= 1'b1;
-                        ufifo_din <= cfifo_dout;
+                        ufifo_din <= cfifo_dout[127:0];   // cfifo is 129b now
                         if (lwidx == NWORDS[17:0] - 18'd1) begin
                             lidx <= lidx + 32'd1;
                             stl  <= L_IDLE;
@@ -1033,9 +1163,18 @@ module cam_frame_ft #(
             // carries the slot and the scan length, so a scan is self-describing.
             R_HDR: if (!ufifo_afull) begin
                 ufifo_wr <= 1'b1;
+                // The 18 spare bits now carry ldrop -- the count of frames that
+                // arrived short and were padded. Putting it in the HEADER rather
+                // than only on the status UART means the host can attribute a
+                // bad frame to a real drop instead of guessing, and a run of
+                // frames with a static ldrop is positive proof that no kernels
+                // were lost during it. cfifo_ovf on its own is sticky and cannot
+                // distinguish "overflowed once at power-up" from "overflowing
+                // continuously", which is exactly the ambiguity that made this
+                // fault hard to pin down.
                 if (hw == 3'd0)
-                    ufifo_din <= { {18'd0, (LIVE != 0) ? 6'd1 : nf_run, 2'd0,
-                                   (LIVE != 0) ? {3'd0, r_slot} : rf},
+                    ufifo_din <= { {2'd0, ldrop, (LIVE != 0) ? 6'd1 : nf_run,
+                                   2'd0, (LIVE != 0) ? {3'd0, r_slot} : rf},
                                    {NROW[15:0], NCOL[15:0]},
                                    frame_idx, MAGIC };
                 else
@@ -1070,11 +1209,16 @@ module cam_frame_ft #(
 
     // sample-and-pop in the same cycle -- FWFT requires it
     // sample-and-pop in the same cycle -- FWFT requires it
-    // Both modes now pop in W_LO -- the ring writer discards a skipped frame by
+    // Both modes pop in W_RUN -- the ring writer discards a skipped frame by
     // popping without writing DDR, so the cfifo drains either way. Leaving this
     // pointed at the retired FIFO path would have starved the ring writer and
     // stalled capture completely.
-    assign cfifo_rd = (stw == W_LO) && !cfifo_empty;
+    //
+    // Two pops, and the distinction is the realignment: w_drop retires a
+    // surplus kernel at a slot boundary WITHOUT writing it, and w_take && w_fire
+    // retires a kernel that was written. Popping on the completion cycle rather
+    // than a cycle later is what makes the writer single-cycle.
+    assign cfifo_rd = w_drop || (w_take && w_fire);
 
     //------------------------------------------------- the FT601 write master
     reg [1:0] ftrst_s = 2'b11;

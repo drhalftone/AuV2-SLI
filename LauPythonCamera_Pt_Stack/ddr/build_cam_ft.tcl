@@ -121,6 +121,10 @@ foreach grp [get_timing_paths -delay_type min_max -max_paths 6 -nworst 1 -sort_b
     puts [format "### PATH slack=%-8s group=%-22s from=%s -> to=%s"         [get_property SLACK $grp] [get_property GROUP $grp]         [get_property STARTPOINT_PIN $grp] [get_property ENDPOINT_PIN $grp]]
 }
 report_timing_summary -file $outdir/timing_summary.rpt -quiet
+# BRAM is the resource the camera FIFO actually competes for, and there was no
+# way to see it: the script reported timing and nothing else, so a FIFO depth
+# change was a guess about a number nobody was printing.
+report_utilization -file $outdir/util.rpt -quiet
 
 for {set try 1} {$try <= 4} {incr try} {
     if {![catch {write_bitstream -force -bin_file $outdir/cam_frame_ft$tag.bit} msg]} break
