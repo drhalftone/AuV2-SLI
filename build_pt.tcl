@@ -74,7 +74,15 @@ for {set try 1} {$try <= 6} {incr try} {
     catch {synth_ip [get_ips]}
     set missing {}
     foreach ip [get_ips] {
-        if {[get_property GENERATE_SYNTH_CHECKPOINT $ip] && ![file exists [get_property IP_OUTPUT_DIR $ip]/[get_property NAME $ip].dcp]} {
+        # GENERATE_SYNTH_CHECKPOINT IS NOT ALWAYS READABLE. Vivado 2025.2.1 errors
+        # outright -- "Failed to get property 'GENERATE_SYNTH_CHECKPOINT' on IP
+        # 'LUT'" -- and took the whole build down AFTER every IP had synthesised
+        # and all five DCPs were on disk. The property is only a hint about
+        # whether to expect a checkpoint; the DCP itself is the fact. Default to
+        # expecting one and let the file check decide.
+        set want_dcp 1
+        catch { set want_dcp [get_property GENERATE_SYNTH_CHECKPOINT $ip] }
+        if {$want_dcp && ![file exists [get_property IP_OUTPUT_DIR $ip]/[get_property NAME $ip].dcp]} {
             lappend missing [get_property NAME $ip]
         }
     }
