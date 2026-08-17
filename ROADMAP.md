@@ -1,6 +1,6 @@
 # AuV2-SLI Hardware Expansion Roadmap
 
-_Last updated: 2026-06-20_
+_Last updated: 2026-08-17_
 
 Forward-looking plan for stacking add-on boards on the Alchitry Au V2 SLI system,
 and the **FPGA bank/pin allocation** needed so the current SLI design, a future
@@ -178,8 +178,18 @@ No longer a future board. The FT601 datapath is written, built, flashed and
   theoretical**. Use 348 for budgeting. At 1280×1024 that is **212 fps packed 10-bit**
   / 265 fps 8-bit mono / **133 fps at 16 bpp** (10-in-16 padded), with the data verified
   byte-exact at that rate. Padding 10 bits into 16 costs 37 % of the frame rate for no
-  extra information — but at a 120 fps operating point 16 bpp still fits, with ~10 %
-  margin (314.6 MB/s needed).
+  extra information.
+  > **Superseded 2026-08-17: "at a 120 fps operating point 16 bpp still fits, with
+  > ~10 % margin" IS WRONG, and it was tried.** 348 MB/s is a BARE-LINK number — the
+  > FT601 fed by a pattern generator, with no camera and no DDR. With the real
+  > pipeline running, the same `ft_bench_async.py` measures **231.7 MB/s**, because
+  > the reader is now competing with the capture writer for one MIG port. 16 bpp at
+  > 120 Hz needs 314.6 MB/s and delivered **88 fps**, not 120.
+  >
+  > Sampled while saturated, *both* ends were at their limit: the DDR→USB FIFO ran
+  > dry 32 % of the time **and** the FT601 back-pressured 40 %. Neither side
+  > dominated, so no amount of tuning one of them closes a 36 % gap. **Budget
+  > against ~232 MB/s end-to-end, not 348.**
   > **Superseded number:** this said 308 MB/s until 2026-07-31. That figure was our own
   > host-side memcpy, not the link — the reader allocated, zero-filled and copied a
   > fresh buffer every transfer. A zero-copy reader gets 348. Notably, **queue depth
@@ -204,6 +214,102 @@ No longer a future board. The FT601 datapath is written, built, flashed and
 > constraints. **Throughput and drop counts cannot see this class of bug** — any bus
 > another chip clocks in needs a registered launch, a real `set_output_delay`, and a
 > byte-exact end-to-end check. Details in `ft_usb_video/README.md`.
+
+---
+
+## 6.5 Future: EXTERNAL HDMI SYNC — genlock the camera to the projector
+
+**Status: not built. The FPGA half is small; the open question is a WIRE.**
+
+### Why it is needed
+
+The camera now runs at a locked **120.000 Hz** (§ `LauPythonCamera_Pt_Stack/README.md`),
+paced by a counter on the FPGA's own 100 MHz crystal:
+
+```verilog
+trig_per = 833_333          // cycles of clk -> 8.33333 ms
+trig0    = (tcnt < hi_cyc)  // 10 us pulse, marks the frame start
+cam_trigger[0] = trig0      // sensor is in triggered mode, reg 192 bit 4
+```
+
+That gives the *right rate* but **not the right phase**. The projector's 120 Hz comes
+from a different oscillator, so the camera and the display drift against each other
+continuously. For structured light — where the whole point is knowing which pattern
+was on screen during which exposure — that drift is the entire problem. A camera that
+is merely *near* 120 Hz is not synchronised to anything.
+
+### This is EXTENDING a proven mechanism, not inventing one
+
+The Au V2 SLI design **already fires a camera-shutter pulse on VSYNC** — that is how the
+Alvium/Basler cameras are triggered today (root [`README.md`](README.md), *Pass-through
+with top-left-pixel trigger*: it samples the top-left pixel, and when it changes it
+fires the shutter on the next VSYNC). VSYNC-locked triggering is established, working
+behaviour in this project.
+
+Two things are new for the PYTHON 1300:
+
+1. **The pulse has to reach the Pt V2** (see the blocker below).
+2. **A user-programmable phase shift.** The existing trigger fires *on* VSYNC with no
+   adjustable delay. Structured light wants the exposure placed deliberately inside the
+   display frame — after the panel has settled, or straddling a pattern change — so the
+   delay becomes a runtime parameter rather than "immediately".
+
+### What it does
+
+Derive the trigger from the HDMI **vertical sync** instead of a free-running compare,
+with a **user-programmable phase shift** so the exposure can be placed anywhere inside
+the display frame.
+
+```
+    HDMI vsync  ──►  2FF sync  ──►  edge detect  ──►  [ delay = phase ]  ──►  trigger0
+                                                            ▲
+                                                   runtime opcode, 0..8.33 ms
+```
+
+### Effort: the logic is hours, the signal is the question
+
+The trigger generator, the 10 µs pulse, and the runtime command channel **already
+exist** — genlock only changes *what restarts the counter*. Roughly 25 lines:
+
+```verilog
+reg [2:0] vs_s;  always @(posedge clk) vs_s <= {vs_s[1:0], hdmi_vsync};
+wire vs_edge = (vs_s[2:1] == 2'b01);                  // rising, 2FF-synced
+if      (vs_edge)                      begin dcnt <= 0; armed <= 1; end
+else if (armed && dcnt == trig_phase)  begin trig0 <= 1; armed <= 0; end
+else                                         dcnt <= dcnt + 1;
+```
+
+Plus one new runtime opcode for `trig_phase` (20 bits covers a full frame at 100 MHz),
+one pin, and one XDC line.
+
+Three things to build in, none of them hard:
+
+- **Watchdog fallback to free-running** if no vsync edge arrives for ~2 frame periods.
+  Without it, unplugging HDMI stops the camera dead.
+- **Budget check**: `phase + exposure + 6.86 ms readout` must fit inside the frame
+  period. Enforce it host-side so it fails loudly instead of silently dropping frames.
+- Vsync jitter passes straight through to the trigger. 2FF sampling at 100 MHz adds
+  ≤ 10 ns against an 8.33 ms period — irrelevant.
+
+### THE ACTUAL BLOCKER: vsync is not on this FPGA
+
+**There is no HDMI in the camera design at all** — no vsync/TMDS in
+`pt_ft_plus_bottom_timed.xdc`, and `cam_frame_ft`'s ports are camera LVDS + FT601 +
+DDR3 only. The camera stack runs on the **Pt V2**; the HDMI passthrough work is on the
+**Au V2**, a separate physical board.
+
+So before any of the above matters, a sync signal has to physically reach the Pt V2 —
+over the DF40 stacking connector or a flying lead. **That is a wiring/PCB decision, and
+it gates the feature.** If the two boards stay separate, this needs a board revision;
+if it can be routed on the existing stack, it is an afternoon.
+
+**A shortcut worth considering first:** the Au V2 already *emits* a VSYNC-locked
+shutter pulse on GPIO for the DB9 cameras. Feeding that existing output into the Pt V2
+as `cam_trigger[0]` needs **no HDMI decoding on the Pt at all** — one wire and an edge
+detect, instead of routing TMDS or a recovered vsync. The programmable phase could then
+live on *either* board: on the Au (delay the existing pulse) or on the Pt (delay the
+received edge). Deciding which board owns the phase is the first design question, and
+it is cheaper to answer than the wiring one.
 
 ---
 

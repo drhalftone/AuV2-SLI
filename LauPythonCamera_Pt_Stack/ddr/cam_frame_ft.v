@@ -283,10 +283,28 @@ module cam_frame_ft #(
     //   brightness tracks (period-width) -> integration runs while trigger is low
     //   all eight identical              -> neither; integration is the whole
     //                                       interval and width is irrelevant
+    // THE SWEEP TABLE IS AN EXPERIMENT RIG AND MUST NOT RUN IN A REAL CAPTURE.
+    //
+    // It was never gated on EXPO_SWEEP, so it drove the trigger in EVERY
+    // triggered build. tidx advances once per trigger period, cycling the pulse
+    // width 50 -> 6400 us every eight frames, and at the top of the table the
+    // trigger is held HIGH for 6.4 ms. The sensor also needs 6.86 ms to read
+    // out, so that asks for 13.26 ms of work inside an 8.33 ms period: it
+    // cannot comply. The result looked baffling from outside -- frame_start
+    // arriving at a perfect 120.000 Hz while not one pixel kernel ever reached
+    // the FIFO, so no frame completed and nothing reached USB.
+    //
+    // It also meant exposure was set by PULSE WIDTH, so exposure0 (opcode 1,
+    // runtime-settable) had no effect in triggered mode at all.
+    //
+    // For a real capture the trigger only has to MARK THE FRAME START; the
+    // sensor integrates for exposure0 on its own. 10 us is far wider than the
+    // sensor needs to sample the edge and far shorter than any usable period.
     reg [2:0]  tidx    = 3'd0;
-    reg [23:0] hi_cyc  = 24'd5_000;
+    reg [23:0] hi_cyc  = 24'd1_000;
     always @(*) begin
-        case (tidx)
+        if (EXPO_SWEEP == 0) hi_cyc = 24'd1_000;   // 10 us -- frame start marker
+        else case (tidx)
         3'd0: hi_cyc = 24'd5_000;      //   50 us
         3'd1: hi_cyc = 24'd10_000;     //  100 us
         3'd2: hi_cyc = 24'd20_000;     //  200 us
@@ -309,7 +327,9 @@ module cam_frame_ft #(
         end else begin
             if (tcnt == trig_per - 24'd1) begin
                 tcnt <= 24'd0;
-                tidx <= tidx + 3'd1;
+                // Only the sweep advances the width index. Left ungated, this
+                // changed the exposure on every frame of every triggered build.
+                if (EXPO_SWEEP != 0) tidx <= tidx + 3'd1;
             end else begin
                 tcnt <= tcnt + 24'd1;
             end

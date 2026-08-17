@@ -31,12 +31,45 @@ nothing. Everything here reuses those exact, already-proven pins.
 | `host/ft_bench_async.py` | zero-copy / overlapped throughput bench — `--sweep` (size×depth), `--stall` (consumer freeze). **Found the 348 MB/s ceiling.** |
 | `host/requirements.txt` | `ftd3xx`, `numpy`, `PySide6` |
 
+### Live camera tools (`cam_frame_ft` — the DDR3 ring build)
+
+| File | What |
+|------|------|
+| `host/campack.py` | **Shared**: header parsing, frame iteration, and the packed-10 unpacker. Consumers **switch on the format field** — reading packed bytes as `u16` does not fail loudly, it paints a plausible wrong picture |
+| `host/cam_live.py` | live viewer; reader thread keeps only the newest complete frame, GUI paints at ~30 Hz |
+| `host/cam_ctl.py` | runtime control: exposure (`--us`), frame rate (`--fps`), frames per scan, re-arm |
+| `host/ring_check.py` | ring integrity: frames must be **CLEAN** (no padding), **FRESH** (`frame_idx` advancing) **and cost no kernels** (`ldrop` static). None of the three is sufficient alone |
+| `host/row_align_check.py` | **do delivered frames agree with each other?** Correlates row profiles; a matching alignment must peak at zero shift. This is what caught the rolling-frame bug |
+| `host/drift_check.py` | kept mainly for its docstring: correlating the RAW pixel stream locks onto the 8-px kernel de-interleave pattern and returns a confident, meaningless shift that is always a multiple of 8 |
+| `host/expo_check.py` | proves exposure is settable **at runtime** and the response is monotonic; reports saturation, since a frame pinned at full scale looks stable and proves nothing |
+| `host/test_campack.py` | round-trips the packed-10 layout against a transcription of the RTL wires, including full-scale values where a dropped low bit would hide. `python test_campack.py` |
+
 ## The numbers to expect
 
 The FT601 in 245-sync FIFO mode clocks 32 bits at 100 MHz. Measured on this
 Pt V2 + Ft+ + host. **The headline number is 348 MB/s** (`ft_bench_async.py`,
 zero-copy); the `ft_video_grab.py` figures below are ~12 % lower because that
 reader copies every buffer — see the resolved note after the table:
+
+> ### ⚠️ 348 MB/s IS A BARE-LINK NUMBER. DO NOT BUDGET A CAMERA AGAINST IT.
+>
+> Everything on this page is the FT601 fed by a **pattern generator** — no sensor, no
+> DDR, nothing else touching the memory controller. That is the right way to find the
+> *link's* ceiling, and 348 MB/s is a real ceiling.
+>
+> It is **not** what a running camera gets. With capture into the DDR3 ring active, the
+> same `ft_bench_async.py` measures **231.7 MB/s** (2026-08-17), because the reader is
+> now sharing one MIG command port with the capture writer. Sampled while saturated,
+> both ends were limiting at once: the DDR→USB FIFO ran dry 32 % of the time **and**
+> the FT601 back-pressured 40 %.
+>
+> Budgeting against 348 produced a build that targeted 120 Hz at 16 bpp — "314.6 MB/s,
+> ~10 % margin" — and delivered **88 fps**. See
+> [`../LauPythonCamera_Pt_Stack/README.md`](../LauPythonCamera_Pt_Stack/README.md)
+> *Operating point*.
+>
+> **Two numbers, two purposes:** 348 MB/s bounds the link. **~232 MB/s** is the
+> camera budget.
 
 ```
   theoretical ceiling   = 4 B × 100 MHz            = 400 MB/s  (3.2 Gbps)

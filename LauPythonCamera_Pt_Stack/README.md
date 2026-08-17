@@ -139,7 +139,7 @@ protective foil over the glass — see the ordering note below.)*
 
 | | |
 |---|---|
-| Resolution / rate | 1280 x 1024, 10-bit, **150 fps** |
+| Resolution / rate | 1280 x 1024, 10-bit, **150 fps** (sensor max; we run a locked **120 Hz** — see *Operating point*) |
 | Pixel | 4.8 x 4.8 µm, global shutter |
 | Package | 48-pin LCC, **14.22 x 14.22 mm, 1.016 mm pitch**, D263 glass lid |
 | Output | 4 LVDS data + 1 LVDS sync + 1 LVDS clock out; 720 Mbps/ch |
@@ -162,16 +162,56 @@ Design the rails to **PYTHON's tighter tolerances** so either part drops in.
 
 ```
 1280 x 1024 x 10 bit x 150 fps  =  245.8 MB/s
-Ft+ (FT601Q), MEASURED 2026-07-31 =  348   MB/s     ->  fits, ~42% headroom
+Ft+ (FT601Q), BARE LINK 2026-07-31 = 348   MB/s     ->  pattern generator only
+Ft+ (FT601Q), END-TO-END 2026-08-17 = 232  MB/s     ->  with camera + DDR running
 Ft  (FT600),  datasheet estimate  =  190   MB/s     ->  does NOT fit
 ```
 
-> The Ft+ figure is **actually measured** now (2026-07-31, `ft_usb_video/`, byte-exact
-> verified with a zero-copy reader) — this table previously claimed 350 MB/s "measured"
-> when it never had been. The real number happens to land close to that guess, so the
-> ~42 % headroom at 150 fps stands. Packed 10-bit tops out at **212 fps**, which covers
-> the sensor's full 210 fps by only ~1 % — fine at 150 fps, marginal at 210. The Ft
-> (FT600) number is still an estimate — not measured here.
+> **THE TWO Ft+ NUMBERS MEASURE DIFFERENT THINGS, and only one of them is a budget.**
+> 348 MB/s is the FT601 fed by a pattern generator — no camera, no DDR, nothing
+> competing. With the real pipeline running, the *same* `ft_bench_async.py` measures
+> **231.7 MB/s**, because the reader is now sharing one MIG port with the capture
+> writer. Sampled while saturated, both ends were at their limit at once: the DDR→USB
+> FIFO ran dry 32 % of the time **and** the FT601 back-pressured 40 %.
+>
+> **Budget against ~232 MB/s.** Using 348 led directly to a build that targeted 120 Hz
+> at 16 bpp (314.6 MB/s "with ~10 % margin") and delivered **88 fps**.
+>
+> The Ft (FT600) number is still an estimate — not measured here.
+
+### Operating point — ACHIEVED 2026-08-17
+
+**1280 × 1024, packed 10-bit, locked 120.000 Hz, exposure settable at runtime.**
+
+```
+capture     120.000 Hz   (600,000 wordclk cycles, +/-2 cycles jitter -> ~3 ppm)
+delivered   119.8 fps    201 MB/s, 25 CLEAN / 0 padded, ldrop static at 0
+alignment   10 of 10 frames agree, r = 1.000
+exposure    monotonic 75 us -> 4800 us, no saturation, independent of frame rate
+```
+
+Three things had to be true at once, and each was a separate fault:
+
+1. **Dense 10-bit packing** (format 3, 4 px in 5 bytes). At 16 bpp a 120 Hz frame costs
+   314.6 MB/s against ~232 available; packed it costs **196.6 MB/s**. 37.5 % of every
+   byte moved had been zero padding. Packing goes all the way into DDR, not just onto
+   the wire — otherwise the reader still pulls 314.6 MB/s out of DDR, which is the side
+   that was already starving.
+2. **Frame-start resync in the DDR writer.** Without it, one lost kernel repositioned
+   every frame that followed, permanently — the picture rolled in both axes.
+3. **The trigger pulse width.** `TRIGGERED=1` paced the sensor at a perfect 120.000 Hz
+   while delivering *no pixels at all*, because the pulse width came from an
+   **exposure-sweep experiment table that was never gated on `EXPO_SWEEP`**. It cycled
+   50 → 6400 µs every eight frames, and 6.4 ms of integration plus 6.86 ms of readout
+   does not fit in an 8.33 ms period. It also meant exposure was set by pulse width, so
+   `exposure0` did nothing in triggered mode. The trigger is now a fixed 10 µs
+   frame-start marker and the sensor integrates for `exposure0`.
+
+> **The 120 Hz is the right RATE but not a locked PHASE.** The trigger comes from the
+> FPGA's own 100 MHz crystal, so it drifts against a projector on a different
+> oscillator. For structured light that drift is the whole problem — see
+> [`ROADMAP.md`](../ROADMAP.md) §6.5 for the external-HDMI-sync plan (vsync-derived
+> trigger with a user-programmable phase shift), and the wiring question that gates it.
 
 The Ft+ is **mandatory**. The Ft cannot carry full-rate capture, and the Pt V2's onboard
 FT2232HQ is USB 2.0 (JTAG/UART only) — not a data path.
