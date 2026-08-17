@@ -207,6 +207,30 @@ Three things had to be true at once, and each was a separate fault:
    `exposure0` did nothing in triggered mode. The trigger is now a fixed 10 µs
    frame-start marker and the sensor integrates for `exposure0`.
 
+#### Usable exposure range at 120 Hz — and a state that needs a reflash to escape
+
+**Maximum exposure is 8280 µs, and the boundary is a cliff, not a slope.** The sensor
+cannot integrate for a whole frame period *and* still answer the next trigger, so past
+the limit it skips triggers. Measured against the DELIVERED rate:
+
+```
+ 600..8280 us   111-122 fps   full rate, ldrop 0 at every setting
+      8300 us      0.0 fps    collapses
+      8333 us     59.8 fps    every other trigger missed
+```
+
+> **The status UART cannot see this.** It reports a healthy 120.00 Hz throughout,
+> because the FPGA goes on triggering whether or not the sensor answers. Only the
+> delivered byte rate shows the truth — the same trap as the throughput-vs-bytes
+> lesson in [`ROADMAP.md`](../ROADMAP.md) §6.
+
+> **⚠️ OVER-EXPOSING WEDGES THE SENSOR.** After one setting above the cliff, restoring a
+> valid exposure did NOT recover it: `expo_cur` read back correctly and frame_start kept
+> arriving at 120.000 Hz, but no frame ever completed (`rdBusy = 0`) and no bytes
+> reached USB. A re-arm (opcode 3) did not help either. It took a full FPGA reconfigure
+> to re-run the sensor's SPI boot sequence. So the host-side cap is a SAFETY feature,
+> not a convenience — `cam_live.py` limits the slider to 8280 µs for this reason.
+
 > **The 120 Hz is the right RATE but not a locked PHASE.** The trigger comes from the
 > FPGA's own 100 MHz crystal, so it drifts against a projector on a different
 > oscillator. For structured light that drift is the whole problem — see

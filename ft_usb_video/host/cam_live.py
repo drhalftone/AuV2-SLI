@@ -48,15 +48,27 @@ CH = 1 << 22
 EXPO_UNIT_US = 0.375
 DISP_W, DISP_H = 800, 640        # initial preview size; the image now follows the window
 
-# EXPOSURE CANNOT EXCEED THE FRAME PERIOD. At a locked 120 Hz the sensor has
-# 8333 us to integrate AND read out, so asking for more does not give a brighter
-# picture -- it makes the sensor miss triggers and the frame rate collapses.
-# The slider therefore STOPS at the period: the limit is a property of the frame
-# rate, so it is derived from it rather than typed in, and changing FRAME_HZ
-# moves the slider's top automatically.
+# EXPOSURE MUST STOP SHORT OF THE FRAME PERIOD, AND THE MARGIN IS MEASURED.
+#
+# Capping at the period itself (8333 us at 120 Hz) was wrong: the sensor cannot
+# integrate for a whole period AND still answer the next trigger, so it skips
+# every other one and the delivered rate HALVES. Swept against the real
+# delivered rate -- not the status UART, which keeps reporting a healthy 120 Hz
+# because the FPGA goes on triggering regardless:
+#
+#     5000..8280 us   113-121 fps   full rate, ldrop 0
+#          8300 us       0.0 fps    collapses
+#          8333 us      59.8 fps    every other trigger missed
+#
+# The limit is the LAST MEASURED-GOOD VALUE, 8280 us. That is deliberate but
+# tight: the collapse at 8300 us is only 20 us away, and the edge behaved
+# differently between runs (8333 us gave 59.8 fps once and 0 another time). If
+# full-rate capture ever becomes intermittent near the top of the slider, this
+# margin is the first thing to suspect -- back it off toward 8000 us, which
+# still buys 96% of the light a full period could give.
 FRAME_HZ = 120.0
 PERIOD_US = 1e6 / FRAME_HZ
-EXPO_MAX_US = int(PERIOD_US)     # 8333 us at 120 Hz -- the hard ceiling
+EXPO_MAX_US = 8280               # us, measured at 120 Hz; 8300 collapses
 SAT_LEVEL = 1020                 # 10-bit full scale is 1023
 CAPTURE_DIR = "captures"         # created on demand, next to the script
 
