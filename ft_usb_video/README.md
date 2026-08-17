@@ -36,7 +36,7 @@ nothing. Everything here reuses those exact, already-proven pins.
 | File | What |
 |------|------|
 | `host/campack.py` | **Shared**: header parsing, frame iteration, and the packed-10 unpacker. Consumers **switch on the format field** — reading packed bytes as `u16` does not fail loudly, it paints a plausible wrong picture |
-| `host/cam_live.py` | live viewer; reader thread keeps only the newest complete frame, GUI paints at ~30 Hz |
+| `host/cam_live.py` | live viewer. Preview follows the window (aspect preserved); exposure slider capped at the frame period and applied on release; **Save TIFF** writes the on-screen frame as raw 10-bit counts in a 16-bit TIFF; status line carries `ldrop` growth and saturation % |
 | `host/cam_ctl.py` | runtime control: exposure (`--us`), frame rate (`--fps`), frames per scan, re-arm |
 | `host/ring_check.py` | ring integrity: frames must be **CLEAN** (no padding), **FRESH** (`frame_idx` advancing) **and cost no kernels** (`ldrop` static). None of the three is sufficient alone |
 | `host/row_align_check.py` | **do delivered frames agree with each other?** Correlates row profiles; a matching alignment must peak at zero shift. This is what caught the rolling-frame bug |

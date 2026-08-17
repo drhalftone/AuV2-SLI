@@ -62,6 +62,10 @@ docs/reference/
 __pycache__/
 *.pyc
 
+# Frames saved from the live viewer -- measurement output, not source.
+# 2.6 MB apiece and named by timestamp, so they accumulate fast.
+ft_usb_video/host/captures/
+
 build_pt/
 
 # Camera chip-ID bring-up bitstream: build products and xsim scratch.
