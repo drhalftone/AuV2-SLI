@@ -79,3 +79,6 @@ build_pt/
 # MIG-generated output -- regenerate with LauPythonCamera_Pt_Stack/ddr/gen_mig.tcl
 /LauPythonCamera_Pt_Stack/ddr/ip/
 /LauPythonCamera_Pt_Stack/ddr/build/
+
+# Merged HDMI + camera build (M1+) -- regenerate with build_merged.tcl
+build_merged/

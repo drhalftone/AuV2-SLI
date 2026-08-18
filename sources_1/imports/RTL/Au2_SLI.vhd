@@ -82,7 +82,30 @@ entity Au2_SLI is
         cam_d_n      : in  std_logic_vector(3 downto 0);
         cam_sync_p   : in  std_logic;                     -- sync channel
         cam_sync_n   : in  std_logic;
-        cam_clk_pll  : out std_logic                      -- 72 MHz CMOS reference to sensor PLL
+        cam_clk_pll  : out std_logic;                     -- 72 MHz CMOS reference to sensor PLL
+
+        -- ===== Alchitry Ft+ element (FT601Q, USB 3.0) =====
+        -- MERGE MILESTONE M1: PORTS ONLY, held in a safe idle. The DDR3 ring and
+        -- the streaming datapath arrive at M2 (MERGE_MILESTONES.md).
+        --
+        -- They are declared now rather than with the datapath because the pins and
+        -- their BUS TIMING want to exist from the start: an earlier build of this
+        -- interface streamed at full rate with zero dropped frames while silently
+        -- corrupting ft_data[31:16], because with no set_output_delay the bus was
+        -- never in the timing graph and Vivado reported a clean WNS.
+        --
+        -- DEFAULTS make these optional for the Au build and for any Pt build that
+        -- has no Ft+ stacked -- same pattern as the camera pins above.
+        ft_clk       : in    std_logic := '0';
+        ft_data      : inout std_logic_vector(31 downto 0);
+        ft_be        : inout std_logic_vector(3 downto 0);
+        ft_txe       : in    std_logic := '1';            -- active low
+        ft_rxf       : in    std_logic := '1';            -- active low
+        ft_wr        : out   std_logic;
+        ft_rd        : out   std_logic;
+        ft_oe        : out   std_logic;
+        ft_wakeup    : out   std_logic;
+        ft_reset     : out   std_logic
     );
 end Au2_SLI;
 
@@ -172,6 +195,13 @@ architecture Behavioral of Au2_SLI is
     );
     end component;
     signal clk200  : std_logic;
+
+    -- Ft+ pin-liveness probe (M1). DONT_TOUCH keeps it despite having no load,
+    -- which is what stops the optimiser trimming the Ft+ pins back out of the
+    -- design -- see the process at the end of this architecture.
+    signal ft_probe : std_logic_vector(31 downto 0) := (others => '0');
+    attribute DONT_TOUCH : string;
+    attribute DONT_TOUCH of ft_probe : signal is "TRUE";
     signal clk10  : std_logic;
     signal clk125  : std_logic;
     signal clk625  : std_logic;
@@ -1022,5 +1052,51 @@ i_cam_line_buf : cam_line_buf port map (
         kpix0 => cam_k0, kpix1 => cam_k1, kpix2 => cam_k2, kpix3 => cam_k3,
         kpix4 => cam_k4, kpix5 => cam_k5, kpix6 => cam_k6, kpix7 => cam_k7,
         rd_clk => clk100_g, rd_addr => cam_line_addr_w, rd_data => cam_line_data_w );
+
+-- =====================================================================
+--  Ft+ (FT601Q) -- MERGE MILESTONE M1: SAFE IDLE, NO DATAPATH YET
+-- =====================================================================
+--  Every control line is driven to its INACTIVE level and the bidirectional
+--  bus is tristated, so an Ft+ that is physically stacked cannot be disturbed
+--  by a build that does not yet know how to talk to it. The datapath lands at
+--  M2; until then the only requirement is "do no harm".
+--
+--  ft_wr / ft_rd / ft_oe are ACTIVE LOW -- idle is '1'. Driving them low here
+--  would start bus cycles against a chip nothing is listening to.
+--
+--  ft_reset is left DEASSERTED so the FT601 enumerates normally and the pins
+--  can be probed. Note for M2: reset must be PULSED after configuration, not
+--  tied -- the part can enumerate with a perfect EEPROM readback while driving
+--  no ft_clk at all, and a tied reset never clears that state.
+ft_wr     <= '1';
+ft_rd     <= '1';
+ft_oe     <= '1';
+ft_wakeup <= '1';
+ft_reset  <= '1';
+ft_data   <= (others => 'Z');
+ft_be     <= (others => 'Z');
+
+--  PIN-LIVENESS PROBE -- the reason this exists is worth stating.
+--
+--  Tristating the bus and leaving the inputs unread is enough for correctness,
+--  but the optimiser then TRIMS THE PORTS: the first M1 build placed only 5 of
+--  the 44 Ft+ pins (bonded IOB 65 -> 70, not ~109), and every ft_data[*] came
+--  back as "unconnected or has no load". A place-and-route that never places
+--  the pins cannot tell us the merged pinout is sound -- which was half the
+--  point of building M1 at all.
+--
+--  So the inputs are given a real load: everything is reduced to one bit,
+--  registered in the ft_clk domain and held by DONT_TOUCH. That makes ft_clk a
+--  real clock and all 40 input-capable pins real IOBs, so their placement,
+--  IOSTANDARD and bank rules are checked NOW rather than discovered at M2.
+--  The output side stays tristated, so nothing is driven at the FT601.
+process(ft_clk)
+begin
+    if rising_edge(ft_clk) then
+        ft_probe <= (ft_probe(30 downto 0) & (ft_txe xor ft_rxf))
+                    xor ft_data
+                    xor (28x"0" & ft_be);
+    end if;
+end process;
 
 end Behavioral;

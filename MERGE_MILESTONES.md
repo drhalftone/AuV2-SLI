@@ -75,6 +75,59 @@ which M1 delivers as a side effect. Nothing here needs a skeleton build of its o
 
 ---
 
+## M1 — RESULT: PASS (2026-08-17)
+
+The merged build vehicle: `build_merged.tcl` + `constrs_1/imports/RTL/pt_ftplus_merged.xdc`,
+top still `Au2_SLI`, Ft+ pins present and held at a safe idle, camera idle.
+
+**Hardware proof, on the Pt with Hd V2 stacked:**
+
+```
+telemetry present, N = 0033/0034 counting        ok
+read ID reg 0x00 == 0x48                         ok
+15 passed, 0 failed          (test_silicon.py)
+mode_idx 2 (1024x768@75), edid_ok False          ok -- correct failsafe, no display
+```
+
+**Build proof:**
+
+| | M0 predicted | M1 measured |
+|---|---|---|
+| Bonded IOB | ~109 (65 HDMI + 44 Ft+) | **109** |
+| MMCM | 4 here, 5 with MIG at M2 | **4 of 6** |
+| BUFG | — | 14 of 32 (`ft_clk` now a real domain) |
+| Timing | — | **WNS +1.339, WHS +0.064, 0 failing of 12,743** |
+
+### The first M1 build was green and proved nothing
+
+Tristating the Ft+ bus and leaving its inputs unread is correct, but the optimiser
+then TRIMS THE PORTS. The first build placed **5 of 44** Ft+ pins — bonded IOB
+65 → 70, not ~109 — and every `ft_data[*]` came back as "unconnected or has no
+load". Nothing failed: timing was clean, `No ports matched` was zero, the build
+reported success. The only visible symptom was the IOB count.
+
+A place-and-route that never places the pins cannot say the merged pinout is
+sound, which was half the reason to build M1 at all. Fixed with a **pin-liveness
+probe**: the Ft+ inputs are reduced to one word, registered in the `ft_clk` domain
+and held by `DONT_TOUCH`. Output side stays tristated, so nothing is driven at the
+FT601. Rebuild: 109 IOB, zero trim warnings.
+
+> Same shape as the failures this project keeps producing — a green result that is
+> not measuring what you think. Worth remembering for M2: **an idle interface can
+> optimise away, and an interface that optimised away is not an interface you have
+> tested.**
+
+**Also confirmed:** the `build_pt.tcl` `GENERATE_SYNTH_CHECKPOINT` guard is load-bearing.
+This build hit the same Vivado 2025.2.1 error on THREE IPs (`indexMap`, `indexMapV`,
+`ref_clk`) rather than one; unguarded it would have killed the build after all the
+IP work was already done.
+
+**Not yet proven at M1:** the MIG is not instantiated, so M0's 5-of-6 MMCM
+prediction is only partly exercised, and the Ft+ OUTPUT path has no driver so its
+`set_output_delay` constraints have no paths to check. Both land at M2.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
