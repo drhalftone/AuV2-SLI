@@ -20,6 +20,61 @@ milestone names the measurement and the number it must produce.
 
 ---
 
+## M0 — RESULT: PASS (2026-08-17)
+
+Answered by accounting the two existing builds rather than building a skeleton.
+
+**Clocking — 5 of 6 MMCM, one spare.**
+
+| MMCM instance | Source | Purpose |
+|---|---|---|
+| `hdmi_MMCME2_BASE_inst` | `hdmi_input.vhd:248` | HDMI RX recovered clock |
+| `MMCME2_ADV` | `drp_clkgen13.v:38` | reconfigurable offline output clock |
+| `ref_clk_pll` | IP | 200 MHz IDELAY reference |
+| `i_cam_mmcm` | `Au2_SLI.vhd:952` | camera 72 MHz `cam_clk_pll` |
+| MIG internal | IP | DDR3 (+ the design's only PLLE2) |
+
+Summing the two builds naively gives 7 MMCM against a budget of 6, but that
+double-counts: `cam_frame_ft`'s `u_mmcm` produces only 200 MHz and a buffered
+100 MHz, and `ref_clk_pll` already generates the 200 MHz reference, so it
+collapses. Also fine: BUFG ~21/32, IDELAYCTRL 3/6, BUFR 2/24, BUFIO 2/24.
+
+**Area — comfortable.** LUTs ~14k/63,400 (22%), FF ~12.9k/126,800, BRAM 3.5/135,
+IOB ~155/285 (34 pins shared between the designs are the same signals).
+
+**BUFR clock region — clear.** This was the real risk: `wordclk` is on a REGIONAL
+buffer, so the camera cfifo is confined to that region's ~600 LUTRAM-capable
+slices, and it already had to drop from `AW=10` (688 RAM64M) to `AW=9` (344).
+`Au2_SLI` adds 376 LUT-as-memory — but all of it is the pattern-generation IPs
+(`LUT`/`LUT_V`/`indexMap`/`indexMapV`) in the PIXEL domain. Its camera line
+buffer is BRAM, not LUTRAM: `cam_line_buf.v:51` carries `ram_style = "block"`
+with a SYNCHRONOUS read, so inference actually works there. Nothing of
+`Au2_SLI`'s competes for the camera's region.
+
+> Worth noting the contrast, because it confirms the LUTRAM finding from the
+> opposite direction: the same `ram_style = "block"` attribute works on
+> `cam_line_buf` and is inert on `cam_async_fifo`. The only difference is the
+> registered read. That is also the fix path if the camera FIFO ever needs depth.
+
+### M0 also corrected the plan
+
+**`Au2_SLI` instantiates the wrong LVDS receiver for silicon.** Its Phase-2 chain
+uses `cam_lvds_rx` — documented at `Au2_SLI.vhd:495` as "BUFIO + BUFR /5 — no
+IDELAY / clk200 needed" and "proven bit-exact in **tb_cam_decode**", a
+SIMULATION testbench. The standalone camera build uses `cam_lvds_rx_idelay` +
+`cam_eye_scan`, and that is the one proven on hardware: at 720 Mbps IDELAYE2
+eye-centring is REQUIRED, and without it an isolated bit drops in a way that
+looks exactly like bad solder.
+
+So work item 5 in the plan — "keep `Au2_SLI`'s receiver, already integrated" — is
+**wrong**. The merged design must keep the standalone camera's IDELAY receiver.
+`Au2_SLI` already provides `clk200`, so this costs no extra clocking.
+
+**Still unproven:** these are static counts. A real place-and-route confirms them,
+which M1 delivers as a side effect. Nothing here needs a skeleton build of its own.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
