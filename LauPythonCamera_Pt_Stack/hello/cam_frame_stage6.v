@@ -135,7 +135,7 @@ module cam_frame_stage6 #(
     // cam_trigger is deliberately left UNCONNECTED here -- cam_boot_stage1 ties
     // its copy to 3'b000, and this design has to drive trigger0 itself.
     cam_boot_stage1 #(.CLK_HZ(CLK_HZ), .BAUD(BAUD), .STOP_AT(45), .TRIGGERED(0), .TESTPAT(0),
-                       .EXPOSURE(16'h0640)) u_boot (   // 1600 units x 375 ns = 600 us. mult_timer(199)=27,
+                       .EXPOSURE(16'h01F4)) u_boot (   //  500 units x 375 ns = 187.5 us. mult_timer(199)=27,
         .clk(clk), .rst_n(rst_n),
         .stream_go(stream_go), .streaming(streaming),
         .led(boot_led), .usb_tx(), .usb_rx(usb_rx),
