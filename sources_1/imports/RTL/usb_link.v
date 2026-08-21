@@ -85,7 +85,13 @@ module usb_link #(
     output wire        cam_reset_n,
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
-    input  wire [63:0] cam_stat_i        // M4: camera datapath status -> regs 0x3A..0x41
+    input  wire [63:0] cam_stat_i,       // M4: camera datapath status -> regs 0x3A..0x41
+    // M6a: a SECOND source of 0xA5 bytes, arriving over the FT601 instead of the
+    // UART. Merged below rather than muxed: the two are alternative transports
+    // for one protocol, never both mid-command at once, and the receiver already
+    // resynchronises on SYNC plus an inter-byte timeout if they ever collide.
+    input  wire [7:0]  rx2_data,
+    input  wire        rx2_valid
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -146,9 +152,13 @@ module usb_link #(
     );
 
     // ---- receive + command engine ----
-    wire [7:0] rx_data;  wire rx_valid;
+    wire [7:0] rx_uart;  wire rx_uvalid;
+    // Serial byte OR FT601 byte -- whichever arrives. The UART wins a same-cycle
+    // tie, which cannot happen in practice and costs nothing to define.
+    wire [7:0] rx_data  = rx_uvalid ? rx_uart : rx2_data;
+    wire       rx_valid = rx_uvalid | rx2_valid;
     uart_rx #(.CLK_HZ(CLK_HZ), .BAUD(115200)) i_urx (
-        .clk(clk100), .rst(rst), .rx(usb_rx), .data(rx_data), .valid(rx_valid)
+        .clk(clk100), .rst(rst), .rx(usb_rx), .data(rx_uart), .valid(rx_uvalid)
     );
     //---------------------------------------------------------------- PYTHON 1300
     // Declared BEFORE i_ctrl: Verilog would otherwise implicitly declare each of these

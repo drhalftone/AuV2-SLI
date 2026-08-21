@@ -126,6 +126,12 @@ module cam_frame_ft #(
     output wire [63:0] cam_stat_o,
     output wire        cam_stat_tog_o,
 
+    // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
+    // the parent as BYTES in the `clk` domain. See the ctl_* block below for why
+    // it rides opcode 0 rather than being packed raw.
+    output wire [7:0]  ctl_byte,
+    output wire        ctl_valid,
+
     input  wire        cam_clkout_p, cam_clkout_n,
     input  wire [3:0]  cam_d_p,      cam_d_n,
     input  wire        cam_sync_p,   cam_sync_n,
@@ -1569,6 +1575,70 @@ module cam_frame_ft #(
     reg [2:0] cw_s = 3'b000;
     always @(posedge clk) cw_s <= {cw_s[1:0], cw_tog};
     wire cw_pulse = cw_s[2] ^ cw_s[1];       // cw_ft is stable well before this
+
+    // ---- M6a: control-byte carrier on the FT601 OUT pipe -------------------
+    //
+    // WHY OPCODE 0 AND NOT RAW BYTES. The OUT pipe delivers 32-bit WORDS, and the
+    // top nibble of every word is the opcode. Packing 0xA5 protocol bytes raw
+    // would let the control stream ALIAS INTO CAMERA COMMANDS -- a byte landing
+    // at 0x1? in that position fires opcode 1 and silently rewrites the exposure.
+    //
+    // So the stream rides opcode 0, which was undefined, carrying three bytes and
+    // an explicit count: {4'd0, count[3:0], byte2, byte1, byte0}. Opcodes 1..5
+    // are untouched and no byte pattern can reach them. 75% efficiency, which for
+    // a 1,283-byte upload is 428 words -- nothing on a 232 MB/s link.
+    reg  [7:0] ctlb    = 8'd0;
+    reg        ctlv    = 1'b0;
+    reg  [1:0] ctl_ph  = 2'd0;
+    reg  [1:0] ctl_n   = 2'd0;
+    reg [23:0] ctl_sh  = 24'd0;
+    always @(posedge ft_clk) begin
+        ctlv <= 1'b0;
+        if (ft_rst) begin
+            ctl_ph <= 2'd0; ctl_n <= 2'd0;
+        end else if (cmd_valid && cmd_word[31:28] == 4'd0
+                     && cmd_word[27:24] != 4'd0 && cmd_word[27:24] <= 4'd3) begin
+            ctl_sh <= cmd_word[23:0];
+            ctl_n  <= cmd_word[25:24];
+            ctl_ph <= 2'd1;
+        end else if (ctl_ph != 2'd0) begin
+            ctlb   <= ctl_sh[7:0];
+            ctlv   <= 1'b1;
+            ctl_sh <= {8'd0, ctl_sh[23:8]};
+            if (ctl_ph == ctl_n) ctl_ph <= 2'd0;
+            else                 ctl_ph <= ctl_ph + 2'd1;
+        end
+    end
+
+    // Cross into `clk` (= the parent's clk100_g, where uart_ctrl lives). A FIFO
+    // rather than a handshake because a 1,283-byte upload arrives in a burst and
+    // the consumer takes one byte at a time.
+    wire        ctlf_empty;
+    wire [7:0]  ctlf_dout;
+    cam_async_fifo #(.DW(8), .AW(6)) u_ctlfifo (
+        .wr_clk(ft_clk), .wr_rst(ft_rst), .wr_en(ctlv), .wr_data(ctlb),
+        .full(), .overflow(),
+        .rd_clk(clk), .rd_rst(rst), .rd_en(ctl_valid),
+        .rd_data(ctlf_dout), .empty(ctlf_empty)
+    );
+    // THE POP AND THE VALID MUST BE THE SAME CYCLE. This FIFO is first-word
+    // fall-through -- rd_data is combinational on the read pointer, so the byte
+    // is on the bus whenever !empty and rd_en only advances the pointer.
+    //
+    // Registering the read (ctlf_rd <= !ctlf_empty) DELIVERS EVERY BYTE TWICE:
+    // rd_en is computed from the PREVIOUS cycle's empty, so it stays asserted
+    // for one cycle after the FIFO drains, with the stale last byte still on
+    // rd_data. A 5-byte command reached uart_ctrl as A5 A5 57 57 13 13 AB AB
+    // ck ck -- SYNC, then A5 read as an opcode, rejected, resynced, and the
+    // write never executed. The register simply did not change; nothing
+    // crashed and the link stayed healthy, so the failure looked like the
+    // bytes were never arriving at all rather than arriving doubled.
+    //
+    // One byte per clk cycle is far faster than the protocol needs, and
+    // uart_ctrl takes one byte per cycle (every state is a single-cycle
+    // transition on rx_valid).
+    assign ctl_byte  = ctlf_dout;
+    assign ctl_valid = !ctlf_empty;
 
     wire [31:0] ft_dout;
     wire [3:0]  ft_beout;

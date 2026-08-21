@@ -229,6 +229,10 @@ architecture Behavioral of Au2_SLI is
     signal clk200  : std_logic;
 
     -- M4: camera status crossing from the camera's ui_clk into clk100_g.
+    -- M6a: 0xA5 control bytes arriving over the FT601 instead of the UART.
+    signal ctl_byte_w  : std_logic_vector(7 downto 0);
+    signal ctl_valid_w : std_logic;
+
     signal cam_stat_raw : std_logic_vector(63 downto 0);
     signal cam_stat_tog : std_logic;
     signal cst_s        : std_logic_vector(2 downto 0) := "000";
@@ -425,7 +429,9 @@ architecture Behavioral of Au2_SLI is
                cam_reset_n : out STD_LOGIC;
                cam_trigger : out STD_LOGIC_VECTOR(2 downto 0);
                cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
-               cam_stat_i  : in  STD_LOGIC_VECTOR(63 downto 0) := (others => '0') );
+               cam_stat_i  : in  STD_LOGIC_VECTOR(63 downto 0) := (others => '0');
+               rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               rx2_valid   : in  STD_LOGIC := '0' );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -579,6 +585,8 @@ architecture Behavioral of Au2_SLI is
                usb_tx : out std_logic;
                cam_stat_o     : out std_logic_vector(63 downto 0);
                cam_stat_tog_o : out std_logic;
+               ctl_byte       : out std_logic_vector(7 downto 0);
+               ctl_valid      : out std_logic;
 
                cam_clkout_p, cam_clkout_n : in  std_logic;
                cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
@@ -744,7 +752,9 @@ begin
         cam_reset_n => open,
         cam_trigger => open,
         cam_monitor => cam_monitor,
-        cam_stat_i  => cam_stat_q );
+        cam_stat_i  => cam_stat_q,
+        rx2_data    => ctl_byte_w,
+        rx2_valid   => ctl_valid_w );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -1132,6 +1142,7 @@ i_cam_frame_ft : cam_frame_ft
         clk200_ext => clk200, clk100_ext => clk100_g,
         led => open, usb_tx => cam_usb_tx,
         cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
+        ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
 
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
         cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,

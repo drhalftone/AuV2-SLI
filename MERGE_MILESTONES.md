@@ -480,6 +480,106 @@ Fixed by not counting until the first valid packet is seen. Confirmed with a
 
 ---
 
+## M6a — RESULT: PASS (2026-08-21): control commands over the Ft+
+
+M6 moves the `0xA5` control plane off the Pt's UART and onto the FT601, so the
+delivered system is reached only through the Ft+. M6a is the **command**
+direction alone; M6b adds replies.
+
+**Why the stream rides opcode 0.** The OUT pipe delivers 32-bit *words* whose top
+nibble is a camera opcode. Packing protocol bytes raw would let the control
+stream **alias into camera commands** — a byte landing at `0x1?` in that position
+fires opcode 1 and silently rewrites the exposure. So the bytes ride opcode 0,
+which was undefined, three at a time with an explicit count:
+`{4'd0, count[3:0], byte2, byte1, byte0}`. Opcodes 1–5 are untouched and no byte
+pattern can reach them. 75% efficiency — for a 1,283-byte upload that is 428
+words, nothing on a 232 MB/s link.
+
+**The proof is deliberately one-directional:** write a register over USB3, read it
+back over the *serial* link. That isolates the command path completely, with no
+dependency on the reply path M6b still has to build.
+
+### First run failed, and both the RTL and the test were wrong
+
+Scored 2 of 4. Register `0x13` never changed; nothing crashed and serial stayed
+healthy, so it looked like bytes were not arriving at all.
+
+**The RTL bug — a registered read on a first-word-fall-through FIFO delivers every
+byte twice.** `cam_async_fifo` is FWFT: `rd_data` is combinational on the read
+pointer, so the byte is on the bus whenever `!empty`, and `rd_en` only advances
+the pointer. The crossing did
+
+```verilog
+always @(posedge clk) ctlf_rd <= !ctlf_empty;   // WRONG
+assign ctl_valid = ctlf_rd;
+```
+
+`rd_en` is computed from the **previous** cycle's `empty`, so it stays asserted
+for one cycle after the FIFO drains — with the stale last byte still on
+`rd_data`. The 5-byte command reached `uart_ctrl` as
+`A5 A5 57 57 13 13 AB AB ck ck`: SYNC, then `A5` read as an opcode, rejected,
+resynced, and the write never executed. The pop and the valid must be the *same*
+cycle: `assign ctl_valid = !ctlf_empty;`.
+
+> The doubling is invisible from the outside. A path that delivers nothing and a
+> path that delivers everything twice fail *identically* at the register — both
+> just leave it unchanged.
+
+**The test bug — two of the four "passes" were vacuous.** The values alternated
+`0xAB, 0x00, 0x5A, 0x00`, and writing `0x00` to a register already reading `0x00`
+passes whether or not the write happened. The real score was 0 of 4. Test values
+are now all distinct and non-zero, and the test asserts the register does not
+already hold the value it is about to write.
+
+> Fifth measurement bug in this project to produce a confident wrong answer. This
+> one did not invent a failure — it *understated* one, which is the more
+> dangerous direction.
+
+Ruled out along the way, in this order: register `0x13` is writable and reads
+back correctly over serial (so the register is fine); `ft601_sync_rx` takes
+exactly one word per bus-turnaround window of ~15 cycles, so `cmd_valid` pulses
+can never arrive back-to-back and the unpacker cannot be clobbered mid-word; and
+every `uart_ctrl` state is a single-cycle transition on `rx_valid`, so one byte
+per clock is safe.
+
+### Results, after the fix
+
+`host/test_m6a_ctlpath.py` — 4 of 4 distinct non-zero values written over USB3
+and read back over serial. But that runs on an **idle pipe**, which is the easy
+case, so it is not on its own sufficient.
+
+`host/test_m6a_under_load.py` — commands injected **while the frame stream
+runs**. This is where a fault would actually land: `ft601_sync_rx` has to take
+the shared DATA bus away from the transmitter, and it does that by gating the TX
+with `rx_hold`. The earlier version of exactly that handshake dropped `bus_oe`
+one cycle before `rx_hold` reached the TX's WR# flop, so the FT601 latched a
+garbage word while `ft_data` floated — and the damage showed up in the *frame
+stream*, not in the command.
+
+```
+    streamed 25.7 s   4.92 GB   3,002 frames   117.0 fps
+    commands sent 34, applied 34
+    frame_idx gaps 0   malformed 0
+    ldrop 0 -> 0   cfifo_ovf 0  ufifo_ovf 0   alive 0x3F
+```
+
+117.0 fps against the soak's host-limited 117.8 — the control traffic costs
+nothing measurable, which is expected: 34 commands is 68 words against ~3,000
+frames of payload.
+
+> Timing unchanged at **WNS = +0.082 ns**. Vivado crashed twice on the way to
+> this bitstream — once silently after synthesis (`EXIT=127`, no bitstream, no
+> error), once mid-synthesis with a real `EXCEPTION_ACCESS_VIOLATION` — with
+> 60 GB of 96 GB free. Two crashes at *different* stages of an unchanged flow is
+> the tool-instability signature, not a design fault; the third attempt went
+> straight through.
+
+**Still open:** M6b (replies from a byte FIFO, variable length) and M6c (tables +
+EDID, the `test_silicon` equivalent over D3XX). Until M6b lands the Pt UART is
+still required to read anything back.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
