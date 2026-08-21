@@ -91,7 +91,12 @@ module usb_link #(
     // for one protocol, never both mid-command at once, and the receiver already
     // resynchronises on SYNC plus an inter-byte timeout if they ever collide.
     input  wire [7:0]  rx2_data,
-    input  wire        rx2_valid
+    input  wire        rx2_valid,
+    // M6b: the reply direction for those bytes. rpl_full is real backpressure --
+    // it paces uart_ctrl's producer handshake directly.
+    output wire [7:0]  rpl_byte,
+    output wire        rpl_we,
+    input  wire        rpl_full
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -132,16 +137,55 @@ module usb_link #(
     wire [7:0] c_data;  wire c_send, c_active;      // uart_ctrl producer
     wire       u_busy;                              // shared uart_tx busy
 
+    // ---- received bytes, from EITHER transport ----
+    // Declared here rather than beside uart_rx because the arbiter and the reply
+    // routing below both depend on which transport a command arrived on.
+    wire [7:0] rx_uart;  wire rx_uvalid;
+    // Serial byte OR FT601 byte -- whichever arrives. The UART wins a same-cycle
+    // tie, which cannot happen in practice and costs nothing to define.
+    wire [7:0] rx_data  = rx_uvalid ? rx_uart : rx2_data;
+    wire       rx_valid = rx_uvalid | rx2_valid;
+
+    // ---- M6b: send the reply back the way the command came in -------------
+    //
+    // Every response byte uart_ctrl produces -- short ACKs from S_RESP and
+    // 1,280-byte table readbacks from S_RTAB alike -- leaves through one producer
+    // handshake, so this is the only place that needs to know about two
+    // transports. uart_ctrl itself is untouched.
+    //
+    // ROUTING BY SOURCE IS WHAT MAKES THE TABLE CASE WORK. The handshake is paced
+    // by tx_busy, and the UART is 115200 baud -- 87 us per byte. Feed a table
+    // readback through it and the reply takes 111 ms. Pacing a USB3-originated
+    // reply on the FIFO instead makes the same readback tens of microseconds,
+    // while a serial-originated one still goes out the UART at UART speed, which
+    // is what a serial client wants.
+    //
+    // SYNC is the latch point because it is the one byte that unambiguously
+    // starts a command, and every reply belongs to the command before it.
+    reg src_ft = 1'b0;
+    always @(posedge clk100) begin
+        if (rst) src_ft <= 1'b0;
+        else if (rx_valid && rx_data == 8'hA5) src_ft <= ~rx_uvalid;
+    end
+
     // ---- 1-bit priority arbiter (ctrl wins). Switch only between bytes (~u_busy). ----
     reg owner = 1'b0;                               // 0 = status, 1 = ctrl
     always @(posedge clk100) begin
         if (rst)        owner <= 1'b0;
-        else if (!u_busy) owner <= c_active;        // re-evaluate each idle-between-bytes
+        // c_active must not claim the UART for a reply that is going out over the
+        // FT601 instead -- see src_ft below.
+        else if (!u_busy) owner <= c_active & ~src_ft;
     end
+    assign rpl_byte = c_data;
+    assign rpl_we   = c_send & src_ft;
+
     wire        s_tx_busy = owner ? 1'b1   : u_busy;   // back-pressure non-owner
-    wire        c_tx_busy = owner ? u_busy : 1'b1;
+    // When the command came in over the FT601 the control engine is paced by the
+    // reply FIFO and never touches the arbiter, so status telemetry keeps
+    // flowing on the serial port the whole time.
+    wire        c_tx_busy = src_ft ? rpl_full : (owner ? u_busy : 1'b1);
     wire [7:0]  tx_data   = owner ? c_data : s_data;
-    wire        tx_send   = owner ? c_send : s_send;
+    wire        tx_send   = owner ? (c_send & ~src_ft) : s_send;
     wire        s_go      = stat_tick & ~c_active & ~owner;   // don't start a line if ctrl is busy
 
     // ---- status line (telemetry) ----
@@ -152,11 +196,8 @@ module usb_link #(
     );
 
     // ---- receive + command engine ----
-    wire [7:0] rx_uart;  wire rx_uvalid;
-    // Serial byte OR FT601 byte -- whichever arrives. The UART wins a same-cycle
-    // tie, which cannot happen in practice and costs nothing to define.
-    wire [7:0] rx_data  = rx_uvalid ? rx_uart : rx2_data;
-    wire       rx_valid = rx_uvalid | rx2_valid;
+    // rx_uart / rx_uvalid / rx_data / rx_valid are declared above, with the
+    // reply routing that depends on them.
     uart_rx #(.CLK_HZ(CLK_HZ), .BAUD(115200)) i_urx (
         .clk(clk100), .rst(rst), .rx(usb_rx), .data(rx_uart), .valid(rx_uvalid)
     );

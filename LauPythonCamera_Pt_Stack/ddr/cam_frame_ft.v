@@ -132,6 +132,14 @@ module cam_frame_ft #(
     output wire [7:0]  ctl_byte,
     output wire        ctl_valid,
 
+    // M6b: the reply direction. The parent hands back every byte the control
+    // plane wants to send -- short ACKs and 1,280-byte table readbacks alike --
+    // and they leave inside RMAGIC packets on the frame pipe. rpl_full is real
+    // backpressure: the producer must not push when it is high.
+    input  wire [7:0]  rpl_byte,
+    input  wire        rpl_we,
+    output wire        rpl_full,
+
     input  wire        cam_clkout_p, cam_clkout_n,
     input  wire [3:0]  cam_d_p,      cam_d_n,
     input  wire        cam_sync_p,   cam_sync_n,
@@ -926,7 +934,8 @@ module cam_frame_ft #(
     // W_PAD finishes a slot whose frame arrived short, so the host always gets
     // exactly NWORDS words per frame.
     localparam [2:0] W_WAIT=0, W_RUN=1, W_PAD=2, W_DONE=3, W_NEXT=4;
-    localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2, R_REPLY=3;
+    // M6b adds R_CREPLY, so this no longer fits in 2 bits.
+    localparam [2:0] R_IDLE=0, R_HDR=1, R_RUN=2, R_REPLY=3, R_CREPLY=4;
     // live path: idle -> header -> stream a frame -> (pad on underrun)
     localparam [1:0] L_IDLE=0, L_HDR=1, L_RUN=2, L_PAD=3;
     reg [1:0]  stl   = L_IDLE;
@@ -934,7 +943,7 @@ module cam_frame_ft #(
     reg [31:0] lidx  = 32'd0;
     reg [15:0] ldrop = 16'd0;      // frames abandoned, reported in telemetry
     reg [2:0] stw = W_WAIT;         // writer
-    reg [1:0] str = R_IDLE;         // reader
+    reg [2:0] str = R_IDLE;         // reader
     reg [17:0] wfw = 18'd0;         // words written within the current frame
     reg [5:0]  wf  = 6'd0;          // frame being written
     reg [5:0]  wf_done = 6'd0;      // frames FULLY written -- the fence
@@ -1115,6 +1124,38 @@ module cam_frame_ft #(
         .rd_data(ufifo_dout), .empty(ufifo_empty)
     );
 
+    // ---- M6b: reply bytes, clk100 -> ui_clk -------------------------------
+    // 2,048 deep so a whole table readback fits (1,280 data + prologue +
+    // checksum) and the producer never has to stall mid-message. BRAM-backed,
+    // not LUTRAM -- see cam_reply_fifo.v for why that distinction matters here.
+    wire [7:0]  rf_dout;
+    wire        rf_empty;
+    wire [11:0] rf_count;
+    reg         rf_rd = 1'b0;
+    cam_reply_fifo #(.DW(8), .AW(11)) u_rplfifo (
+        .wr_clk(clk),    .wr_rst(rst),    .wr_en(rpl_we), .wr_data(rpl_byte),
+        .full(rpl_full), .overflow(),
+        .rd_clk(ui_clk), .rd_rst(ui_rst), .rd_en(rf_rd),
+        .rd_data(rf_dout), .empty(rf_empty), .rd_count(rf_count)
+    );
+
+    // M6b reply-drain state. Bytes are taken from the FIFO ONE PER TWO CYCLES
+    // (issue, then capture) rather than streamed at full rate. cam_reply_fifo has
+    // a registered read, so a full-rate stream would leave a byte in flight
+    // whenever ufifo_afull stalled the emitter -- and that byte would be lost
+    // with nothing to indicate it. At 2 cycles/byte the worst case is 2,048
+    // bytes = 41 us against an 8.3 ms frame period, so the simple version costs
+    // nothing worth having.
+    localparam integer RPL_MAX = 2048;    // must be a multiple of 16
+    reg [1:0]   rp_ph    = 2'd0;
+    reg [11:0]  rp_n     = 12'd0;         // real bytes in this chunk
+    reg [11:0]  rp_pad   = 12'd0;         // padded up to a whole 128-bit word
+    reg [11:0]  rp_i     = 12'd0;         // bytes placed so far
+    reg [4:0]   rp_bc    = 5'd0;          // bytes in the word being built
+    reg         rp_sub   = 1'b0;          // 0 = issue read, 1 = capture
+    reg         rp_flush = 1'b0;          // a full word is ready to emit
+    reg [127:0] rp_sh    = 128'd0;
+
     reg [5:0]  nf_run = 6'd0;             // frames in the burst actually captured
     reg [2:0]  hw = 3'd0;                 // header word index
     reg [31:0] frame_idx = 32'd0;
@@ -1137,6 +1178,10 @@ module cam_frame_ft #(
             nf_run <= 6'd0; cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
             frame_idx <= 32'd0; rd_iss <= 18'd0; rd_got <= 18'd0; outst <= 5'd0;
             rpl_pend <= 1'b0; rpl_seq <= 32'd0;
+            // M6b: a reset mid-drain must not leave rf_rd asserted or a half-built
+            // word queued to flush.
+            rf_rd <= 1'b0; rp_ph <= 2'd0; rp_sub <= 1'b0; rp_flush <= 1'b0;
+            rp_n <= 12'd0; rp_pad <= 12'd0; rp_i <= 12'd0; rp_bc <= 5'd0;
         end else if (rearm_u) begin
             // New scan: rewind BOTH sides. wf_done back to 0 re-arms the fence,
             // otherwise the reader would immediately serve frames left from the
@@ -1358,6 +1403,27 @@ module cam_frame_ft #(
             // silent in the one situation that needs it.
             R_IDLE: if (rpl_pend) begin
                         hw <= 3'd0; str <= R_REPLY;
+                    end else if (rf_count != 12'd0) begin
+                        // M6b: control-plane reply bytes are waiting. Sized HERE,
+                        // before a single word is emitted, because the byte count
+                        // goes in the header and the header goes out first.
+                        //
+                        // rf_count is CONSERVATIVE by construction (see
+                        // cam_reply_fifo.v) so this can only under-read; whatever
+                        // is left simply goes out on the next boundary. That is
+                        // also why the reply is a TRANSPORT CHUNK and not a
+                        // protocol message: the host reassembles a byte stream and
+                        // lets the 0xA5 parser do its own framing, so a reply
+                        // split across two packets costs nothing.
+                        rp_n   <= (rf_count > RPL_MAX[11:0]) ? RPL_MAX[11:0]
+                                                             : rf_count;
+                        // pad up to a whole 128-bit word so the frame pipe stays
+                        // word-aligned; the header carries the true count.
+                        rp_pad <= (rf_count > RPL_MAX[11:0])
+                                    ? RPL_MAX[11:0]
+                                    : ((rf_count + 12'd15) & ~12'd15);
+                        rp_i   <= 12'd0; rp_bc <= 5'd0; rp_ph <= 2'd0;
+                        str    <= R_CREPLY;
                     end else if (LIVE != 0) begin
                         if (wf_done != wf_seen) begin
                             wf_seen <= wf_done;
@@ -1422,6 +1488,73 @@ module cam_frame_ft #(
                     rpl_seq  <= rpl_seq + 32'd1;
                     str <= R_IDLE;
                 end else hw <= hw + 3'd1;
+            end
+
+            // M6b: control-plane reply BYTES, same packet shape as everything
+            // else on this pipe -- 32-byte header, magic, stated length -- so the
+            // host parser stays uniform. Format 4 distinguishes it from the M5
+            // status reply (format 1), which still serves cstat_r above.
+            //
+            // The header states the PADDED length, because the pipe moves whole
+            // 128-bit words and the frame parser must be able to skip the packet
+            // by byte count alone. The TRUE byte count rides in word 2, which is
+            // spare here. A host that skipped the true count and used the padded
+            // one would feed up to 15 zero bytes into the 0xA5 parser, which is
+            // harmless -- zeros are not SYNC -- but it would never see the reply.
+            R_CREPLY: begin
+                case (rp_ph)
+                2'd0: if (!ufifo_afull) begin
+                        ufifo_wr  <= 1'b1;
+                        ufifo_din <= { 32'd0, {20'd0, rp_n}, rpl_seq, RMAGIC };
+                        rp_ph <= 2'd1;
+                      end
+                2'd1: if (!ufifo_afull) begin
+                        ufifo_wr  <= 1'b1;
+                        ufifo_din <= { ~RMAGIC, 32'd4,
+                                       {22'd0, rp_pad[11:2]}, {20'd0, rp_pad} };
+                        rp_ph <= 2'd2;
+                      end
+                default: begin
+                    // Flush has priority: the word is already complete and
+                    // nothing else may touch rp_sh until it is out.
+                    if (rp_flush) begin
+                        if (!ufifo_afull) begin
+                            ufifo_wr  <= 1'b1;
+                            ufifo_din <= rp_sh;
+                            rp_flush  <= 1'b0;
+                            if (rp_i == rp_pad) begin
+                                rpl_seq <= rpl_seq + 32'd1;
+                                str     <= R_IDLE;
+                            end
+                        end
+                    end else if (rp_sub == 1'b0) begin
+                        if (rp_i < rp_n) begin
+                            // real byte: issue the read, capture next cycle
+                            if (!rf_empty) begin
+                                rf_rd  <= 1'b1;
+                                rp_sub <= 1'b1;
+                            end
+                        end else begin
+                            // pad byte: no FIFO access at all
+                            rp_sh <= {8'd0, rp_sh[127:8]};
+                            rp_i  <= rp_i + 12'd1;
+                            if (rp_bc == 5'd15) begin
+                                rp_bc <= 5'd0; rp_flush <= 1'b1;
+                            end else rp_bc <= rp_bc + 5'd1;
+                        end
+                    end else begin
+                        rf_rd  <= 1'b0;
+                        // first byte of the chunk ends up at [7:0]; the pipe
+                        // sends [31:0] first, so this is the wire order.
+                        rp_sh  <= {rf_dout, rp_sh[127:8]};
+                        rp_i   <= rp_i + 12'd1;
+                        rp_sub <= 1'b0;
+                        if (rp_bc == 5'd15) begin
+                            rp_bc <= 5'd0; rp_flush <= 1'b1;
+                        end else rp_bc <= rp_bc + 5'd1;
+                    end
+                end
+                endcase
             end
 
             // Reads issued up to MAXOUT deep; the frame ends when rd_got reaches

@@ -232,6 +232,10 @@ architecture Behavioral of Au2_SLI is
     -- M6a: 0xA5 control bytes arriving over the FT601 instead of the UART.
     signal ctl_byte_w  : std_logic_vector(7 downto 0);
     signal ctl_valid_w : std_logic;
+    -- M6b: and the reply direction, back out through the frame pipe.
+    signal rpl_byte_w  : std_logic_vector(7 downto 0);
+    signal rpl_we_w    : std_logic;
+    signal rpl_full_w  : std_logic;
 
     signal cam_stat_raw : std_logic_vector(63 downto 0);
     signal cam_stat_tog : std_logic;
@@ -431,7 +435,10 @@ architecture Behavioral of Au2_SLI is
                cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
                cam_stat_i  : in  STD_LOGIC_VECTOR(63 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-               rx2_valid   : in  STD_LOGIC := '0' );
+               rx2_valid   : in  STD_LOGIC := '0';
+               rpl_byte    : out STD_LOGIC_VECTOR(7 downto 0);
+               rpl_we      : out STD_LOGIC;
+               rpl_full    : in  STD_LOGIC := '0' );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -587,6 +594,9 @@ architecture Behavioral of Au2_SLI is
                cam_stat_tog_o : out std_logic;
                ctl_byte       : out std_logic_vector(7 downto 0);
                ctl_valid      : out std_logic;
+               rpl_byte       : in  std_logic_vector(7 downto 0);
+               rpl_we         : in  std_logic;
+               rpl_full       : out std_logic;
 
                cam_clkout_p, cam_clkout_n : in  std_logic;
                cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
@@ -754,7 +764,10 @@ begin
         cam_monitor => cam_monitor,
         cam_stat_i  => cam_stat_q,
         rx2_data    => ctl_byte_w,
-        rx2_valid   => ctl_valid_w );
+        rx2_valid   => ctl_valid_w,
+        rpl_byte    => rpl_byte_w,
+        rpl_we      => rpl_we_w,
+        rpl_full    => rpl_full_w );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -1143,6 +1156,7 @@ i_cam_frame_ft : cam_frame_ft
         led => open, usb_tx => cam_usb_tx,
         cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
+        rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
         cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,
