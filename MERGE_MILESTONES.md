@@ -423,6 +423,63 @@ Timing: WNS +0.082, WHS +0.056, 0 failing of 45,868.
 
 ---
 
+## M7 soak — RESULT: PASS (2026-08-21)
+
+30 minutes continuous, both subsystems running, watched over two independent
+paths: the camera through the FRAME STREAM's structure, HDMI through the Pt
+control link.
+
+```
+ran 30.0 min   211,942 frames   347.25 GB
+frame_idx gaps    : 0        not one boundary lost
+ldrop             : 0        not one kernel lost, all 30 minutes
+cfifo_ovf/ufifo   : 00       never set
+MODE              : 0x82 stable, VSYNC counting throughout
+rate              : 119.8 -> 117.5, then flat 117.5-117.9 for 29 minutes
+```
+
+**This is the first test in the project longer than 10 seconds.** Everything
+prior — `ring_check` 6 s, `row_align_check` 10 s, each stress phase a second or
+two — was structurally blind to thermal drift, to rare events (a `cfifo`
+overflow once every few minutes would never land in a 6 s window), and to slow
+leaks. None of those appeared.
+
+### Two readings worth keeping
+
+**Delivered 117.8, captured 120.** 117.8 x 1.638 MB = 193.0 MB/s, matching the
+measured throughput exactly — so this is HOST-limited delivery, not a camera
+fault. `ldrop` at 0 proves nothing was lost; the ring skips ~2 frames/sec when
+the host cannot take them, which is its designed behaviour.
+
+> Note the limitation this exposes: **`frame_idx` counts frames the reader
+> SERVED, not frames the sensor captured.** Deliberately skipped frames are
+> therefore invisible to it. `ldrop` catches lost kernels; skipped frames are a
+> separate counter (`w_skip`) that is not currently exposed.
+
+**`alive` alternates 0x3F / 0x2F.** Bit 4 is `rd_busy` — the reader caught
+between frames when sampled. Normal. The check masks to the low nibble
+(`calib`/`aligned`/`streaming`/`cap`), which held `0xF` throughout.
+
+### The run reported FAILED, and the test was wrong
+
+`malformed: 1`, reached at the one-minute mark and never incremented again across
+the remaining 29 minutes and 347 GB. That is the parser joining a stream already
+in progress: the accumulator starts wherever the pipe happens to be, so the
+opening bytes are mid-packet by definition. The framing resynchronises on the
+next magic — which is what it is for — but the first walk scored one malformed
+packet.
+
+Fixed by not counting until the first valid packet is seen. Confirmed with a
+2-minute run: `malformed: 0`, PASS.
+
+> Fourth measurement bug in this project to produce a confident wrong answer,
+> after the correlation that locked onto the kernel pattern, the frame counter
+> that reported extraction rate as camera rate, and the stress test that
+> conflated obedience with damage. **The instrument is as likely to be wrong as
+> the thing being measured.**
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
