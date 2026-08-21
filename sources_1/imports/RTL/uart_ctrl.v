@@ -172,6 +172,9 @@ module uart_ctrl #(
     output reg  [15:0] cam_spi_wdata,
     output reg         cam_spi_start,     // 1-clk strobe
     input  wire [15:0] cam_spi_rdata,
+    // M4: camera datapath status, 8 bytes at 0x3A..0x41. Read-only, and already
+    // captured on a stable snapshot upstream -- see cam_frame_ft's cstat_r.
+    input  wire [63:0] cam_stat_i,
     input  wire        cam_spi_busy,
     input  wire        cam_spi_done,      // 1-clk strobe from cam_spi_master
 
@@ -340,6 +343,25 @@ case (addr)
             8'h37:   rd_data  = cam_gpio;
             8'h38:   rd_data  = cam_gpio_in;
             8'h39:   rd_data  = {4'b0, cam_boot_stat};   // {ready, busy, failed, pll_timeout}
+            // ---- 0x3A..0x41: CAMERA DATAPATH STATUS (M4) ----------------
+            // The camera used to report only over its own 1 Mbaud UART, which
+            // meant Port A could show the SLI plane OR the camera, never both.
+            // Worse, the frame stream on Port B goes SILENT exactly when the
+            // camera fails -- so its health could not be read in the one
+            // situation that needed it.
+            //   0x3A {stw[2:0], rd_busy, calib, aligned, streaming, cap}
+            //   0x3B {cfifo_ovf, ufifo_ovf, ufifo_empty, txe, 0000}
+            //   0x3C/0x3D ldrop lo/hi   -- padded frames; static == none lost
+            //   0x3E/0x3F frame period / 16, in 72 MHz wordclk cycles
+            //   0x40/0x41 exposure0 lo/hi, in 375 ns units
+            8'h3A:   rd_data  = cam_stat_i[7:0];
+            8'h3B:   rd_data  = cam_stat_i[15:8];
+            8'h3C:   rd_data  = cam_stat_i[23:16];
+            8'h3D:   rd_data  = cam_stat_i[31:24];
+            8'h3E:   rd_data  = cam_stat_i[39:32];
+            8'h3F:   rd_data  = cam_stat_i[47:40];
+            8'h40:   rd_data  = cam_stat_i[55:48];
+            8'h41:   rd_data  = cam_stat_i[63:56];
             default: rd_data  = 8'h00;
         endcase
     end

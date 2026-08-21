@@ -228,6 +228,12 @@ architecture Behavioral of Au2_SLI is
     end component;
     signal clk200  : std_logic;
 
+    -- M4: camera status crossing from the camera's ui_clk into clk100_g.
+    signal cam_stat_raw : std_logic_vector(63 downto 0);
+    signal cam_stat_tog : std_logic;
+    signal cst_s        : std_logic_vector(2 downto 0) := "000";
+    signal cam_stat_q   : std_logic_vector(63 downto 0) := (others => '0');
+
     -- Port A arbitration, see the CAM_DIAG generic.
     signal sli_usb_tx : std_logic;
     signal cam_usb_tx : std_logic;
@@ -418,7 +424,8 @@ architecture Behavioral of Au2_SLI is
                cam_miso    : in  STD_LOGIC := '0';
                cam_reset_n : out STD_LOGIC;
                cam_trigger : out STD_LOGIC_VECTOR(2 downto 0);
-               cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0') );
+               cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
+               cam_stat_i  : in  STD_LOGIC_VECTOR(63 downto 0) := (others => '0') );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -570,6 +577,8 @@ architecture Behavioral of Au2_SLI is
                clk200_ext : in std_logic; clk100_ext : in std_logic;
                led    : out std_logic_vector(7 downto 0);
                usb_tx : out std_logic;
+               cam_stat_o     : out std_logic_vector(63 downto 0);
+               cam_stat_tog_o : out std_logic;
 
                cam_clkout_p, cam_clkout_n : in  std_logic;
                cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
@@ -734,7 +743,8 @@ begin
         cam_miso    => cam_miso,
         cam_reset_n => open,
         cam_trigger => open,
-        cam_monitor => cam_monitor );
+        cam_monitor => cam_monitor,
+        cam_stat_i  => cam_stat_q );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -1066,6 +1076,24 @@ i_processing: pixel_pipe Port map (
  -- MMCM so the fabric keeps its global buffer.
 i_clk100_bufg : BUFG port map ( I => clk100, O => clk100_g );
 
+-- M4: capture the camera's status ON ITS TOGGLE, not continuously.
+--
+-- cam_stat_raw is 64 bits crossing from the camera's ui_clk into clk100_g.
+-- Sampling it freely would let some bits arrive from the old value and some from
+-- the new -- a TORN word, which is worse than no word at all because it reads as
+-- a plausible state that never existed. The source holds each snapshot stable
+-- for ~200 ms and flips a toggle when it changes; capturing only on that edge
+-- means every byte the host reads belongs to the same instant.
+process(clk100_g)
+begin
+    if rising_edge(clk100_g) then
+        cst_s <= cst_s(1 downto 0) & cam_stat_tog;
+        if cst_s(2) /= cst_s(1) then
+            cam_stat_q <= cam_stat_raw;
+        end if;
+    end if;
+end process;
+
 -- Port A: SLI control plane normally, camera status word when diagnosing.
 usb_tx <= cam_usb_tx when CAM_DIAG /= 0 else sli_usb_tx;
 
@@ -1103,6 +1131,7 @@ i_cam_frame_ft : cam_frame_ft
         clk => clk100_g, rst_n => not por,
         clk200_ext => clk200, clk100_ext => clk100_g,
         led => open, usb_tx => cam_usb_tx,
+        cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
 
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
         cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,

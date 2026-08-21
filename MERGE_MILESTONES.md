@@ -268,6 +268,65 @@ immediately.
 
 ---
 
+## M4 — RESULT: PASS (2026-08-21)
+
+Camera health is now readable over the Pt's USB control link, **without taking
+Port A away from the SLI control plane**.
+
+```
+0x3A alive  = 0x3F   stw=1 rd_busy=1 calib=1 aligned=1 streaming=1 cap=1
+0x3B health = 0x10   cfifo_ovf=0 ufifo_ovf=0 ufifo_empty=0 txe=1
+0x3C ldrop  = 0
+0x3E period = 599,984 cycles => 120.00 Hz
+0x40 expo   = 1600 units = 600 us
+
+test_silicon.py: 15 passed, 0 failed     <- simultaneously
+```
+
+New read registers, alongside the existing camera block:
+
+| addr | contents |
+|---|---|
+| `0x3A` | `{stw[2:0], rd_busy, calib, aligned, streaming, cap}` — *is it alive* |
+| `0x3B` | `{cfifo_ovf, ufifo_ovf, ufifo_empty, txe, 0000}` — *is it healthy* |
+| `0x3C`/`0x3D` | `ldrop` lo/hi — static means no kernels lost |
+| `0x3E`/`0x3F` | frame period / 16, in 72 MHz wordclk cycles |
+| `0x40`/`0x41` | `exposure0` lo/hi, 375 ns units |
+
+Host tool: `host/read_cam_status.py`. This supersedes `CAM_DIAG`, which could
+only ever show one interface at a time.
+
+**The status crosses clock domains ON A TOGGLE, not continuously.** 64 bits
+moving from the camera's `ui_clk` into `clk100_g` can TEAR -- some bits from the
+old value, some from the new -- and a torn status word is worse than none,
+because it reads as a plausible state that never existed. The source holds each
+snapshot stable ~200 ms and flips a toggle; the parent captures only on that
+edge.
+
+### It closed M3/3c's reporting half — and taught something
+
+3c now passes in full:
+
+```
+camera degraded            : 120.5 -> 60.8 fps
+HDMI VSYNC still counting  : True      mode unchanged, control plane alive
+camera REPORTS it on Port A: True (120.00 -> 475.54 Hz, 296% off)
+```
+
+But note WHICH field reports it. **The status flags do not move**: `0x3A` stays
+`0x3F` with `calib`/`aligned`/`streaming`/`cap` all still 1, because from the
+datapath's point of view nothing is wrong — it is the SENSOR misbehaving
+upstream. Only the frame period betrays it, and it does so by going to a
+nonsensical **475 Hz**, not to zero: `frame_start` intervals become ERRATIC
+rather than absent.
+
+> Consequence for any host that monitors this: check the period for
+> PLAUSIBILITY, not for a drop. The first version of the 3c criterion looked
+> only for the rate to fall and scored a clear report as a miss. A monitor that
+> alarms on "rate decreased" would sit silent through this failure.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |

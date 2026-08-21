@@ -120,6 +120,12 @@ module cam_frame_ft #(
     output reg  [7:0]  led,
     output wire        usb_tx,        // 1 Mbaud status on the Pt's own USB (COM6)
 
+    // M4: the same status this module already assembles for its own UART, handed
+    // to the parent so a MERGED build can report camera health on Port A without
+    // taking Port A away from the SLI control plane. See cstat_r below.
+    output wire [63:0] cam_stat_o,
+    output wire        cam_stat_tog_o,
+
     input  wire        cam_clkout_p, cam_clkout_n,
     input  wire [3:0]  cam_d_p,      cam_d_n,
     input  wire        cam_sync_p,   cam_sync_n,
@@ -1613,6 +1619,19 @@ module cam_frame_ft #(
                           rxd_s2, nfr_s2, cal_retry,
                           (LIVE != 0), (CONCURRENT != 0) };
 
+    // ---- M4: parent-visible status snapshot -----------------------------
+    //
+    // Latched on the SAME ~10 Hz tick as the UART's own snapshot, so it is stable
+    // for ~200 ms, and published with a TOGGLE rather than raw. A 64-bit vector
+    // crossing clock domains bit-by-bit can TEAR -- some bits from the old value,
+    // some from the new -- and a torn status word is worse than none, because it
+    // reads as a plausible state that never existed. The toggle lets the parent
+    // capture only when the whole word is known stable.
+    reg [63:0] cstat_r   = 64'd0;
+    reg        cstat_tog = 1'b0;
+    assign cam_stat_o     = cstat_r;
+    assign cam_stat_tog_o = cstat_tog;
+
     reg [127:0] shold = 128'd0;
     reg [4:0]  nib   = 5'd0;
     reg [23:0] utick = 24'd0;
@@ -1630,6 +1649,15 @@ module cam_frame_ft #(
             utick <= utick + 24'd1;
             if (utick == 24'd10_000_000) begin           // ~10 Hz
                 utick <= 24'd0; shold <= stat; nib <= 5'd0; ust <= 2'd1;
+                // byte 0 (reg 0x3A) is the "is it alive" byte, byte 1 the
+                // "is it healthy" byte -- the two a human reads first.
+                cstat_r <= { expo_cur,
+                             wmin_s2[19:4],
+                             ldrop_s2,
+                             covf_s[1], uovf_s[1], ufifo_empty, txe_s[1], 4'b0,
+                             stw[2:0], (str != R_IDLE),
+                             init_calib_complete, aligned, streaming, cap_s[1] };
+                cstat_tog <= ~cstat_tog;
             end
         end
         2'd1: if (!ubusy && !usend) begin

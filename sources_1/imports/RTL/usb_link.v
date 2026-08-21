@@ -84,7 +84,8 @@ module usb_link #(
     input  wire        cam_miso,
     output wire        cam_reset_n,
     output wire [2:0]  cam_trigger,
-    input  wire [1:0]  cam_monitor
+    input  wire [1:0]  cam_monitor,
+    input  wire [63:0] cam_stat_i        // M4: camera datapath status -> regs 0x3A..0x41
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -232,6 +233,7 @@ module usb_link #(
         // ---- PYTHON 1300 mailbox ----
         .cam_spi_addr(cam_spi_addr), .cam_spi_rw(cam_spi_rw),
         .cam_spi_wdata(cam_spi_wdata), .cam_spi_start(cam_spi_start),
+        .cam_stat_i(cam_stat_i),
         .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
         .cam_spi_done(cam_spi_done),
         .cam_gpio(cam_gpio), .cam_gpio_in(cam_gpio_in),

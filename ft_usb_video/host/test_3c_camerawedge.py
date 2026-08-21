@@ -46,6 +46,20 @@ def rd(ser, addr, window=0.6):
     return None
 
 
+def cam_regs(ser):
+    """M4: camera health straight off Port A -- regs 0x3A/0x3B/0x3E."""
+    v = [rd(ser, a) for a in (0x3A, 0x3B, 0x3E, 0x3F)]
+    if any(x is None for x in v):
+        return None
+    a, h = v[0], v[1]
+    per = (v[2] | (v[3] << 8)) * 16
+    return dict(alive=a, health=h, period=per,
+                hz=(72e6 / per) if per else 0.0,
+                calib=(a >> 3) & 1, aligned=(a >> 2) & 1,
+                streaming=(a >> 1) & 1, cap=a & 1,
+                cfifo_ovf=(h >> 7) & 1)
+
+
 def hdmi_snapshot(ser, label):
     """VSYNC count comes from the telemetry line; mode/refresh from registers."""
     ser.reset_input_buffer()
@@ -109,14 +123,20 @@ with serial.Serial(PORT, 115200, timeout=0.4) as s:
     time.sleep(0.3)
     vs0, mode0, refr0, id0 = hdmi_snapshot(s, "before")
     n0 = camera_frames()
+    r0 = cam_regs(s)
     print("           camera rate before: %.1f fps" % n0)
+    if r0: print("           camera regs  : 0x3A=0x%02X 0x3B=0x%02X  %.2f Hz"
+                 % (r0["alive"], r0["health"], r0["hz"]))
 
     u = set_expo(WEDGE_US)
     print("\n  --> exposure set to %.0f us (%d units) -- past the 8280 us cliff\n" % (WEDGE_US, u))
     time.sleep(2.0)
 
     n1 = camera_frames()
+    r1 = cam_regs(s)
     print("           camera rate after : %.1f fps" % n1)
+    if r1: print("           camera regs  : 0x3A=0x%02X 0x3B=0x%02X  %.2f Hz"
+                 % (r1["alive"], r1["health"], r1["hz"]))
     vs1, mode1, refr1, id1 = hdmi_snapshot(s, "after")
 
 print()
@@ -130,6 +150,26 @@ print("  camera stopped / degraded : %s (%.1f -> %.1f fps)" % (cam_hurt, n0, n1)
 print("  HDMI VSYNC still counting : %s %s" % (hdmi_counting, vs1))
 print("  HDMI mode unchanged       : %s" % hdmi_same)
 print("  HDMI control plane alive  : %s" % hdmi_alive)
+# M4 closes 3c's reporting half: the camera must ANNOUNCE its own failure on
+# Port A, not merely go quiet on Port B. Going quiet is indistinguishable from
+# an idle link -- which is exactly the ambiguity that cost time at M2.
+if r0 and r1:
+    # PLAUSIBILITY, NOT DIRECTION. A first version only looked for the rate to
+    # DROP, and scored a clear report as a miss: wedging the sensor sends the
+    # measured period to 475 Hz, not to zero, because frame_start intervals go
+    # ERRATIC rather than absent. Any large departure from the configured rate
+    # is the signal -- in either direction.
+    #
+    # Note also that the STATUS FLAGS do not move: calib/aligned/streaming/cap
+    # all stay 1, because from the datapath's point of view nothing is wrong.
+    # It is the sensor misbehaving upstream, and the frame period is the only
+    # field that betrays it.
+    drift = abs(r1["hz"] - r0["hz"]) / r0["hz"] if r0["hz"] else 0.0
+    reported = (drift > 0.10) or (r1["alive"] != r0["alive"])
+    print("  camera REPORTS it on Port A: %s (%.2f -> %.2f Hz, %.0f%% off; 0x3A 0x%02X -> 0x%02X)"
+          % (reported, r0["hz"], r1["hz"], drift * 100, r0["alive"], r1["alive"]))
+else:
+    print("  camera REPORTS it on Port A: registers unreadable")
 print()
 if not cam_hurt:
     print("INCONCLUSIVE: the camera did not actually break, so HDMI was never tested.")
