@@ -82,3 +82,4 @@ build_pt/
 
 # Merged HDMI + camera build (M1+) -- regenerate with build_merged.tcl
 build_merged/
+build_*_run.txt
