@@ -212,6 +212,62 @@ work at once. Defaults to 0.
 
 ---
 
+## M3 — PARTIAL: 3c and 3d PASS (2026-08-21)
+
+The two tests that carry the weight are done. Both directions of coupling are
+now ruled out.
+
+**3d — HDMI mode change during capture: PASS**
+
+```
+before : MODE=0x82 REFR=75    ldrop=0
+after  : MODE=0x8D REFR=60    ldrop=0      <- the mode really changed
+406 frames captured, 294 of them after the force
+ldrop min..max : 0..0
+```
+
+`MODEFORCE` retunes the output pixel clock by RECONFIGURING A LIVE MMCM over
+DRP, 75 Hz -> 60 Hz, while the camera streamed. Not one kernel lost. Test:
+`ft_usb_video/host/test_3d_modechange.py`.
+
+**3c — wedged camera: PASS**
+
+```
+camera:  119.8 -> 60.7 fps    (exactly halved: sensor skipping every other trigger)
+HDMI:    N = [52, 51, 52] still counting
+         MODE unchanged, REFR unchanged, control plane alive (ID = 0x48)
+```
+
+Exposure pushed past the 8280 us cliff, which is the most severe camera failure
+we can produce on demand -- it needs an FPGA reconfigure to clear. HDMI did not
+notice. Test: `ft_usb_video/host/test_3c_camerawedge.py`.
+
+### The first run of 3c was inconclusive because the TEST was wrong
+
+It counted frames with a 40 MB read cap -- about 24 frames -- so a healthy camera
+and a half-speed one both saturated the cap and reported the same number. It
+declared "the camera did not break" against a camera that had in fact halved.
+
+Fixed by measuring **rate over a fixed wall-clock window** instead: frames are
+contiguous and fixed-size, so bytes/frame-size is the rate and cannot be capped
+into agreeing with itself. The corrected run showed 119.8 -> 60.7 fps
+immediately.
+
+> Third time in this project that a MEASUREMENT, not the hardware, produced the
+> wrong answer -- after the correlation that locked onto the kernel pattern, and
+> the frame counter that reported extraction rate as camera rate. **Check what
+> the number is actually measuring before believing what it says.**
+
+### Still outstanding
+
+| | Blocked on |
+|---|---|
+| **3a** — unplug the HDMI source mid-capture | No HDMI source is connected (`S=0`, `edid_ok=False`). Needs a PC on the Hd RX port. |
+| **3b** — camera idle / held in reset | Needs either an RTL hook or physically unstacking the camera. |
+| 3c's reporting half | The camera "says so on Port A" needs M4 -- `calib`/`aligned`/`cfifo_ovf` are still not exposed as registers. |
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
