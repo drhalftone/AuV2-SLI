@@ -108,6 +108,23 @@ for {set try 1} {$try <= 6} {incr try} {
     if {$try == 6} { error "synth_ip: DCPs still missing after 6 attempts: $missing" }
 }
 
+# ---- MIG (DDR3) -- read from LauPythonCamera_Pt_Stack/ddr, already targeted at
+# the 100T, so unlike the 35T IP above it needs no retargeting copy. ----
+set mig_xci $here/LauPythonCamera_Pt_Stack/ddr/ip/mig_ddr3/mig_ddr3.xci
+if {![file exists $mig_xci]} {
+    error "MIG not generated -- run LauPythonCamera_Pt_Stack/ddr/gen_mig.tcl first"
+}
+read_ip $mig_xci
+generate_target all [get_ips mig_ddr3]
+synth_ip [get_ips mig_ddr3]
+
+# ---- camera datapath sources not already under sources_1/imports/RTL ----
+# cam_frame_ft brings the IDELAY receiver, the packer, the DDR3 ring and the
+# FT601 master. cam_align / cam_sync_decode / cam_async_fifo / cam_boot_seq /
+# cam_spi_master / uart_tx are already in $rtl and picked up by the glob below.
+set camdir $here/LauPythonCamera_Pt_Stack
+read_verilog [list     $camdir/ddr/cam_frame_ft.v     $camdir/hello/cam_boot_stage1.v     $camdir/hello/cam_lvds_rx_idelay.v     $camdir/hello/cam_eye_scan.v     $here/ft_usb_video/rtl/ft601_sync_tx.v     $here/ft_usb_video/rtl/ft601_sync_rx.v ]
+
 # ---- HDL (Au2_SLI.vhd needs VHDL-2019) ----
 set vhd_all [lsort [glob $rtl/*.vhd]]
 set top_vhd [file normalize $rtl/Au2_SLI.vhd]
@@ -124,6 +141,14 @@ read_verilog [glob $rtl/*.v]
 read_xdc $here/constrs_1/imports/RTL/Au2_pt.xdc
 read_xdc $here/constrs_1/imports/RTL/pt_ftplus_merged.xdc
 
+# ---- CAM_DIAG: route the camera status word to usb_tx for debugging ----
+# Set CAM_DIAG=1 in the environment to build a diagnostic bitstream. It takes
+# Port A away from the 0xA5 control plane, so test_silicon.py will not work
+# against it -- that is the trade for being able to see the camera at all.
+set camdiag 0
+if {[info exists ::env(CAM_DIAG)]} { set camdiag $::env(CAM_DIAG) }
+puts "### CAM_DIAG = $camdiag"
+
 # ---- synth + implement ----
 # The same transient .tcl-read race hits the TOP synth too (it loads unimacro_vhdl.tcl when it
 # starts on the VHDL top). synth_design re-elaborates from the already-read HDL/IP, so a retry
@@ -136,7 +161,7 @@ set logf $here/build_merged/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]
@@ -151,9 +176,51 @@ for {set try 1} {$try <= 6} {incr try} {
         break
     }
 }
+# ---- Ft+ tri-state enables: multicycle, and it is NOT optional ----------------
+#
+# Ported from build_cam_ft.tcl. The tri-state enable is NOT sampled by the FT601,
+# so the 1 ns set_output_delay window does not apply to it -- it only has to
+# settle before the bus turnaround completes, and ft601_sync_rx waits 3 dead
+# cycles on each edge. Three clock periods is the true requirement.
+#
+# Multicycle, NOT false path: the deadline is real, just 3 cycles rather than 1,
+# and the tool should keep checking it.
+#
+# Without this the merged build fails at WNS -2.269 on doe_reg[*] -> ft_data[*],
+# which is how it was found. The standalone camera build had it all along; the
+# HDMI build (build_pt.tcl) that build_merged.tcl was derived from never needed
+# it, so it was not inherited.
+#
+# Must be applied HERE, after synth_design, because it references netlist pins.
+# The registers now sit inside the cam_frame_ft instance, so match hierarchically
+# rather than at the top level as the standalone build does.
+set doe_src [get_pins -quiet -hier -regexp {.*/(doe|boe)_reg\[[0-9]+\]/C}]
+if {[llength $doe_src] >= 36} {
+    set_multicycle_path -setup 3 -from $doe_src -to [get_ports {ft_data[*] ft_be[*]}]
+    set_multicycle_path -hold  2 -from $doe_src -to [get_ports {ft_data[*] ft_be[*]}]
+    puts "### tristate multicycle applied to [llength $doe_src] pins"
+} else {
+    error "tristate multicycle NOT applied -- matched [llength $doe_src] pins, need >= 36.           Timing would fail silently on the Ft+ bus; refusing to build."
+}
+
+# TIMING-FOCUSED DIRECTIVES. The merged design's remaining violation is clock
+# INSERTION DELAY -- ft_clk needs 6.1 ns of a 10 ns period to reach the FT601
+# registers, because HDMI + camera + DDR3 now compete for the die and the FT601
+# logic gets placed away from its own pins. These directives spend more effort
+# on exactly that: placement that respects timing over area, and a router that
+# explores alternatives.
 opt_design
 place_design
+# phys_opt_design replicates high-fanout drivers and retimes -- the remedy for
+# small routing-bound violations that would otherwise need RTL changes. The
+# standalone camera build added it for exactly that reason.
+phys_opt_design
 route_design
+# Post-route pass: only helps if something is still negative, and costs a minute.
+if {[get_property SLACK [get_timing_paths -delay_type min_max]] < 0} {
+    puts "### post-route phys_opt (still negative after route)"
+    phys_opt_design
+}
 
 # ---- outputs ----
 write_bitstream -force $out/Au2_SLI_merged.bit

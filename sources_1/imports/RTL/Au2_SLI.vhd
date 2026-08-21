@@ -14,6 +14,17 @@ use IEEE.STD_LOGIC_UNSIGNED.ALL; -- optional, for older VHDL versions
 use IEEE.NUMERIC_STD.ALL;      -- Required for unsigned arithmetic
 
 entity Au2_SLI is
+    -- CAM_DIAG: route the CAMERA's 1 Mbaud status word to usb_tx instead of the
+    -- SLI control plane's 115200 telemetry. A DIAGNOSTIC BUILD ONLY -- it takes
+    -- Port A away from the 0xA5 protocol, so test_silicon.py and friends stop
+    -- working while it is set.
+    --
+    -- It exists because M2 debugging without it is blind: leaving the camera's
+    -- usb_tx open (Port A belongs to the SLI plane) removed the only window into
+    -- calib / aligned / streaming / cap / cfifo_ovf -- the exact signals that
+    -- diagnosed every camera fault in this design. M4 unifies both onto one
+    -- stream properly; this is the stopgap that makes M2 debuggable.
+    generic ( CAM_DIAG : integer := 0 );
     Port ( 
         clk100    : in STD_LOGIC;
         usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
@@ -105,7 +116,28 @@ entity Au2_SLI is
         ft_rd        : out   std_logic;
         ft_oe        : out   std_logic;
         ft_wakeup    : out   std_logic;
-        ft_reset     : out   std_logic
+        ft_reset     : out   std_logic;
+
+        -- ===== DDR3 (Pt V2 onboard, MT41K128M16) =====
+        -- M2: the ring buffer that makes live video possible. The sensor reads out
+        -- in a 4.55 ms BURST at 576 MB/s against a ~232 MB/s link, so DDR is not a
+        -- convenience here, it is the elasticity that absorbs the burst.
+        -- The MIG carries its own pin constraints, so these appear in no XDC.
+        ddr3_dq      : inout std_logic_vector(15 downto 0);
+        ddr3_dqs_p   : inout std_logic_vector(1 downto 0);
+        ddr3_dqs_n   : inout std_logic_vector(1 downto 0);
+        ddr3_addr    : out   std_logic_vector(13 downto 0);
+        ddr3_ba      : out   std_logic_vector(2 downto 0);
+        ddr3_ras_n   : out   std_logic;
+        ddr3_cas_n   : out   std_logic;
+        ddr3_we_n    : out   std_logic;
+        ddr3_reset_n : out   std_logic;
+        ddr3_ck_p    : out   std_logic_vector(0 downto 0);
+        ddr3_ck_n    : out   std_logic_vector(0 downto 0);
+        ddr3_cke     : out   std_logic_vector(0 downto 0);
+        ddr3_cs_n    : out   std_logic_vector(0 downto 0);
+        ddr3_dm      : out   std_logic_vector(1 downto 0);
+        ddr3_odt     : out   std_logic_vector(0 downto 0)
     );
 end Au2_SLI;
 
@@ -195,6 +227,10 @@ architecture Behavioral of Au2_SLI is
     );
     end component;
     signal clk200  : std_logic;
+
+    -- Port A arbitration, see the CAM_DIAG generic.
+    signal sli_usb_tx : std_logic;
+    signal cam_usb_tx : std_logic;
 
     -- Ft+ pin-liveness probe (M1). DONT_TOUCH keeps it despite having no load,
     -- which is what stops the optimiser trimming the Ft+ pins back out of the
@@ -523,6 +559,45 @@ architecture Behavioral of Au2_SLI is
     -- python1300_lvds_model -> cam_lvds_rx -> cam_align -> cam_sync_decode -> cam_line_buf,
     -- proven bit-exact in tb_cam_decode. cam_lvds_rx recovers its own 72 MHz word clock from
     -- the sensor's forwarded bit clock (BUFIO + BUFR /5) -- no IDELAY / clk200 needed.
+    -- M2: the standalone camera design, instantiated whole. Verilog module, mixed
+    -- language -- Vivado binds it by name. See the instantiation for why it is taken
+    -- wholesale rather than re-plumbed here.
+    component cam_frame_ft is
+        generic ( LIVE : integer; CONCURRENT : integer;
+                  TRIGGERED : integer; TRIG_CY : integer;
+                  EXT_CLK : integer );
+        port ( clk : in std_logic; rst_n : in std_logic;
+               clk200_ext : in std_logic; clk100_ext : in std_logic;
+               led    : out std_logic_vector(7 downto 0);
+               usb_tx : out std_logic;
+
+               cam_clkout_p, cam_clkout_n : in  std_logic;
+               cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
+               cam_sync_p, cam_sync_n     : in  std_logic;
+               cam_sck, cam_mosi, cam_ss_n : out std_logic;
+               cam_miso                   : in  std_logic;
+               cam_reset_n, cam_clk_pll   : out std_logic;
+               cam_trigger                : out std_logic_vector(2 downto 0);
+               cam_monitor                : in  std_logic_vector(1 downto 0);
+
+               ft_clk            : in    std_logic;
+               ft_data           : inout std_logic_vector(31 downto 0);
+               ft_be             : inout std_logic_vector(3 downto 0);
+               ft_txe, ft_rxf    : in    std_logic;
+               ft_wr, ft_oe, ft_rd : out std_logic;
+               ft_wakeup, ft_reset : out std_logic;
+
+               ddr3_dq      : inout std_logic_vector(15 downto 0);
+               ddr3_dqs_p   : inout std_logic_vector(1 downto 0);
+               ddr3_dqs_n   : inout std_logic_vector(1 downto 0);
+               ddr3_addr    : out   std_logic_vector(13 downto 0);
+               ddr3_ba      : out   std_logic_vector(2 downto 0);
+               ddr3_ras_n, ddr3_cas_n, ddr3_we_n, ddr3_reset_n : out std_logic;
+               ddr3_ck_p, ddr3_ck_n, ddr3_cke, ddr3_cs_n : out std_logic_vector(0 downto 0);
+               ddr3_dm      : out   std_logic_vector(1 downto 0);
+               ddr3_odt     : out   std_logic_vector(0 downto 0) );
+    end component;
+
     component cam_lvds_rx is
         port ( cam_clkout_p, cam_clkout_n : in  std_logic;
                cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
@@ -607,7 +682,7 @@ begin
     i_usb_link: usb_link port map (
         clk100 => clk100_g, led => led_i, dbg => debug, mrg => merge_dbg,
         tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
-        usb_rx => usb_rx, usb_tx => usb_tx,
+        usb_rx => usb_rx, usb_tx => sli_usb_tx,
         phys_sw => newSW, eff_sw => effective_sw,
         sli_ctrl => sli_ctrl_bus, sli_ctrl_en => sli_ctrl_en_w, lut_loaded => open,
         -- Stage-2 table taps. corr is LIVE: pattern_gen reads it as its radiometric
@@ -639,12 +714,26 @@ begin
         -- PYTHON 1300 camera element (top-side stack board). SPI mailbox on regs
         -- 0x30..0x36, discrete pins on 0x37/0x38. cam_reset_n comes out of reset LOW,
         -- so the sensor stays held in reset until the host deliberately releases it.
-        cam_sck     => cam_sck,
-        cam_mosi    => cam_mosi,
-        cam_ss_n    => cam_ss_n,
+        -- M2 -- SENSOR OWNERSHIP MOVED TO cam_frame_ft.
+        --
+        -- There were two boot sequencers: this one (host-initiated, reg 0x39) and
+        -- cam_boot_stage1 inside the camera datapath (automatic at power-up). Both
+        -- owned cam_sck/mosi/ss_n/reset_n/trigger, and two drivers on one pin is an
+        -- elaboration error, not a race to discover on the bench.
+        --
+        -- Independent operation is the requirement, and independent means the camera
+        -- comes up WITHOUT the host asking -- so the automatic sequencer wins and
+        -- these outputs are left open. Registers 0x30-0x39 therefore no longer reach
+        -- the sensor; re-exposing them as STATUS is M4's job.
+        --
+        -- The inputs stay connected: two readers of one input pin is fine, and it
+        -- keeps CAM_MON (0x38) honest.
+        cam_sck     => open,
+        cam_mosi    => open,
+        cam_ss_n    => open,
         cam_miso    => cam_miso,
-        cam_reset_n => cam_reset_n,
-        cam_trigger => cam_trigger,
+        cam_reset_n => open,
+        cam_trigger => open,
         cam_monitor => cam_monitor );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
@@ -977,126 +1066,68 @@ i_processing: pixel_pipe Port map (
  -- MMCM so the fabric keeps its global buffer.
 i_clk100_bufg : BUFG port map ( I => clk100, O => clk100_g );
 
- -- 72 MHz sensor PLL reference. Direct MMCM feedback (no BUFG deskew): the output only
- -- leaves the chip, so phase alignment to clk100 is irrelevant.
-i_cam_mmcm : MMCME2_BASE
+-- Port A: SLI control plane normally, camera status word when diagnosing.
+usb_tx <= cam_usb_tx when CAM_DIAG /= 0 else sli_usb_tx;
+
+ -- ===================================================================
+ --  M2: THE WHOLE CAMERA DATAPATH IS ONE COMPONENT NOW
+ -- ===================================================================
+ -- cam_frame_ft is the standalone camera design, instantiated entire: IDELAY
+ -- LVDS receive -> align -> sync decode -> packed-10 -> DDR3 ring -> FT601.
+ -- It owns the sensor (SPI, reset, trigger, 72 MHz reference), the DDR3, and
+ -- the Ft+ bus.
+ --
+ -- WHY WHOLESALE, AND WHY THIS RECEIVER. The chain Au2_SLI carried until now
+ -- (cam_lvds_rx -> cam_align -> cam_sync_decode -> cam_line_buf) used the
+ -- NO-IDELAY receiver, documented as "proven bit-exact in tb_cam_decode" -- a
+ -- SIMULATION. On silicon, 720 Mbps REQUIRES IDELAYE2 eye-centring; without it
+ -- an isolated bit drops and it looks exactly like bad solder. cam_frame_ft
+ -- carries cam_lvds_rx_idelay + cam_eye_scan, which is the chain that actually
+ -- delivers 120.000 Hz locked with zero lost kernels. Taking it whole keeps the
+ -- proven thing proven instead of re-deriving it inside a VHDL top.
+ --
+ -- usb_tx and led are left OPEN. Port A belongs to the SLI control plane at M2;
+ -- unifying diagnostics onto one status line is M4.
+i_cam_frame_ft : cam_frame_ft
     generic map (
-        BANDWIDTH          => "OPTIMIZED",
-        CLKIN1_PERIOD      => 10.000,     -- 100 MHz in
-        DIVCLK_DIVIDE      => 5,
-        CLKFBOUT_MULT_F    => 54.000,     -- VCO = 100/5*54 = 1080 MHz
-        CLKOUT0_DIVIDE_F   => 15.000,     -- 1080/15 = 72.000 MHz
-        CLKOUT0_DUTY_CYCLE => 0.5,
-        STARTUP_WAIT       => FALSE )
+        LIVE       => 1,          -- continuous ring, not one burst
+        CONCURRENT => 1,          -- reader runs while the writer captures
+        TRIGGERED  => 1,          -- paced, not free-running
+        TRIG_CY    => 833333,     -- 8.33333 ms = 120.000 Hz
+        -- Take clk200/clk100 from here instead of a second MMCM. ref_clk_pll
+        -- already makes the 200 MHz IDELAY reference and clk100_g the buffered
+        -- 100 MHz, so the module's own MMCM was pure duplication -- and the 100T
+        -- has six MMCMs against a merged design that wanted exactly six.
+        EXT_CLK    => 1 )
     port map (
-        CLKIN1  => clk100_g,
-        CLKFBIN => cam_clkfb, CLKFBOUT => cam_clkfb,
-        CLKOUT0 => cam_clk72_raw,
-        CLKOUT0B => open, CLKOUT1 => open, CLKOUT1B => open,
-        CLKOUT2 => open, CLKOUT2B => open, CLKOUT3 => open, CLKOUT3B => open,
-        CLKOUT4 => open, CLKOUT5 => open, CLKOUT6 => open, CLKFBOUTB => open,
-        LOCKED  => cam_mmcm_locked,
-        RST => '0', PWRDWN => '0' );
+        clk => clk100_g, rst_n => not por,
+        clk200_ext => clk200, clk100_ext => clk100_g,
+        led => open, usb_tx => cam_usb_tx,
 
-i_cam_clk_bufg : BUFG port map ( I => cam_clk72_raw, O => cam_clk72 );
-
- -- clean single-ended clock forwarding: ODDR (1 on rising, 0 on falling) -> OBUF -> pin.
-i_cam_clk_oddr : ODDR
-    generic map ( DDR_CLK_EDGE => "OPPOSITE_EDGE", INIT => '0', SRTYPE => "SYNC" )
-    port map ( Q => cam_clk72_o, C => cam_clk72, CE => '1',
-               D1 => '1', D2 => '0', R => '0', S => '0' );
-i_cam_clk_obuf : OBUF port map ( I => cam_clk72_o, O => cam_clk_pll );
-
- -- wordclk-domain reset counter (see signal comment).
-process(cam_wordclk) begin
-    if rising_edge(cam_wordclk) then
-        if cam_wc_rstcnt /= 31 then
-            cam_wc_rstcnt <= cam_wc_rstcnt + 1;
-            cam_wc_rst    <= '1';
-        else
-            cam_wc_rst    <= '0';
-        end if;
-    end if;
-end process;
-
-i_cam_lvds_rx : cam_lvds_rx port map (
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
-        cam_d_p => cam_d_p, cam_d_n => cam_d_n,
-        cam_sync_p => cam_sync_p, cam_sync_n => cam_sync_n,
-        bitslip => cam_bitslip,
-        wordclk => cam_wordclk,
-        d0_word => cam_d0w, d1_word => cam_d1w, d2_word => cam_d2w,
-        d3_word => cam_d3w, sync_word => cam_syncw );
+        cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,
+        cam_sync_p   => cam_sync_p,   cam_sync_n   => cam_sync_n,
+        cam_sck      => cam_sck,      cam_mosi     => cam_mosi,
+        cam_ss_n     => cam_ss_n,     cam_miso     => cam_miso,
+        cam_reset_n  => cam_reset_n,  cam_clk_pll  => cam_clk_pll,
+        cam_trigger  => cam_trigger,  cam_monitor  => cam_monitor,
 
-i_cam_align : cam_align port map (
-        wordclk => cam_wordclk, rst => cam_wc_rst,
-        d0_word => cam_d0w, d1_word => cam_d1w, d2_word => cam_d2w,
-        d3_word => cam_d3w, sync_word => cam_syncw,
-        bitslip => cam_bitslip,
-        lane_locked => open, aligned => cam_aligned, lane_failed => open );
+        ft_clk => ft_clk, ft_data => ft_data, ft_be => ft_be,
+        ft_txe => ft_txe, ft_rxf => ft_rxf,
+        ft_wr  => ft_wr,  ft_oe  => ft_oe,  ft_rd => ft_rd,
+        ft_wakeup => ft_wakeup, ft_reset => ft_reset,
 
-i_cam_sync_decode : cam_sync_decode port map (
-        wordclk => cam_wordclk, rst => cam_wc_rst, aligned => cam_aligned,
-        d0_word => cam_d0w, d1_word => cam_d1w, d2_word => cam_d2w,
-        d3_word => cam_d3w, sync_word => cam_syncw,
-        kpix0 => cam_k0, kpix1 => cam_k1, kpix2 => cam_k2, kpix3 => cam_k3,
-        kpix4 => cam_k4, kpix5 => cam_k5, kpix6 => cam_k6, kpix7 => cam_k7,
-        kbase => cam_kbase, kvalid => cam_kvalid,
-        line_start => cam_line_start, frame_start => cam_frame_start,
-        in_black => open );
+        ddr3_dq    => ddr3_dq,    ddr3_dqs_p => ddr3_dqs_p, ddr3_dqs_n => ddr3_dqs_n,
+        ddr3_addr  => ddr3_addr,  ddr3_ba    => ddr3_ba,
+        ddr3_ras_n => ddr3_ras_n, ddr3_cas_n => ddr3_cas_n, ddr3_we_n => ddr3_we_n,
+        ddr3_reset_n => ddr3_reset_n,
+        ddr3_ck_p  => ddr3_ck_p,  ddr3_ck_n  => ddr3_ck_n,
+        ddr3_cke   => ddr3_cke,   ddr3_cs_n  => ddr3_cs_n,
+        ddr3_dm    => ddr3_dm,    ddr3_odt   => ddr3_odt );
 
-i_cam_line_buf : cam_line_buf port map (
-        wordclk => cam_wordclk,
-        frame_start => cam_frame_start, line_start => cam_line_start, kvalid => cam_kvalid,
-        kbase => cam_kbase,
-        kpix0 => cam_k0, kpix1 => cam_k1, kpix2 => cam_k2, kpix3 => cam_k3,
-        kpix4 => cam_k4, kpix5 => cam_k5, kpix6 => cam_k6, kpix7 => cam_k7,
-        rd_clk => clk100_g, rd_addr => cam_line_addr_w, rd_data => cam_line_data_w );
+ -- cam_line_buf is gone with the old chain, so the readback target reads zeros --
+ -- the same thing the Au build does, for the same reason (no receiver behind it).
+cam_line_data_w <= (others => '0');
 
--- =====================================================================
---  Ft+ (FT601Q) -- MERGE MILESTONE M1: SAFE IDLE, NO DATAPATH YET
--- =====================================================================
---  Every control line is driven to its INACTIVE level and the bidirectional
---  bus is tristated, so an Ft+ that is physically stacked cannot be disturbed
---  by a build that does not yet know how to talk to it. The datapath lands at
---  M2; until then the only requirement is "do no harm".
---
---  ft_wr / ft_rd / ft_oe are ACTIVE LOW -- idle is '1'. Driving them low here
---  would start bus cycles against a chip nothing is listening to.
---
---  ft_reset is left DEASSERTED so the FT601 enumerates normally and the pins
---  can be probed. Note for M2: reset must be PULSED after configuration, not
---  tied -- the part can enumerate with a perfect EEPROM readback while driving
---  no ft_clk at all, and a tied reset never clears that state.
-ft_wr     <= '1';
-ft_rd     <= '1';
-ft_oe     <= '1';
-ft_wakeup <= '1';
-ft_reset  <= '1';
-ft_data   <= (others => 'Z');
-ft_be     <= (others => 'Z');
-
---  PIN-LIVENESS PROBE -- the reason this exists is worth stating.
---
---  Tristating the bus and leaving the inputs unread is enough for correctness,
---  but the optimiser then TRIMS THE PORTS: the first M1 build placed only 5 of
---  the 44 Ft+ pins (bonded IOB 65 -> 70, not ~109), and every ft_data[*] came
---  back as "unconnected or has no load". A place-and-route that never places
---  the pins cannot tell us the merged pinout is sound -- which was half the
---  point of building M1 at all.
---
---  So the inputs are given a real load: everything is reduced to one bit,
---  registered in the ft_clk domain and held by DONT_TOUCH. That makes ft_clk a
---  real clock and all 40 input-capable pins real IOBs, so their placement,
---  IOSTANDARD and bank rules are checked NOW rather than discovered at M2.
---  The output side stays tristated, so nothing is driven at the FT601.
-process(ft_clk)
-begin
-    if rising_edge(ft_clk) then
-        ft_probe <= (ft_probe(30 downto 0) & (ft_txe xor ft_rxf))
-                    xor ft_data
-                    xor (28x"0" & ft_be);
-    end if;
-end process;
 
 end Behavioral;

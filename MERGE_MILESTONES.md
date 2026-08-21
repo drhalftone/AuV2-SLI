@@ -128,6 +128,90 @@ prediction is only partly exercised, and the Ft+ OUTPUT path has no driver so it
 
 ---
 
+## M2 — RESULT: PASS (2026-08-21)
+
+The whole camera datapath now runs inside `Au2_SLI`, concurrently with HDMI, in
+one bitstream.
+
+```
+HDMI      N = 0033/0034 counting     test_silicon.py: 15 passed, 0 failed
+          read_mode works after the camera has been streaming
+CAMERA    200.6 MB/s  25 CLEAN / 0 padded  119.5 fps  ldrop 0  10/10 ALIGNED
+BUILD     WNS +0.082  WHS +0.052  0 failing of 45,070   MMCM 5 of 6
+```
+
+`cam_frame_ft` is instantiated WHOLE rather than re-plumbed, which keeps the
+proven IDELAY receive chain proven. `Au2_SLI`'s own chain (`cam_lvds_rx` ->
+`cam_align` -> `cam_sync_decode` -> `cam_line_buf`) and its `i_cam_mmcm` are
+deleted, not commented out.
+
+**Sensor ownership resolved.** Two boot sequencers both drove
+`cam_sck/mosi/ss_n/reset_n/trigger`; two drivers on one pin is an elaboration
+error, not a bench surprise. Independent operation means the camera must come up
+WITHOUT the host asking, so `cam_boot_stage1` wins and `usb_link`'s camera
+outputs are `open`. Registers `0x30`-`0x39` therefore no longer reach the sensor
+-- re-exposing them as STATUS is M4. Inputs stay connected, so `CAM_MON` is honest.
+
+### Four things M2 had to find the hard way
+
+**1. An attribute that documented an intention the tool never honoured.**
+`hdmi_input.vhd` said its IDELAYCTRL was "tied to the delay instances by the
+IODELAY_GROUP attribute", and `deserialiser_1_to_10.vhd` does tag its IDELAYE2
+cells -- but the attribute was NEVER DECLARED on the controller. That worked only
+because it was the design's ONLY IDELAYCTRL, so Vivado associated implicitly. The
+merged design has three (HDMI, camera, MIG) and DRC rejected it outright. This is
+the SECOND decorative attribute found in this codebase, after `ram_style="block"`
+on `cam_async_fifo`; both had no effect and neither failed until something else
+changed. **An RTL-wide grep for attributes is worth doing.**
+
+**2. Deriving the build script from the wrong parent.** `build_merged.tcl` came
+from `build_pt.tcl` (HDMI), so it inherited nothing from `build_cam_ft.tcl`
+(camera) -- including the tri-state multicycle on the Ft+ enables. Timing failed
+at **-2.269 ns** on `doe_reg[*] -> ft_data[*]`, a problem already solved once at
+some cost ("failed at -2.983 ... still -1.209 after the enables were replicated
+into the IOB T flops"). Ported the multicycle AND `phys_opt_design`, which the
+camera build had added because "small violations kept needing RTL changes".
+The guard now ERRORS rather than warns: an unapplied constraint leaves the Ft+
+bus untimed, which is exactly how this project once shipped a build streaming at
+full rate while corrupting half the data bus.
+
+**3. MMCM saturation was the real timing failure, and directives could not fix it.**
+Taking `cam_frame_ft` wholesale brought its 200/100 MHz MMCM, which duplicates
+`ref_clk_pll` -- pushing the design to **6 of 6 MMCM**. Timing stuck at -0.868 ns,
+and the cause was **clock INSERTION DELAY**: `ft_clk` needed **6.1 ns of a 10 ns
+period** to reach the FT601 registers, because saturated clock regions forced that
+logic away from its own pins. Timing-focused directives made it slightly WORSE
+(-0.919, 26 failing vs 18) -- a useful negative result, proving the problem was
+structural rather than effort-limited. Adding `EXT_CLK` to `cam_frame_ft` so it
+takes `clk200`/`clk100` from the parent dropped it to **5 of 6** and timing closed
+at **+0.082** with NO pblock required. M0 predicted 5 of 6; taking the module
+whole is what departed from that.
+
+> Removing the MMCM removes its `LOCKED`, which gates the IDELAYCTRL and MIG
+> resets -- and a glitch on the latter aborts DDR calibration, previously seen as
+> two builds with identical logic where one always calibrated and one never did.
+> Replaced with a settle counter clocked BY THE SUPPLIED CLOCK: it cannot advance
+> unless that clock is genuinely running, and being synchronous its release
+> cannot glitch. `EXT_CLK` defaults to 0, so the standalone build is untouched.
+
+**4. Calling a transient a fault.** The first `ring_check` on the merged build
+returned zero bytes and was treated as "the camera is broken". It was a transient
+right after the RAM load; a single retry showed frames flowing. A diagnostic
+bitstream was built on the strength of one failed read. **Retry before diagnosing.**
+
+### CAM_DIAG
+
+A build-time switch routing the camera's 1 Mbaud status word to `usb_tx` in place
+of the SLI telemetry. It made the datapath legible in one shot -- and made the
+zero-byte read explicable, since `ufifo_empty=0` with `txe=1` is an IDLE LINK
+(frames queued, host not reading), not a dead one.
+
+It is a stopgap: it trades one interface for the other. M4 should surface
+`calib`/`aligned`/`streaming`/`cap`/`cfifo_ovf`/`ldrop` as read registers so both
+work at once. Defaults to 0.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |

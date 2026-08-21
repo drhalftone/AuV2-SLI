@@ -217,6 +217,27 @@ architecture Behavioral of hdmi_input is
     
     signal in_dvid              : std_logic := '0';
     signal symbol_sync_i        : std_logic := '0';
+
+    -- THE COMMENT AT IDELAYCTRL_inst WAS ASPIRATIONAL UNTIL NOW.
+    --
+    -- It says the controller is tied to the delay instances "by the IODELAY_GROUP
+    -- attribute", and deserialiser_1_to_10.vhd does tag its IDELAYE2 cells
+    -- "idelay_group" -- but the attribute was never declared on the controller.
+    -- That worked only because this was the design's ONLY IDELAYCTRL, so Vivado
+    -- associated it implicitly.
+    --
+    -- The merged build (MERGE_MILESTONES.md M2) has THREE: this one, the camera's
+    -- ("cam_idelay"), and the MIG's. With more than one, association must be
+    -- explicit, and the implicit case fails DRC outright:
+    --
+    --   ERROR: [DRC PLIDC-1] IDELAYCTRL missing from group with assigned IODELAYs:
+    --   ... associated with IODELAY_GROUP 'idelay_group', but there is no
+    --   IDELAYCTRL associated with this IODELAY_GROUP.
+    --
+    -- Declaring it makes the existing comment true and is a no-op for the
+    -- single-controller Au and Pt builds.
+    attribute IODELAY_GROUP : string;
+    attribute IODELAY_GROUP of IDELAYCTRL_inst : label is "idelay_group";
 begin
     pll_locked  <= locked;
     symbol_sync <= symbol_sync_i;

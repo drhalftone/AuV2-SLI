@@ -99,10 +99,24 @@ module cam_frame_ft #(
     // trigger train starts is 100% saturated -- it integrated through the idle
     // between the sequencer switching on and the first trigger -- and skipping
     // it is what makes an 8-frame sweep usable rather than 7/8 usable.
-    parameter integer SKIP_FRAMES = 4
+    parameter integer SKIP_FRAMES = 4,
+    // EXTERNAL CLOCKING. 0 = make clk200/clk100 from an internal MMCM (the
+    // standalone build, unchanged). 1 = take them from the parent.
+    //
+    // The merged HDMI+camera design already generates both -- ref_clk_pll makes
+    // the 200 MHz IDELAY reference and clk100_g the buffered 100 MHz -- so the
+    // internal MMCM there is pure duplication, and duplication is expensive: the
+    // 100T has SIX MMCMs and the merged design wants exactly six. Freeing one
+    // also relieves clock-region pressure, which is what the merged build's
+    // remaining timing violation is actually about.
+    parameter integer EXT_CLK = 0
 )(
     input  wire        clk,
     input  wire        rst_n,
+    // Only used when EXT_CLK != 0. With EXT_CLK = 0 they have no load and are
+    // trimmed, so the standalone build gains no pins and needs no constraints.
+    input  wire        clk200_ext,
+    input  wire        clk100_ext,
     output reg  [7:0]  led,
     output wire        usb_tx,        // 1 Mbaud status on the Pt's own USB (COM6)
 
@@ -198,23 +212,49 @@ module cam_frame_ft #(
     end
     wire rst = !por[7] || !rstn_sync[1];
 
-    wire fb, fb_g, c200_raw, clk200, c100_raw, clk100, mmcm_locked;
-    MMCME2_BASE #(
-        .BANDWIDTH("OPTIMIZED"), .CLKIN1_PERIOD(10.000),
-        .DIVCLK_DIVIDE(1), .CLKFBOUT_MULT_F(10.000),
-        .CLKOUT0_DIVIDE_F(5.000), .CLKOUT0_DUTY_CYCLE(0.500),
-        .CLKOUT1_DIVIDE(10),      .CLKOUT1_DUTY_CYCLE(0.500),
-        .STARTUP_WAIT("FALSE")
-    ) u_mmcm (
-        .CLKIN1(clk), .CLKFBIN(fb_g), .CLKFBOUT(fb),
-        .CLKOUT0(c200_raw), .CLKOUT1(c100_raw),
-        .CLKOUT2(), .CLKOUT3(), .CLKOUT4(), .CLKOUT5(), .CLKOUT6(),
-        .CLKOUT0B(), .CLKOUT1B(), .CLKOUT2B(), .CLKOUT3B(), .CLKFBOUTB(),
-        .LOCKED(mmcm_locked), .PWRDWN(1'b0), .RST(1'b0)
-    );
-    BUFG u_fb (.I(fb), .O(fb_g));
-    BUFG u_c200 (.I(c200_raw), .O(clk200));
-    BUFG u_c100 (.I(c100_raw), .O(clk100));
+    wire clk200, clk100, mmcm_locked;
+    generate
+    if (EXT_CLK != 0) begin : g_extclk
+        // Parent supplies both clocks, already on global buffers.
+        assign clk200 = clk200_ext;
+        assign clk100 = clk100_ext;
+
+        // NO MMCM MEANS NO LOCKED, AND LOCKED IS LOAD-BEARING HERE: it gates the
+        // IDELAYCTRL reset and the MIG reset, and a glitch on the latter aborts
+        // DDR calibration -- the exact fault that made one build never calibrate
+        // and an identical one always calibrate, differing only in placement.
+        //
+        // Substituting a settle counter ON THE SUPPLIED CLOCK preserves the
+        // property that actually matters. The counter cannot advance unless that
+        // clock is really running, so "locked" still means "the clock exists and
+        // has been stable a while" -- and it is synchronous to clk100, so the
+        // release cannot glitch the way an asynchronous LOCKED did.
+        reg [11:0] ext_cnt = 12'd0;
+        always @(posedge clk100 or negedge rst_n) begin
+            if (!rst_n)            ext_cnt <= 12'd0;
+            else if (!ext_cnt[11]) ext_cnt <= ext_cnt + 12'd1;
+        end
+        assign mmcm_locked = ext_cnt[11];
+    end else begin : g_ownclk
+        wire fb, fb_g, c200_raw, c100_raw;
+        MMCME2_BASE #(
+            .BANDWIDTH("OPTIMIZED"), .CLKIN1_PERIOD(10.000),
+            .DIVCLK_DIVIDE(1), .CLKFBOUT_MULT_F(10.000),
+            .CLKOUT0_DIVIDE_F(5.000), .CLKOUT0_DUTY_CYCLE(0.500),
+            .CLKOUT1_DIVIDE(10),      .CLKOUT1_DUTY_CYCLE(0.500),
+            .STARTUP_WAIT("FALSE")
+        ) u_mmcm (
+            .CLKIN1(clk), .CLKFBIN(fb_g), .CLKFBOUT(fb),
+            .CLKOUT0(c200_raw), .CLKOUT1(c100_raw),
+            .CLKOUT2(), .CLKOUT3(), .CLKOUT4(), .CLKOUT5(), .CLKOUT6(),
+            .CLKOUT0B(), .CLKOUT1B(), .CLKOUT2B(), .CLKOUT3B(), .CLKFBOUTB(),
+            .LOCKED(mmcm_locked), .PWRDWN(1'b0), .RST(1'b0)
+        );
+        BUFG u_fb (.I(fb), .O(fb_g));
+        BUFG u_c200 (.I(c200_raw), .O(clk200));
+        BUFG u_c100 (.I(c100_raw), .O(clk100));
+    end
+    endgenerate
 
     reg [7:0] idc_cnt = 8'd0;
     reg       idc_rst = 1'b1;
