@@ -215,7 +215,13 @@ place_design
 # small routing-bound violations that would otherwise need RTL changes. The
 # standalone camera build added it for exactly that reason.
 phys_opt_design
-route_design
+# ROUTER DIRECTIVE, and the reason is a tool crash, not timing.
+# The default router died TWICE at the same point -- Phase 5.1 Global Iteration,
+# immediately after overlaps reached zero -- with EXCEPTION_ACCESS_VIOLATION and
+# no error text (exit 116). Identical both times, so it is this netlist tripping
+# a router bug rather than random instability. Explore completed on this design
+# earlier in the session, so it is the strategy with evidence behind it.
+route_design -directive Explore
 # Post-route pass: only helps if something is still negative, and costs a minute.
 if {[get_property SLACK [get_timing_paths -delay_type min_max]] < 0} {
     puts "### post-route phys_opt (still negative after route)"
@@ -223,6 +229,14 @@ if {[get_property SLACK [get_timing_paths -delay_type min_max]] < 0} {
 }
 
 # ---- outputs ----
+# CHECKPOINT BEFORE THE BITSTREAM. Vivado 2025.2.1 on this host intermittently
+# dies with EXCEPTION_ACCESS_VIOLATION -- it took this build down mid-route once,
+# and build_cam_ft.tcl carries the same guard for the same reason. Implementation
+# is the expensive part and it has already succeeded by this point, so a crash at
+# bitstream time can be recovered with open_checkpoint + write_bitstream instead
+# of a full rebuild.
+write_checkpoint -force $out/Au2_SLI_merged_routed.dcp
+
 write_bitstream -force $out/Au2_SLI_merged.bit
 write_cfgmem -force -format bin -interface spix4 -size 16 \
     -loadbit "up 0x0 $out/Au2_SLI_merged.bit" $out/Au2_SLI_merged.bin

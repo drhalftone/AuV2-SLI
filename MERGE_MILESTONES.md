@@ -327,6 +327,102 @@ rather than absent.
 
 ---
 
+## M5 — RESULT: PASS (2026-08-21), plus a real robustness bug found and fixed
+
+**Control replies now share the frame pipe, inserted only at frame boundaries.**
+
+```
+sent 5 requests, captured 956.3 MB
+frames  : 583        malformed packets: 0
+replies : 5  seq=[4,5,6,7,8]  marker=0x48 x5
+frame_idx contiguous : True
+```
+
+Every packet on the wire is now `32-byte header + payload`, the magic saying
+which kind (`SLI0` frame, `SLI1` reply) and the header stating the length. Both
+carry the magic's inverse in `h[7]`, so a host that loses its place resynchronises
+rather than drifting.
+
+**Replies are emitted only from `R_IDLE`**, the reader's between-frames state, so
+a frame is never interrupted and the host's fast path — read a header, consume
+exactly `FBYTES` — is untouched. That matters: bytes/frame-size is how the true
+delivered rate is measured, and mid-frame insertion would break it.
+
+The reply check sits BEFORE the new-frame check on purpose. If the camera stops,
+the reader parks in `R_IDLE` forever, and that is exactly when control must still
+answer. A reply path gated on frames existing would go silent in the one
+situation that needs it.
+
+> `rpl_pend` is a FLAG, NOT A QUEUE: 400 rapid requests produced ~4 replies.
+> Right semantics for a status read, but N requests do not guarantee N replies.
+
+### The stress test found a real bug: a truncated upload wedged the control plane
+
+Deliberate hostility was shrugged off. What broke it was a **well-formed command
+that simply stopped early** — also the one a real host does by accident.
+
+```
+--> begin 1280-byte upload, send 5 bytes, abandon
+    read ID attempt 1..4 : NO ANSWER      (indefinitely)
+--> feed the remaining 1,275 bytes
+    read ID : 0x48
+```
+
+`uart_ctrl`'s receive FSM had **no inter-byte timeout**: once collecting payload
+it counted bytes and would not leave until it had them all, swallowing everything
+after — including well-formed register reads. Ctrl-C during `upload_corr.py` does
+exactly this, and the host has no way to know the cure is 1,275 filler bytes.
+
+Fixed with a **50 ms inter-byte watchdog**. At 115200 a byte is ~87 µs, so a 50 ms
+gap inside a frame is unambiguous. Armed only outside `S_SYNC` so an idle link is
+never disturbed; applied AFTER the state machine so it overrides any branch; and
+deliberately silent, since the sender is gone and an error byte would only
+desynchronise the next host to connect. Verified at six abandonment points
+(1, 2, 5, 40, 700, 1279 bytes) — all recover.
+
+### Full battery — 18 phases, both ports, all survived
+
+| Port A | Port B |
+|---|---|
+| 8 KB random garbage | undefined opcodes 6–15 |
+| 500 bad checksums | boundary payloads on every opcode |
+| truncated commands | truncated 1–3 byte words |
+| undefined opcodes | 400 rapid re-arms |
+| read+write sweep of all 256 addresses | 400 reply-request floods |
+| **truncated / abandoned uploads** | D3XX open/close churn |
+| oversized upload, SYNC embedded in payload | abandoned mid-transfer reads |
+| writes to the read-only EDID table | + both ports hammered simultaneously |
+
+The control plane answered in every phase and telemetry never stopped once.
+
+### Three TEST bugs, each of which produced a confident wrong answer
+
+1. **A patch that silently did not apply.** `str.replace` on a non-matching anchor
+   is a no-op, not an error — the counter landed, the code that ACTED on it did
+   not. Build succeeded, timing clean, behaviour unchanged. The edits that used
+   `assert old in s` caught their problems instantly; the ones without did not.
+2. **Probing before the wire drained.** 700 bytes takes 61 ms to transmit at
+   115200; the test waited 100 ms and probed while bytes were still going out,
+   reporting 4-of-6 for a fix that worked 6-of-6.
+3. **Conflating obedience with damage.** Legal-but-extreme commands change the
+   camera's CONFIGURATION. Measuring fps without restoring first reported seven
+   phases as failures when the camera was doing exactly what it was told.
+
+### Build script
+
+Added a post-route checkpoint (Vivado died mid-build once) and switched to
+`route_design -directive Explore` after the default router crashed **twice at the
+identical point** — Phase 5.1 Global Iteration, exit 116, no error text.
+Identical failures rule out random instability.
+
+> Third thing `build_merged.tcl` has needed that it did not inherit from
+> `build_pt.tcl`, after the tri-state multicycle and the checkpoint. A fourth
+> should prompt a proper diff against `build_cam_ft.tcl` rather than more patching.
+
+Timing: WNS +0.082, WHS +0.056, 0 failing of 45,868.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |

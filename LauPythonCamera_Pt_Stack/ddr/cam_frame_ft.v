@@ -176,7 +176,13 @@ module cam_frame_ft #(
     localparam integer FBYTES = (NPIX * 10) / 8;  // 1,638,400 bytes/frame at 10 bpp
     localparam integer NTOT   = NWORDS * NFRAMES; //   819,200 words = 13 MB of 256
     localparam integer ASTEP  = 8;
-    localparam [31:0]  MAGIC  = 32'h30494C53;
+    localparam [31:0]  MAGIC  = 32'h30494C53;   // "SLI0" -- a video frame
+    // M5: control replies share the IN pipe with frames, so every packet on the
+    // wire is now "32-byte header + payload" and the MAGIC says which kind.
+    // Distinct value, and h[7] still carries its inverse, so a host that loses
+    // its place can resynchronise rather than drift.
+    localparam [31:0]  RMAGIC = 32'h31494C53;   // "SLI1" -- a control reply
+    localparam integer RBYTES = 16;             // one 128-bit payload word
 
     assign ft_wakeup = 1'b1;
 
@@ -482,6 +488,7 @@ module cam_frame_ft #(
     end
     reg [15:0] expo_cur = EXPOSURE;         // what the sensor was last told
     reg        rearm_tog = 1'b0;
+    reg        rpl_tog   = 1'b0;   // M5: toggled on opcode 5
 
     // FRAMES PER SCAN, runtime-settable (opcode 4). NFRAMES is only the power-on
     // default now. Bounded at MAXF because the burst has to fit DDR3 and the
@@ -511,6 +518,8 @@ module cam_frame_ft #(
             end
             4'd2: if (cw_ft[23:0] > 24'd1000) trig_per <= cw_ft[23:0];
             4'd3: rearm_tog <= ~rearm_tog;
+            // M5: opcode 5 asks for a status reply on the IN pipe.
+            4'd5: rpl_tog <= ~rpl_tog;
             4'd4: if (cw_ft[5:0] != 6'd0 && cw_ft[5:0] <= MAXF[5:0])
                       nframes_r <= cw_ft[5:0];
             default: ;
@@ -532,6 +541,9 @@ module cam_frame_ft #(
     reg [2:0] ra_u = 3'b000;
     always @(posedge ui_clk) ra_u <= {ra_u[1:0], rearm_tog};
     wire rearm_u = ra_u[2] ^ ra_u[1];
+    reg [2:0] rp_u = 3'b000;
+    always @(posedge ui_clk) rp_u <= {rp_u[1:0], rpl_tog};
+    wire rpl_u = rp_u[2] ^ rp_u[1];
 
     wire [9:0]  kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7;
     wire [10:0] kbase;
@@ -908,7 +920,7 @@ module cam_frame_ft #(
     // W_PAD finishes a slot whose frame arrived short, so the host always gets
     // exactly NWORDS words per frame.
     localparam [2:0] W_WAIT=0, W_RUN=1, W_PAD=2, W_DONE=3, W_NEXT=4;
-    localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2;
+    localparam [1:0] R_IDLE=0, R_HDR=1, R_RUN=2, R_REPLY=3;
     // live path: idle -> header -> stream a frame -> (pad on underrun)
     localparam [1:0] L_IDLE=0, L_HDR=1, L_RUN=2, L_PAD=3;
     reg [1:0]  stl   = L_IDLE;
@@ -929,6 +941,8 @@ module cam_frame_ft #(
     reg [15:0] w_skip  = 16'd0;     // frames discarded because the reader was on
                                     // that slot -- reported, never silent
     reg [5:0]  wf_seen = 6'd0;      // wf_done value the reader last served
+    reg        rpl_pend = 1'b0;     // M5: a control reply is waiting for a boundary
+    reg [31:0] rpl_seq  = 32'd0;    // so the host can spot a lost reply
     wire [2:0] w_next = (w_slot == NSLOT[2:0] - 3'd1) ? 3'd0 : w_slot + 3'd1;
 
     // Playback issues reads speculatively; the write phase is unchanged.
@@ -1116,6 +1130,7 @@ module cam_frame_ft #(
             wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0; rf <= 6'd0;
             nf_run <= 6'd0; cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
             frame_idx <= 32'd0; rd_iss <= 18'd0; rd_got <= 18'd0; outst <= 5'd0;
+            rpl_pend <= 1'b0; rpl_seq <= 32'd0;
         end else if (rearm_u) begin
             // New scan: rewind BOTH sides. wf_done back to 0 re-arms the fence,
             // otherwise the reader would immediately serve frames left from the
@@ -1323,7 +1338,21 @@ module cam_frame_ft #(
             // frames are worthless in a live view, and serving them in order
             // would make the display lag further behind the longer it ran.
             // r_busy tells the writer which slot is off-limits.
-            R_IDLE: if (LIVE != 0) begin
+            // M5: A REPLY IS SENT ONLY HERE, AT A FRAME BOUNDARY.
+            //
+            // R_IDLE is the one place the reader is between frames, so injecting
+            // here means a frame is never interrupted and the host's fast path --
+            // read a header, then blindly consume FBYTES -- is untouched. That
+            // matters: bytes/frame-size is how the true delivered rate is
+            // measured, and mid-frame insertion would break it.
+            //
+            // Checked BEFORE the new-frame test on purpose. If the camera stops,
+            // the reader sits in R_IDLE forever, and that is exactly when control
+            // must still answer -- a reply path gated on frames existing would go
+            // silent in the one situation that needs it.
+            R_IDLE: if (rpl_pend) begin
+                        hw <= 3'd0; str <= R_REPLY;
+                    end else if (LIVE != 0) begin
                         if (wf_done != wf_seen) begin
                             wf_seen <= wf_done;
                             r_slot  <= (w_slot == 3'd0) ? (NSLOT[2:0] - 3'd1)
@@ -1368,6 +1397,27 @@ module cam_frame_ft #(
                 end else hw <= hw + 3'd1;
             end
 
+            // M5: reply packet -- same shape as a frame header so the host's
+            // parser stays uniform: read 32 bytes, switch on the magic, consume
+            // the length the header states.
+            R_REPLY: if (!ufifo_afull) begin
+                ufifo_wr <= 1'b1;
+                case (hw)
+                3'd0: ufifo_din <= { 32'd0, 32'd0, rpl_seq, RMAGIC };
+                3'd1: ufifo_din <= { ~RMAGIC, 32'd1, RBYTES/4, RBYTES };
+                // Payload: the same status the register map serves at 0x3A..0x41,
+                // plus a fixed marker so a host can confirm it is talking to this
+                // design and not mis-parsing payload as a header.
+                default: ufifo_din <= { 32'd0, 32'h00000048, cstat_r };
+                endcase
+                if (hw == 3'd2) begin
+                    hw <= 3'd0;
+                    rpl_pend <= 1'b0;
+                    rpl_seq  <= rpl_seq + 32'd1;
+                    str <= R_IDLE;
+                end else hw <= hw + 3'd1;
+            end
+
             // Reads issued up to MAXOUT deep; the frame ends when rd_got reaches
             // NWORDS, i.e. when the DATA is back -- not when the last read was
             // merely issued.
@@ -1386,6 +1436,12 @@ module cam_frame_ft #(
 
             default: str <= R_IDLE;
             endcase
+
+            // M5: latch the request AFTER the case above. A request that lands in
+            // the same cycle a reply is retired must survive -- assigning it here
+            // means the set wins over the clear, so the next one is never dropped.
+            // A request raised mid-frame simply waits for R_IDLE.
+            if (rpl_u) rpl_pend <= 1'b1;
         end
     end
 

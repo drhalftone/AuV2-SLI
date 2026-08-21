@@ -254,6 +254,24 @@ module uart_ctrl #(
         S_RESP  = 4'd10,
         S_RTGT  = 4'd11, S_RTCK  = 4'd12, S_RTAB = 4'd13;
 
+    // INTER-BYTE TIMEOUT -- a stalled frame must not own the link forever.
+    //
+    // Without this, a host that dies part-way through a table upload leaves the
+    // FSM counting payload bytes that never arrive, and it swallows EVERYTHING
+    // after -- including well-formed register reads -- until the outstanding
+    // length happens to be satisfied. Found by stress test: abandoning a
+    // 1280-byte upload after 5 bytes killed the control plane indefinitely, and
+    // only feeding the remaining 1,275 bytes brought it back. That is reachable
+    // by accident -- Ctrl-C during upload_corr.py does it -- and the host has no
+    // way to know the cure.
+    //
+    // At 115200 baud one byte is ~87 us, so a gap of this length inside a frame
+    // is unambiguous: the sender is gone. Abort and resync on the next SYNC.
+    // Only armed OUTSIDE S_SYNC, so an idle link is never disturbed.
+    localparam integer RX_IDLE_TICKS = CLK_HZ / 20;   // 50 ms
+    reg [$clog2(RX_IDLE_TICKS+1)-1:0] rx_idle = 0;
+    reg        rx_timeout = 1'b0;
+
     reg [3:0]  state = S_SYNC;
     reg [7:0]  addr, dbyte, sum8;
     reg [11:0] cnt, len;             // up to 1280
@@ -377,6 +395,7 @@ case (addr)
     always @(posedge clk) begin
         if (rst) begin
             state <= S_SYNC; tx_send <= 1'b0; sli_ctrl <= 8'h00;
+            rx_idle <= 0; rx_timeout <= 1'b0;
             corr_ld <= 1'b0; lut_ld <= 1'b0; lutv_ld <= 1'b0;
             mode_force <= 8'h00;       // force_en=0 -> EDID pick is in charge
             link_drop_host <= 1'b0; link_drop_proj <= 1'b0;
@@ -392,6 +411,17 @@ case (addr)
         end else begin
             tx_send       <= 1'b0;                      // default: no TX strobe
             cam_spi_start <= 1'b0;                      // default: no SPI strobe
+
+            // Inter-byte watchdog. Runs only while a frame is part-received.
+            rx_timeout <= 1'b0;
+            if (state == S_SYNC || rx_valid) begin
+                rx_idle <= 0;
+            end else if (rx_idle == RX_IDLE_TICKS[$clog2(RX_IDLE_TICKS+1)-1:0]) begin
+                rx_timeout <= 1'b1;                     // one-cycle abort pulse
+                rx_idle    <= 0;
+            end else begin
+                rx_idle <= rx_idle + 1'b1;
+            end
             cam_boot_go   <= 1'b0;                      // default: no boot strobe
 
             // Capture the SPI result whenever it lands, regardless of FSM state.
@@ -594,6 +624,21 @@ case (addr)
 
                 default: state <= S_SYNC;
             endcase
+
+            // ABORT LAST, AFTER the case, so it overrides whatever the state
+            // machine decided this cycle. Placed earlier, a mid-frame transition
+            // would win the race and the frame would stay stuck.
+            //
+            // Deliberately SILENT: the sender is gone, so there is nobody to send
+            // an error byte to, and emitting one would only desynchronise the next
+            // host that connects. Dropping the partial frame and resyncing on the
+            // next SYNC is the whole cure.
+            if (rx_timeout) begin
+                state     <= S_SYNC;
+                resp_len  <= 2'd0;
+                resp_idx  <= 2'd0;
+                rb_active <= 1'b0;
+            end
         end
     end
 endmodule
