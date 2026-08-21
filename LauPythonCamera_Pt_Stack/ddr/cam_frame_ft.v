@@ -1152,9 +1152,46 @@ module cam_frame_ft #(
     reg [11:0]  rp_pad   = 12'd0;         // padded up to a whole 128-bit word
     reg [11:0]  rp_i     = 12'd0;         // bytes placed so far
     reg [4:0]   rp_bc    = 5'd0;          // bytes in the word being built
-    reg         rp_sub   = 1'b0;          // 0 = issue read, 1 = capture
+    // THREE cycles per byte, not two. cam_reply_fifo has a REGISTERED read, and
+    // rf_rd is itself a register: setting rf_rd in cycle A makes it high during
+    // cycle B, so the FIFO latches rd_data at the END of B and the byte is only
+    // valid in cycle C. Capturing in B -- which the first version did -- reads
+    // the PREVIOUS byte every time, so the whole reply stream comes out delayed
+    // by one byte. A 3-byte register reply arrived as b8 00 48 instead of
+    // 00 48 b8: still 3 bytes, still one packet, checksum failing in a way that
+    // looks exactly like a wire fault. The stray byte was sitting in the FIFO's
+    // output register, not in the FIFO, which is why draining found nothing.
+    reg  [1:0]  rp_sub   = 2'd0;          // 0 = issue, 1 = read in flight, 2 = capture
     reg         rp_flush = 1'b0;          // a full word is ready to emit
     reg [127:0] rp_sh    = 128'd0;
+
+    // WAIT FOR THE PRODUCER TO GO QUIET BEFORE SENDING A CHUNK.
+    //
+    // rd_count is conservative -- the write pointer is double-synchronised, so it
+    // lags by a couple of cycles while uart_ctrl is producing a byte every ~2
+    // cycles. Sizing a chunk the instant the count goes non-zero therefore grabs
+    // a PARTIAL message: the first 3-byte register reply went out as 2 bytes in
+    // one packet and 1 byte in the next.
+    //
+    // That is harmless for a byte stream in principle, and the host does
+    // reassemble across packets -- but replies carry NO framing of their own
+    // (a register reply is a bare addr/value/checksum), so once a leftover byte
+    // exists there is nothing to resynchronise on. Keeping each message whole is
+    // what makes the stream self-consistent, and it saves a second 8.3 ms
+    // boundary too.
+    //
+    // 8 ui_clk cycles = 80 ns of no change, against a producer that emits a byte
+    // every ~20 ns. A long table readback keeps the count moving throughout, so
+    // it is held until the whole 1,282 bytes are in -- which is exactly what
+    // sizing the FIFO at 2,048 was for.
+    reg [11:0] rf_prev  = 12'd0;
+    reg [3:0]  rf_still = 4'd0;
+    always @(posedge ui_clk) begin
+        rf_prev <= rf_count;
+        if (rf_count != rf_prev)   rf_still <= 4'd0;
+        else if (rf_still != 4'hF) rf_still <= rf_still + 4'd1;
+    end
+    wire rf_ready = (rf_count != 12'd0) && (rf_still >= 4'd8);
 
     reg [5:0]  nf_run = 6'd0;             // frames in the burst actually captured
     reg [2:0]  hw = 3'd0;                 // header word index
@@ -1180,7 +1217,7 @@ module cam_frame_ft #(
             rpl_pend <= 1'b0; rpl_seq <= 32'd0;
             // M6b: a reset mid-drain must not leave rf_rd asserted or a half-built
             // word queued to flush.
-            rf_rd <= 1'b0; rp_ph <= 2'd0; rp_sub <= 1'b0; rp_flush <= 1'b0;
+            rf_rd <= 1'b0; rp_ph <= 2'd0; rp_sub <= 2'd0; rp_flush <= 1'b0;
             rp_n <= 12'd0; rp_pad <= 12'd0; rp_i <= 12'd0; rp_bc <= 5'd0;
         end else if (rearm_u) begin
             // New scan: rewind BOTH sides. wf_done back to 0 re-arms the fence,
@@ -1403,7 +1440,7 @@ module cam_frame_ft #(
             // silent in the one situation that needs it.
             R_IDLE: if (rpl_pend) begin
                         hw <= 3'd0; str <= R_REPLY;
-                    end else if (rf_count != 12'd0) begin
+                    end else if (rf_ready) begin
                         // M6b: control-plane reply bytes are waiting. Sized HERE,
                         // before a single word is emitted, because the byte count
                         // goes in the header and the header goes out first.
@@ -1527,12 +1564,13 @@ module cam_frame_ft #(
                                 str     <= R_IDLE;
                             end
                         end
-                    end else if (rp_sub == 1'b0) begin
+                    end else if (rp_sub == 2'd0) begin
                         if (rp_i < rp_n) begin
-                            // real byte: issue the read, capture next cycle
+                            // real byte: issue the read; the data is valid two
+                            // cycles later (see rp_sub above)
                             if (!rf_empty) begin
                                 rf_rd  <= 1'b1;
-                                rp_sub <= 1'b1;
+                                rp_sub <= 2'd1;
                             end
                         end else begin
                             // pad byte: no FIFO access at all
@@ -1542,13 +1580,17 @@ module cam_frame_ft #(
                                 rp_bc <= 5'd0; rp_flush <= 1'b1;
                             end else rp_bc <= rp_bc + 5'd1;
                         end
-                    end else begin
+                    end else if (rp_sub == 2'd1) begin
+                        // the read is in flight this cycle; rd_data lands at the
+                        // end of it. Do NOT touch rf_dout here.
                         rf_rd  <= 1'b0;
+                        rp_sub <= 2'd2;
+                    end else begin
                         // first byte of the chunk ends up at [7:0]; the pipe
                         // sends [31:0] first, so this is the wire order.
                         rp_sh  <= {rf_dout, rp_sh[127:8]};
                         rp_i   <= rp_i + 12'd1;
-                        rp_sub <= 1'b0;
+                        rp_sub <= 2'd0;
                         if (rp_bc == 5'd15) begin
                             rp_bc <= 5'd0; rp_flush <= 1'b1;
                         end else rp_bc <= rp_bc + 5'd1;

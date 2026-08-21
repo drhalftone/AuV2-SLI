@@ -77,6 +77,37 @@ class FtLink:
         try: self.d.close()
         except Exception: pass
 
+    def drain(self, quiet=0.30, limit=3.0):
+        """Discard replies still queued in the FPGA from a previous session.
+
+        THIS IS NOT OPTIONAL, AND flush_rx() IS NOT A SUBSTITUTE. Commands are
+        self-framing -- they start with SYNC, so the receiver resynchronises no
+        matter what state it is in. REPLIES ARE NOT: a register reply is a bare
+        addr/value/checksum with no marker, so a single stale byte left over
+        from an earlier run shifts every subsequent reply by one, permanently,
+        and every checksum fails in a way that looks like a wire fault.
+
+        That is exactly what happened on the first M6b run: the reply parsed as
+        00 00 48 instead of 00 48 B8, and the packet dump showed the payload was
+        the tail of a previous reply followed by the head of this one.
+
+        flush_rx() only clears the host-side buffer; bytes sitting in the FPGA's
+        FIFO are still on their way. So: pump until no reply packet has arrived
+        for `quiet` seconds.
+        """
+        t_last = time.time()
+        t0 = t_last
+        seen = self.replies
+        while time.time() - t0 < limit:
+            self.pump()
+            if self.replies != seen:
+                seen = self.replies
+                t_last = time.time()
+            elif time.time() - t_last >= quiet:
+                break
+        self.flush_rx()
+        return self.replies
+
     # ---------------- command direction ----------------
     def send_bytes(self, payload):
         """Push raw 0xA5 protocol bytes down the OUT pipe as opcode-0 words."""

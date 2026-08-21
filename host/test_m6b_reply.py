@@ -49,6 +49,11 @@ time.sleep(0.4)
 
 print("M6b -- control replies over the Ft+\n")
 
+# Replies carry no framing of their own, so a stale byte queued in the FPGA from
+# an earlier run would shift every reply by one permanently. Clear it first.
+stale = link.drain()
+print("  drained stale replies (%d reply packets seen while draining)\n" % stale)
+
 # ---- 1. read a register over USB3 -----------------------------------------
 t0 = time.time()
 ident = link.read_reg(0x00, timeout=3.0)
