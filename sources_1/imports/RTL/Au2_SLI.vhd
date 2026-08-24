@@ -678,11 +678,14 @@ architecture Behavioral of Au2_SLI is
     signal cam_wc_rstcnt : integer range 0 to 31 := 0;
     signal cam_wc_rst    : std_logic := '1';
 
-    -- 72.000 MHz sensor PLL reference: 100 MHz / 5 * 54 (VCO 1080) / 15. Forwarded to the
-    -- CMOS cam_clk_pll pin via ODDR. Its <= 20 ps input-jitter budget (CAMERA_SENSOR_PROTOCOL
-    -- §4.1, task #14) is not yet checked against this MMCM's output jitter -- flagged, not gating.
-    signal cam_clk72_raw, cam_clk72, cam_clkfb, cam_clk72_o : std_logic;
-    signal cam_mmcm_locked : std_logic;
+    -- 72.000 MHz sensor PLL reference: 100 MHz / 5 * 54 (VCO 1080) / 15, forwarded to the
+    -- CMOS cam_clk_pll pin via ODDR. NO LONGER GENERATED HERE -- the merge moved it down into
+    -- cam_boot_stage1, so it lives at i_cam_frame_ft/u_boot/u_mmcm and this level only passes
+    -- the pin through. The signals that fed the old top-level MMCM are gone with it; the XDC
+    -- path in Au2_pt.xdc was left behind and is fixed to match.
+    --
+    -- STILL OPEN: its <= 20 ps input-jitter budget (CAMERA_SENSOR_PROTOCOL §4.1, task #14) has
+    -- never been checked against that MMCM's output jitter -- flagged, not gating.
     -- THE 100 MHz clock net. The raw clk100 PORT drives only a BUFG; everything on sys_clk_pin
     -- (all 100 MHz fabric + every MMCM CLKIN) runs off its output, clk100_g. Vivado never put
     -- clk100 on a global buffer (it feeds MMCMs directly, so the auto-inserter skips it); the

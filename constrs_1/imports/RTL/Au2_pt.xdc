@@ -204,6 +204,21 @@ set_false_path -to [get_ports cam_clk_pll]
 # through cam_line_buf's dual-port BRAM (quasi-static line readback); the 72 MHz sensor-ref
 # MMCM only feeds an output pin. Both are asynchronous to the HDMI / system domains.
 set_clock_groups -name cam_rx_async  -asynchronous -group [get_clocks -include_generated_clocks cam_clkout]
-set_clock_groups -name cam_ref_async -asynchronous -group [get_clocks -of_objects [get_pins i_cam_mmcm/CLKOUT0]]
+#
+# The 72 MHz sensor-reference MMCM is NOT at the top level. It was, and this line still named
+# i_cam_mmcm/CLKOUT0 long after the merge moved the generator down into cam_boot_stage1. A
+# hierarchy path that no longer resolves is not an error to Vivado: get_pins returns an empty
+# list, an empty clock group is legal, and the build carries on having declared NOTHING. It
+# cost nothing so far only because clk72_raw currently has no inter-clock paths at all -- it
+# feeds the ODDR that drives the sensor pin and nothing else. The first signal that does cross
+# would have been timed as if the domains were related, i.e. a failure that is not real.
+#
+# So: resolve the pin FIRST and stop the build if it is missing. The point is not this one
+# path -- it is that the next hierarchy change must fail loudly instead of silently.
+set cam_ref_pin [get_pins -quiet i_cam_frame_ft/u_boot/u_mmcm/CLKOUT0]
+if {[llength $cam_ref_pin] == 0} {
+    error "cam_ref_async: 72 MHz MMCM pin i_cam_frame_ft/u_boot/u_mmcm/CLKOUT0 not found. Either the camera hierarchy moved (update this path), or the build did not read cam_frame_ft.v and the instance is a black box (see build_merged.tcl's read_verilog list)."
+}
+set_clock_groups -name cam_ref_async -asynchronous -group [get_clocks -of_objects $cam_ref_pin]
 
 set_property BITSTREAM.CONFIG.UNUSEDPIN PULLDOWN [current_design]
