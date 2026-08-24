@@ -123,6 +123,36 @@ class FtLink:
         except Exception: self.d.writePipeEx(0x02, buf, len(words))
         return len(words) // 4
 
+    def send_word(self, word):
+        """Push ONE raw 32-bit camera command word: {opcode[31:28], payload[27:0]}.
+
+        send_bytes() wraps everything in opcode 0 because 0xA5 protocol bytes
+        would otherwise alias into camera opcodes. The camera's OWN opcodes are
+        the other half of that pipe and need to go down un-wrapped -- opcode 1
+        exposure, 2 trigger period, 6 camera idle, and so on.
+
+        Keep these separate in your head: send_bytes() speaks the 0xA5 control
+        protocol to uart_ctrl, send_word() speaks directly to cam_frame_ft. They
+        share a pipe and nothing else.
+        """
+        buf = ctypes.create_string_buffer(struct.pack("<I", word & 0xFFFFFFFF))
+        try:    self.d.writePipe(0x02, buf, 4)
+        except Exception: self.d.writePipeEx(0x02, buf, 4)
+        return 1
+
+    def cam_idle(self, ms):
+        """Opcode 6: hold the camera in reset. ms=0 latches, ms>0 self-releases.
+
+        Self-timed on purpose (the LINKCTL reg 0x15 idiom): a host that dies
+        mid-test cannot strand the camera off, because the FPGA releases itself.
+        Pass ms=0 only for a deliberate experiment you intend to end by hand.
+        """
+        return self.send_word((6 << 28) | (1 << 27) | (int(ms) & 0xFFFF))
+
+    def cam_resume(self):
+        """Opcode 6 with the enable low: release the idle hold immediately."""
+        return self.send_word(6 << 28)
+
     # ---------------- reply direction ----------------
     def pump(self):
         """Read once from the IN pipe and walk out whole packets."""

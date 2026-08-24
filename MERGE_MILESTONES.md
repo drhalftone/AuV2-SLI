@@ -258,12 +258,55 @@ immediately.
 > the frame counter that reported extraction rate as camera rate. **Check what
 > the number is actually measuring before believing what it says.**
 
+### 3b — PASSED 2026-08-24, once a hook existed to run it
+
+3b was never a hard test; it was an *unrunnable* one. M2 moved sensor ownership
+into `cam_frame_ft` and left `uart_ctrl`'s reg 0x37 reset mailbox wired to `open`,
+so nothing could idle the camera short of unstacking it. Camera **opcode 6** is
+that hook — self-timed, mirroring `LINKCTL` (0x15), so a host that dies mid-test
+cannot strand the camera off.
+
+```
+  baseline   HDMI N=0034 M=0 S=0   camera 120.0 fps
+  during     HDMI N=0034 M=0 S=0   camera 0.0 fps
+     VSYNC counting through the outage : True ['0033','0034','0034','0033']
+```
+
+The camera stopped on command; HDMI kept its VSYNC dither with mode and source
+select unchanged. That is the whole of 3b — the table's camera column for 3b is
+deliberately empty.
+
+> **The first run reported FAIL, and the test was wrong — again.** It asserted
+> that `N` must CHANGE between two samples. `N` is a RATE (vsync edges per status
+> window), so holding at 51 is exactly what health looks like.
+> `test_3c_camerawedge.py` already had this right: sample several times and
+> require more than one distinct value. Third time in this campaign that a test
+> produced a confident wrong answer about working hardware.
+
+**Two real defects the run exposed, neither of them 3b criteria:**
+
+1. **The Ft+ reply path goes silent when the frame stream stops.** Commands still
+   arrive (verified by writing 0x13 over the Ft+ and reading it back on serial),
+   and the FPGA does build the reply — `ufifo_EMPTY=0`, `rd_busy=1` — but zero
+   bytes reach the host at any read size. This CONTRADICTS the design comment at
+   `R_IDLE`, which states the reply check sits before the new-frame test so
+   control still answers when the camera is stopped. The FSM does that correctly;
+   the stall is below it. **M6c's "Port A is now TX-only" is retracted until this
+   is fixed** — Port B goes silent in exactly the failure you would need it for,
+   which is what the carried-forward rule always said.
+2. **The camera does not resume when the idle is released.** `calib=1 aligned=1
+   cap=1` but `streaming=0`. Suspected: `stream_go` is a one-cycle pulse fired
+   into `cam_boot_stage1` while it is still inside its own 2FF reset sync. Fix is
+   a re-arm delay. Unconfirmed.
+
+---
+
 ### Still outstanding
 
 | | Blocked on |
 |---|---|
 | **3a** — unplug the HDMI source mid-capture | No HDMI source is connected (`S=0`, `edid_ok=False`). Needs a PC on the Hd RX port. |
-| **3b** — camera idle / held in reset | Needs either an RTL hook or physically unstacking the camera. |
+| ~~**3b** — camera idle / held in reset~~ | **PASSED 2026-08-24.** The hook now exists: camera opcode 6, self-timed. See below. |
 | 3c's reporting half | The camera "says so on Port A" needs M4 -- `calib`/`aligned`/`cfifo_ovf` are still not exposed as registers. |
 
 ---
