@@ -77,19 +77,103 @@ microseconds the same constant at every mode, at 10 ns quantisation — nothing 
 
 ---
 
+## What the application actually requires — answered 2026-08-24
+
+Four questions were open and are now settled. They change what several milestones
+are for, so they are recorded before the table rather than inside it.
+
+### The projector is a DLP with sequential RGB LEDs, and there are real gaps between the colours
+
+> "DLP projects use flashing RGB LEDs but there are substantial gaps between these
+> colours. So we need to capture the entire frame but there is substantial latitude
+> to dither the start time relative to the vertical sync."
+
+**This reframes the whole campaign.** The requirement is COVERAGE, not alignment:
+
+- **The exposure must span the entire projected frame.** Light arrives as separate
+  colour flashes; a partial exposure captures an arbitrary subset of them and
+  measures the wrong intensity. So the operating point is max exposure, right at
+  the ceiling — which is where the sensor's ~5.3 µs start jitter lives.
+- **But start-time alignment has latitude.** So THE 5.3 µs JITTER IS NOT A PROBLEM.
+  It was the single biggest open worry and the answer retires it. No sensor-clock
+  trimming, no line-time investigation, unless something else demands it.
+
+**What DOES matter, and it is a different problem than "latency compensation".**
+The sensor cannot integrate for 100% of the frame — a measured 44.1 µs of Frame
+Overhead Time and reset is unavoidable. So roughly 50 µs of every frame is NOT
+captured, and the question becomes **where that blind window lands**:
+
+| Blind window lands in | Result |
+|---|---|
+| a dark gap between colour flashes | nothing is lost — the frame is fully captured |
+| the middle of a colour flash | that colour is clipped, and the measured intensity is wrong |
+
+**So the delay register's primary job is to park the blind window inside a colour
+gap.** Compensating the projector's pipeline latency is the secondary job. That is
+a more concrete requirement than "align to the pattern", and it is measurable.
+
+### Passthrough needs sync too
+
+Genlock is NOT an offline-only feature. **G0's passthrough measurement is a real
+gate**, and the SXGA passthrough jitter already on record is a live risk to the
+whole approach rather than an academic one.
+
+### Several frame rates will be used in production
+
+Whatever the projector supports. Two consequences:
+
+- **G3's per-mode delay table is REQUIRED, not speculative.** The reserved payload
+  bits get used. A single global delay would be wrong at every mode but one — and
+  the colour-field structure of a DLP commonly changes with mode, so the blind
+  window would need re-parking anyway.
+- **G2's "across the usable range" stops being a robustness check** and becomes the
+  actual requirement.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
 |---|---|---|---|---|
-| **G0** | **Pick the edge, prove it is trustworthy** | Measured rate and edge-to-edge jitter over ≥ 30 s, reported over the control plane, for `out_vsync` **in both offline and passthrough modes**. Decision recorded *with the numbers*. No RTL function. | S | **high** |
-| **G1** | **Sync reaches the camera; nothing changes** | `cam_frame_ft` gains `ext_sync` plus an edge counter readable over the control plane. Camera still free-runs at 120.000 Hz, every M2 metric unchanged, WNS ≥ 0. **Includes the `pixel_pipe` `rdy_cnt` fix.** | S | low |
-| **G2** | **1:1 lock across the usable range** | Frame period tracks vsync at every mode in the table, not `TRIG_CY`. One exposure per projected frame — none missed, none doubled, verified by count over ≥ 10⁴ frames. `ldrop` static, `cfifo_ovf = 0`, frames byte-exact. Exposure clamp verified at the slowest and fastest modes. Build-time assertion that no mode in the table exceeds 120 Hz. | M | **high** |
-| **G3** | **Programmable delay** | A register sets the vsync→exposure delay in µs. Measured shift matches commanded across the **full range including delays greater than one frame period**. Range ≥ 0–50 ms. | M | med |
-| **G4** | **Graceful degradation** | The four cases below. This is the milestone most likely to be skipped and the one that matters. | M | **high** |
-| **G5** | **Lock quality measured, not assumed** | vsync→`frame_start` phase error sampled over ≥ 30 min; distribution reported; no drift. | S | med |
+| **G0** | **Pick the edge, prove it is trustworthy** | Measured rate and edge-to-edge jitter over ≥ 30 s for `out_vsync` **in both offline and passthrough modes**. Passthrough is IN SCOPE, so this is a genuine gate. Decision recorded *with the numbers*. | S | **high** |
+| **G1** | **Sync reaches the camera; nothing changes** | `ext_sync` into `cam_frame_ft` + edge counter. Camera still free-runs at 120.000 Hz, every M2 metric unchanged, WNS ≥ 0. **Includes the `pixel_pipe` `rdy_cnt` fix.** | S | low |
+| **G2** | **1:1 lock at EVERY mode that will be used** | Frame period tracks vsync at every production mode, not `TRIG_CY`. One exposure per projected frame — none missed, none doubled, over ≥ 10⁴ frames. `ldrop` static, `cfifo_ovf = 0`, frames byte-exact. Exposure clamp verified at the slowest and fastest. | M | **high** |
+| **G3** | **Per-mode delay table, and the blind window parked in a colour gap** | A delay per mode index, live, range ≥ 0–50 ms and allowed to exceed one frame. **Proof is photometric, not just temporal**: with the delay set, the captured intensity of a flat field must be independent of which mode is running, i.e. no colour is clipped. | M | **high** |
+| **G4** | **Graceful degradation** | The four cases below. Most likely to be skipped, and the one that matters. | M | **high** |
+| **G5** | **Full-frame coverage verified, not assumed** | The captured intensity of a flat field matches the intensity captured at a deliberately shorter exposure scaled up, to within the noise floor — proving no colour flash is being clipped. Held over ≥ 30 min and across a mode change. | M | med |
 | **G6** | **Regression + soak, genlock on** | M3a–M3d and the M7 soak re-run locked. See the M3d restatement below. | L | med |
 
 S ≈ hours · M ≈ a day · L ≈ multiple days
+
+---
+
+## G0 — RESULT SO FAR: offline PASSES, passthrough not yet measured
+
+**Offline, 2026-08-24** — `host/measure_vsync_period.py COM6 --seconds=34`:
+
+```
+  ran 35.1 s, 14 windows, 0 read failures
+  mean period      : 9718.508 us  (102.8965 Hz)
+  AGGREGATE across the whole run: min 9718.500  max 9718.510  span 0.010 us
+```
+
+**10 ns of total excursion — the measurement floor of a 100 MHz counter.** The
+offline master is as clean as this instrument can resolve, and there is no slow
+drift: the aggregate across every sampled window equals the per-window figure.
+
+THE AGGREGATE IS THE NUMBER, NOT A WINDOW. min/max reset every status window
+(~0.5 s ≈ 50 frames), so a slow wander would sit entirely inside per-window
+figures that each look tiny. Coverage caveat: reading nine registers at
+115200 baud takes ~2.5 s, so this sampled 14 windows spread across 35 s rather
+than every window.
+
+**CONSEQUENCE FOR THE WHOLE CAMPAIGN: the master is not the limiting term.** The
+sensor's own exposure-start jitter is 5.3 µs at long exposures — five hundred
+times larger. So lock quality will be set by the CAMERA, not the display, and G3's
+delay register can be specified against a stable reference.
+
+**Still outstanding: passthrough.** Blocked on micro-HDMI cables. See below for
+why it is not a formality.
 
 ---
 
@@ -130,26 +214,114 @@ Fix it at G1, before anything depends on the trigger being correct.
 
 ---
 
-## G3 — the delay must span more than one frame, and here is why
+## G1 — RESULT: PLUMBING PASSES 2026-08-24, `rdy_cnt` fix still outstanding
 
-Locking to what is *sent* is correct. The projector does not display it then. DLP and LCD
-projectors carry real pipeline latency — frequently one to two frames, and it changes with
-their processing mode. Calibrating the camera against the *projected* pattern may therefore
-need a delay of 16–25 ms at 120 Hz: expose during frame N+1 or N+2 relative to the vsync
-locked to.
+```
+  ext_sync edge count : 898 -> 1569   (+671 in 6.51 s)
+  implied edge rate   : 103.13 Hz
+  measured vsync rate : 102.90 Hz      ratio 1.0022
+  camera fps before/after : 120.4 / 119.9
+  0x3A 0x3F / 0x3F     ldrop 0 / 0     WNS +0.082 ns
+```
 
-Consequences for the design:
+`out_vsync` now reaches `cam_frame_ft` as `ext_sync`, with a free-running 16-bit
+edge counter at regs `0x58`/`0x59`. The camera still free-runs on `TRIG_CY` and
+every M2 metric is unchanged — the signal arrives and is deliberately ignored.
 
-- Size the delay register for **0 to at least 50 ms** (≥ 23 bits at 100 MHz).
-- The delay must be allowed to **exceed one frame period** rather than wrapping at the
-  boundary. A register that silently wraps cannot reach the setting the projector requires,
-  and the symptom — a pattern that never lines up — says nothing about the cause.
-- G3's proof must include a delay greater than one frame period, not only the sub-frame case.
+**THE RATE IS THE PROOF, NOT THE MOVEMENT.** The counter runs at 103 Hz, not 120.
+Had the port been mis-wired to `trig0` the counter would still have incremented and
+still looked like a pass; checking the rate against the independently measured vsync
+period is what shows the RIGHT signal arrived.
 
-**Open method question:** measuring the projector's actual latency most plainly means
-sweeping the delay while watching a projected pattern in the live viewer. That makes a
-repeatable optical path — lens mount, fixed geometry — a prerequisite for *calibrating*
-genlock, even though it is not one for building it.
+**Timing recovered on the way.** The max-exposure multiplier had taken WNS from
++0.082 to +0.014 ns as a single combinational chain — subtract, 24x15 multiply,
+compare. Pipelined into three stages it is back to +0.082 ns. The value is read over
+a 115200 baud link and changes once per status window, so the latency costs nothing.
+G1's own proof requires WNS >= 0, so this had to land first or a timing failure
+would have been unattributable.
+
+### Still outstanding within G1: the `pixel_pipe` `rdy_cnt` fix
+
+Deliberately not in this build. It is a behavioural change to EXISTING WORKING
+logic, and nothing depends on that path yet, so it deserves its own build where a
+regression is attributable. **G1 is not complete until it lands.**
+
+### Found on the way, and it matters for G4
+
+**`MODEFORCE` force-off does NOT restore the power-up mode** — it leaves whatever
+was last forced. Confirmed: power-up gives 102.9 Hz; after forcing indices and
+clearing `force_en` the board sat at 75 Hz; a reflash restored 102.9 Hz. G4's
+"mode change -> automatic re-lock" has to survive that.
+
+Unresolved loose end: `0x20` reported index 2 while the board was demonstrably
+running 102.9 Hz, so the reported index and the active timing disagreed.
+
+---
+
+## G3 — the delay register, respecified for a DLP
+
+**Opcode 7.** Payload `[27:24]` = **mode index**, `[23:0]` = delay in microseconds.
+
+The per-mode table is now REQUIRED — several rates will be in production, and a DLP's
+colour-field structure commonly changes with mode, so one global value would be wrong
+at every mode but one. The mode index keys off `0x20 MODE`, which already exists.
+
+| | |
+|---|---|
+| Units | µs directly — 24 bits reaches 16.7 s, far beyond the 0–50 ms needed |
+| Range | ≥ 0–50 ms, and it **must be allowed to exceed one frame period** |
+| Latency | **Live** — effective at the next frame boundary, no re-arm |
+| Readback | per-mode, via the camera status word |
+
+### What the delay is actually FOR — two jobs, and the first one is new
+
+**Job 1: park the 44 µs blind window in a dark gap between colour flashes.** The
+sensor cannot integrate 100% of a frame; a measured 44.1 µs of FOT and reset is
+unavoidable. On a sequential-RGB DLP that window either lands in a gap between
+colour flashes — costing nothing — or inside a flash, clipping that colour and
+corrupting the measured intensity. **This is the requirement that sets the delay.**
+
+**Job 2: compensate the projector's pipeline latency.** One to two frames typical,
+and it changes with processing mode. This is why the range must exceed one frame
+period: "expose during frame N+2" is a legitimate setting.
+
+### Calibrating it needs no extra hardware, and the machinery already exists
+
+**Sweep a SHORT exposure across the frame and photograph the projector's own colour
+timing.** Below ~2775 µs the exposure-start jitter is 10 ns, so a short exposure
+stepped through the frame by the delay register is a **sampling oscilloscope for
+light**: plot captured intensity against delay and the colour flashes and the gaps
+between them appear directly.
+
+Then set the delay so the blind window sits in a gap, and switch to full exposure.
+
+Two things make this work that were not designed for it: the delay register moves
+the exposure with 10 ns precision, and monitor0 reports exactly when integration
+happened, so the light measurement and the timing measurement come from the same
+frame. **Repeat per mode** — that IS the per-mode table, measured rather than
+guessed.
+
+### Negative delay is unnecessary
+
+Because the delay may exceed a frame, "2 ms before vsync N" is just "6.33 ms after
+vsync N−1".
+
+---
+
+## G5 — why the proof is photometric, not temporal
+
+G5 was originally "vsync→`frame_start` phase error over 30 min". **That measures the
+wrong thing for this application.** The requirement is that the camera captures the
+WHOLE frame, and a perfectly stable phase that happens to clip a colour flash would
+pass a phase-error test while producing wrong intensities.
+
+So the proof is: **a flat field captured at full exposure must match the same field
+captured at a deliberately shorter exposure and scaled up**, within the noise floor.
+If a colour is being clipped, the full-exposure capture comes up short and the ratio
+breaks. Held over ≥ 30 min and across a mode change.
+
+Phase stability is still worth recording — the instrument exists and costs nothing —
+but it is evidence, not the criterion.
 
 ---
 
@@ -193,10 +365,25 @@ that the change is a decision rather than a drift.
 
 | Condition | Found at | Why it is fatal |
 |---|---|---|
-| `out_vsync` jitter in passthrough exceeds the sensor's trigger budget | G0 | The master is not fit to lock to. Re-time against a clean local clock, or restrict genlock to offline mode, before building G2. |
+| `out_vsync` jitter in passthrough exceeds what the SENSOR's frame period can absorb | G0 | **Still fatal, and now unavoidable: passthrough is confirmed in scope.** Restricting genlock to offline mode is no longer an acceptable fallback, so a bad number here forces the output-clock cleanup before G2. |
+| ~~The camera's own exposure-start jitter is too large~~ | — | **RETIRED 2026-08-24.** The application has "substantial latitude to dither the start time", so the measured 5.3 µs is not a constraint. No sensor-clock trimming needed. |
+| **The 44 µs blind window cannot be placed in a colour gap at some mode** | G3 | The frame is not fully captured at that mode and intensities are wrong. This is the new central risk, and it is photometric rather than temporal. |
 | The camera cannot hold 1:1 at a mode the application needs | G2 | The 1:1 decision has to be revisited, not worked around. |
 | `ldrop` moves *unboundedly* during a mode change | G4/G6 | The coupling is unacceptable as designed — see the M3d restatement, which bounds it rather than removing it. |
 | The delay range cannot reach the projector's latency | G3 | The feature does not do the job it exists for. |
+
+---
+
+## Cleanup before G2 — agreed 2026-08-24
+
+Not genlock milestones; debts from the merge campaign that G2 would otherwise trip
+over. Doing them first was a deliberate choice.
+
+| Item | Why it must precede G2 |
+|---|---|
+| **`pixel_pipe` `rdy_cnt` accumulator** | G1 is not complete without it. It accumulates pending triggers, so any gap in the sync becomes a BURST of catch-up triggers the moment sync returns — several exposures inside one frame period, which the sensor cannot serve. It will present as a sensor fault and be looked for in the sensor. Replacement is the MimasA7 `cam_pace.v` pattern: 1-deep pending, fresh-ready arming, de-glitch. |
+| **Camera does not resume after opcode 6** | The fault-injection hook for G4 is unusable for repeatable testing until release actually restarts the camera. Suspected `stream_go` firing into `cam_boot_stage1` during its 2FF reset sync. |
+| **Ft+ reply path dies when the stream stops** | G4 deliberately stops and disturbs the camera. If USB 3 readback dies in exactly those states, G4 is debugged blind. Port A covers it, but the defect also retracts M6c's "Port A is TX-only". |
 
 ---
 
