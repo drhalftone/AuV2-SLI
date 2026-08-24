@@ -654,6 +654,84 @@ reply FIFO was sized for.
 
 ---
 
+## M6c — RESULT: PASS (2026-08-24), EDID content not proven on this bench
+
+`host/test_m6c_silicon.py` — everything `test_silicon.py` proves over the UART,
+proved over D3XX instead. **No serial port is opened anywhere in the file.** That
+is the milestone: with this, Port A is TX-only and nothing in the delivered
+system needs it.
+
+```
+  18 passed, 0 failed, 1 not proven
+
+  ok  IN pipe alive (frames arriving)         ok  FLAGS 0x06 lut_loaded set
+  ok  ID 0x00 == 0x48 / VERSION / STATUS      ok  PINS 0x10, override off eff==phys
+  ok  write 0x13 -> read back (x2 values)     ok  override ON: eff follows USB
+  ok  corr  256B upload -> readback (x2)      ok  override ON: phys unchanged
+  ok  lut   720B upload -> readback (x2)      ok  override OFF: reverts
+  ok  lutv 1280B upload -> readback (x2)      ok  EDID transport delivers 256B
+  ok  all three tables hold their own data    ok  frame stream unharmed
+```
+
+**The long messages worked first try**, which is the part that was expected to
+break. This is the first milestone to move LONG traffic in either direction: a
+1,280-byte upload is 1,283 protocol bytes = 428 opcode-0 words where every
+earlier command fitted in two, and the readback is 1,282 bytes — which is what
+sizing the reply FIFO at 2,048 was FOR. It also spans several frame boundaries,
+so the reply necessarily arrives split across packets and FtLink's byte-stream
+reassembly is load-bearing for the first time.
+
+### Upload-then-readback on ONE transport is a weak test, so it is not the test
+
+M6b returned a perfectly-shaped reply carrying the WRONG bytes and passed every
+structural check. A design that echoed the command buffer instead of reading the
+table back would pass a naive upload-then-readback the same way. So each table is
+checked three ways:
+
+1. **read BEFORE uploading** and confirm it does not already hold the pattern —
+   otherwise the test can pass against a stale table from a previous run
+2. **upload A, read back, upload a DIFFERENT B, read back** — an echo of the last
+   write survives (1), but the readback has to TRACK the change to survive this
+3. **re-read all three after all three are loaded** — a shared buffer or a
+   mis-decoded target byte shows up as cross-contamination, which per-target
+   testing in isolation cannot see
+
+(3) is why the three targets get distinct patterns rather than the single formula
+`test_silicon.py` reuses for all of them.
+
+### EDID: transport PROVEN, content NOT
+
+The readback path delivers 256 bytes, echoes the right target and closes its
+protocol checksum. But `edid_merge`'s RAM is **all zeros** — 0 of 256 bytes
+non-zero — because nothing is attached to HDMI-OUT (`S=0`, offline). Confirmed
+identical over the UART as an independent witness, so the RAM is genuinely empty
+rather than the USB3 path failing.
+
+> **A block-0 checksum does NOT validate an EDID.** It is a mod-256 sum over 128
+> bytes, so an all-zero buffer passes it trivially. The first version of this test
+> printed "block-0 checksum OK" for an empty RAM, which is reassuring nonsense —
+> exactly the kind of confident wrong picture this project keeps having to measure
+> its way out of. It now requires a valid header AND a non-empty buffer, and
+> reports NOT PROVEN with the reason otherwise.
+
+**To close it:** attach a display to HDMI-OUT and re-run. Nothing else is needed.
+
+### Bench note found while running this: the Ft+ was on USB 2
+
+Unrelated to the milestone but it changes every rate number taken on this bench.
+`flags=0x2` (`FT_FLAGS_HISPEED`, not `FT_FLAGS_SUPERSPEED` = 0x4), measured
+**48.8 MB/s = 29.8 fps** against the 325 MB/s / 117 fps of the M7 soak. The sensor
+still produces 120 fps, so the live viewer paints from a growing backlog and reads
+as "the FPGA got slow" — which sends you looking in the wrong place entirely.
+
+The device string is `FTDI SuperSpeed-FIFO Bridge` **regardless of what it
+negotiated**, so it cannot be eyeballed. `host/usb_speed.py` reports the
+enumerated flag and the measured throughput together: the flag alone says nothing
+about whether the pipe delivers, and the rate alone cannot distinguish a USB2 link
+from a USB3 link that the FPGA is not filling.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
