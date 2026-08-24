@@ -123,7 +123,7 @@ module cam_frame_ft #(
     // M4: the same status this module already assembles for its own UART, handed
     // to the parent so a MERGED build can report camera health on Port A without
     // taking Port A away from the SLI control plane. See cstat_r below.
-    output wire [63:0] cam_stat_o,
+    output wire [127:0] cam_stat_o,
     output wire        cam_stat_tog_o,
 
     // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
@@ -297,14 +297,87 @@ module cam_frame_ft #(
     wire [7:0] boot_led;
     wire       streaming;
     reg        stream_go = 1'b0;
+
+    //---------------------------------------- OPCODE 6: CAMERA IDLE (M3b hook)
+    // M3's independence test 3b -- "camera idle / held in reset, HDMI must keep
+    // VSYNC counting with its mode unchanged" -- was the one test in the four
+    // that could not be RUN. MERGE_MILESTONES recorded it as blocked on "either
+    // an RTL hook or physically unstacking the camera", and there was no hook:
+    // M2 moved sensor ownership into this module and left uart_ctrl's reg 0x37
+    // (the old {reset_n,...} mailbox) wired to `open`. This is that hook.
+    //
+    // THREE THINGS HAD TO BE TRUE TOGETHER, and each one was a trap on its own.
+    //
+    // 1. FORCING THE SENSOR RESET IS NOT THE SAME AS RESETTING THE BOOT MODULE.
+    //    cam_boot_stage1 does `cam_reset_n = b_busy ? b_resetn : 1'b1` -- when it
+    //    is not busy it holds the sensor OUT of reset unconditionally. So gating
+    //    only its rst_n makes b_busy fall, which drives cam_reset_n HIGH and
+    //    leaves an already-configured sensor streaming happily. The override has
+    //    to be explicit, below.
+    //
+    // 2. BUT THE BOOT MODULE MUST BE RESET TOO, or the camera cannot come back.
+    //    A sensor reset clears its registers, and the boot FSM has long since
+    //    finished; released on its own the part would sit out of reset,
+    //    unconfigured, and silent. Holding u_boot in reset alongside makes it
+    //    re-run the whole ROM upload on release, which is also what keeps this
+    //    consistent with "independent means the camera comes up WITHOUT the host
+    //    asking".
+    //
+    // 3. `fired` MUST BE CLEARED. stream_go is a one-shot latched by `fired`,
+    //    which only `rst` clears, so without this the datapath would never ask
+    //    the re-booted sensor to stream again.
+    //
+    // SELF-TIMED, mirroring LINKCTL (reg 0x15) on the HDMI side. Payload bit 27
+    // is the enable and [15:0] is a hold time in milliseconds; the FPGA releases
+    // itself when it expires, so a wedged host cannot strand the camera off. A
+    // duration of 0 latches until explicitly cleared (write opcode 6 with bit 27
+    // low), which is the deliberate-experiment case.
+    //
+    //     word = {4'd6, 1'b1, 11'd0, ms[15:0]}    idle for ms, then auto-release
+    //     word = {4'd6, 1'b0, 27'd0}              release now
+    //
+    // WHY THIS IS SAFE TO COMMAND OVER THE Ft+, which is worth stating because it
+    // looks like it should deadlock: replies leave only at frame boundaries, so
+    // stopping the camera looks like it would also stop the answers. It does not.
+    // The reader's R_IDLE state checks for a pending reply BEFORE it tests for a
+    // new frame, specifically so control still answers when the camera is stopped
+    // -- see the comment at R_IDLE. With no frames the reader parks there and the
+    // reply path is if anything more available, not less.
+    localparam integer MS_DIV = 100_000 - 1;   // clk is 100 MHz
+    reg        cam_idle = 1'b0;
+    reg [15:0] idle_ms  = 16'd0;
+    reg [16:0] ms_cnt   = 17'd0;
+    always @(posedge clk) begin
+        if (rst) begin
+            cam_idle <= 1'b0; idle_ms <= 16'd0; ms_cnt <= 17'd0;
+        end else if (cw_pulse && cw_ft[31:28] == 4'd6) begin
+            cam_idle <= cw_ft[27];
+            idle_ms  <= cw_ft[15:0];
+            ms_cnt   <= 17'd0;
+        end else if (cam_idle && idle_ms != 16'd0) begin
+            if (ms_cnt == MS_DIV[16:0]) begin
+                ms_cnt  <= 17'd0;
+                idle_ms <= idle_ms - 16'd1;
+                if (idle_ms == 16'd1) cam_idle <= 1'b0;      // self-release
+            end else begin
+                ms_cnt <= ms_cnt + 17'd1;
+            end
+        end
+    end
+
+    wire boot_cam_reset_n;
+    // (1) and (2) from above: force the sensor into reset AND hold the booter, so
+    // release re-runs the full configuration rather than freeing a blank sensor.
+    assign cam_reset_n = boot_cam_reset_n & ~cam_idle;
+
     cam_boot_stage1 #(.CLK_HZ(100_000_000), .BAUD(1_000_000), .STOP_AT(45),
                       .TRIGGERED(TRIGGERED), .EXPOSURE(EXPOSURE)) u_boot (
-        .clk(clk), .rst_n(rst_n),
+        .clk(clk), .rst_n(rst_n & ~cam_idle),
         .stream_go(stream_go), .streaming(streaming),
         .expo_req(expo_req), .expo_val(expo_val),
         .led(boot_led), .usb_tx(), .usb_rx(1'b1),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
-        .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),
+        .cam_miso(cam_miso), .cam_reset_n(boot_cam_reset_n),
         .cam_clk_pll(cam_clk_pll), .cam_trigger(),
         .cam_monitor(cam_monitor)
     );
@@ -404,6 +477,81 @@ module cam_frame_ft #(
     end
     assign cam_trigger = {2'b00, (TRIGGERED != 0) ? trig0 : 1'b0};
 
+    //------------------------------------------- MONITOR-PIN TIMESTAMPING (G0)
+    // What this measures: how long after the trigger edge the sensor ACTUALLY
+    // starts integrating, and how much that varies frame to frame.
+    //
+    // WHY IT IS NEEDED. The datasheet gives no trigger-to-exposure delay and no
+    // jitter figure for it -- the only tj in the electrical tables is INPUT CLOCK
+    // jitter (20 ps), which is a different thing entirely. But it does say
+    // (p24):
+    //
+    //   "The start of the exposure time is synchronized to the start of a new
+    //    line (during ROT) if the exposure period starts during a frame readout."
+    //
+    // In pipelined mode integration ALWAYS starts during a readout, so this
+    // always applies: the start snaps to the sensor's internal line boundary. A
+    // line is ~5.7 us (measured readout floor 5840 us / 1024 lines). And the
+    // trigger period is not a whole number of lines --  8333.3 / 5.7 = 1461.9 --
+    // so the phase walks and the snap lands differently every frame. Predicted:
+    // 0 to ~5.7 us of JITTER, which a fixed delay register cannot absorb.
+    //
+    // That is a prediction. This is the instrument that tests it.
+    //
+    // monitor0 IS ALREADY THE RIGHT SIGNAL AND WAS BEING THROWN AWAY.
+    // monitor_select is register 192 bits [13:11] -- the same register the boot
+    // ROM already writes as 0x0801 to enable the sequencer. 0x0801 has bit 11
+    // set, so monitor_select is already 0x1, which Table 19 defines as
+    // monitor0 = INTEGRATION TIME. The pin is routed to the FPGA and
+    // cam_boot_stage1 ties it off with `wire _unused = ... | (|cam_monitor)`.
+    // So this costs one sensor register write of zero, and one counter.
+    //
+    // MIN AND MAX, NOT JUST LAST. A single sample cannot show jitter, and jitter
+    // is the entire question. min/max accumulate over one ~10 Hz status window
+    // and reset with it, so every published pair describes a fresh window of
+    // roughly 12 frames at 120 Hz rather than a running high-water mark that
+    // only ever widens.
+    reg [1:0]  mon_s  = 2'b00;
+    reg        mon_d  = 1'b0;
+    reg [1:0]  trg_s  = 2'b00;
+    reg [23:0] mcnt   = 24'd0;      // ticks since the trigger edge, 10 ns each
+    reg [23:0] mon_rise = 24'd0;
+    reg [23:0] rise_min = 24'hFFFFFF, rise_max = 24'd0;
+    reg [23:0] rise_min_p = 24'd0,   rise_max_p = 24'd0;   // published
+    reg [15:0] dur_p     = 16'd0;   // integration length, 160 ns units
+    reg        mstat_clr = 1'b0;    // pulsed by the status tick, ui_clk -> clk
+
+    reg [1:0] mclr_s = 2'b00;
+    always @(posedge clk) begin
+        mon_s <= {mon_s[0], cam_monitor[0]};
+        mon_d <= mon_s[1];
+        trg_s <= {trg_s[0], trig0};
+        mclr_s <= {mclr_s[0], mstat_clr};
+
+        // The trigger's rising edge restarts the stopwatch. Saturating rather
+        // than wrapping: a wrapped count reads as a small delay, which is a
+        // plausible wrong answer, and those are the ones that cost days here.
+        if (trg_s[0] && !trg_s[1]) mcnt <= 24'd0;
+        else if (mcnt != 24'hFFFFFF) mcnt <= mcnt + 24'd1;
+
+        if (mon_s[1] && !mon_d) begin              // integration STARTS
+            mon_rise <= mcnt;
+            if (mcnt < rise_min) rise_min <= mcnt;
+            if (mcnt > rise_max) rise_max <= mcnt;
+        end
+        if (!mon_s[1] && mon_d) begin              // integration ENDS
+            dur_p <= (mcnt - mon_rise) >> 4;       // 160 ns resolution
+        end
+
+        // Publish and restart the window on the status tick.
+        if (mclr_s[0] && !mclr_s[1]) begin
+            rise_min_p <= rise_min;
+            rise_max_p <= rise_max;
+            rise_min <= 24'hFFFFFF;
+            rise_max <= 24'd0;
+        end
+    end
+
     wire        wordclk;
     wire [9:0]  d0_word, d1_word, d2_word, d3_word, sync_word;
     wire [4:0]  bitslip, lane_locked, lane_failed;
@@ -454,7 +602,11 @@ module cam_frame_ft #(
     always @(posedge clk) begin
         stream_go <= 1'b0;
         rdy_s <= {rdy_s[1:0], (scan_done & aligned & init_calib_complete)};
-        if (rst) fired <= 1'b0;
+        // cam_idle clears it alongside rst: the opcode-6 hook re-boots the sensor
+        // on release, and this one-shot is what asks the fresh sensor to stream.
+        // Without it the camera would come back configured but silent, which is a
+        // far more confusing failure than not coming back at all.
+        if (rst || cam_idle) fired <= 1'b0;
         else if (rdy_s[2] && !fired && !streaming) begin
             stream_go <= 1'b1; fired <= 1'b1;
         end
@@ -1928,7 +2080,7 @@ module cam_frame_ft #(
     // some from the new -- and a torn status word is worse than none, because it
     // reads as a plausible state that never existed. The toggle lets the parent
     // capture only when the whole word is known stable.
-    reg [63:0] cstat_r   = 64'd0;
+    reg [127:0] cstat_r  = 128'd0;
     reg        cstat_tog = 1'b0;
     assign cam_stat_o     = cstat_r;
     assign cam_stat_tog_o = cstat_tog;
@@ -1952,13 +2104,27 @@ module cam_frame_ft #(
                 utick <= 24'd0; shold <= stat; nib <= 5'd0; ust <= 2'd1;
                 // byte 0 (reg 0x3A) is the "is it alive" byte, byte 1 the
                 // "is it healthy" byte -- the two a human reads first.
-                cstat_r <= { expo_cur,
+                // The LOW 64 bits are UNCHANGED -- regs 0x3A..0x41 keep their
+                // existing meaning and every host tool that parses them keeps
+                // working. The monitor timestamps are ADDED above, at 0x42..0x49,
+                // rather than displacing a field. Shifting an existing status bit
+                // would be silent: the tools would keep reading and start lying.
+                // 16 + 24 + 24 + 64 = 128 exactly. No padding: a pad here made
+                // the concatenation 136 bits wide, which Verilog would have
+                // silently truncated from the TOP -- losing dur_p and shifting
+                // nothing else, so every other field would still have looked
+                // right. Arithmetic checked rather than assumed.
+                cstat_r <= { dur_p,                             // 0x48..0x49
+                             rise_max_p,                        // 0x45..0x47
+                             rise_min_p,                        // 0x42..0x44
+                             expo_cur,
                              wmin_s2[19:4],
                              ldrop_s2,
                              covf_s[1], uovf_s[1], ufifo_empty, txe_s[1], 4'b0,
                              stw[2:0], (str != R_IDLE),
                              init_calib_complete, aligned, streaming, cap_s[1] };
                 cstat_tog <= ~cstat_tog;
+                mstat_clr <= ~mstat_clr;   // start a fresh min/max window
             end
         end
         2'd1: if (!ubusy && !usend) begin

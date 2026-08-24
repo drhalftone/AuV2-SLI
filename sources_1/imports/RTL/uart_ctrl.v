@@ -174,7 +174,15 @@ module uart_ctrl #(
     input  wire [15:0] cam_spi_rdata,
     // M4: camera datapath status, 8 bytes at 0x3A..0x41. Read-only, and already
     // captured on a stable snapshot upstream -- see cam_frame_ft's cstat_r.
-    input  wire [63:0] cam_stat_i,
+    input  wire [127:0] cam_stat_i,
+    // G0: vsync period measured at 100 MHz -- {max, min, last}, 24 bits each.
+    // The master clock genlock would lock to; its stability bounds the
+    // achievable lock quality. Regs 0x4A..0x52.
+    input  wire [71:0]  vs_per_i,
+    // G0: max usable exposure for the CURRENT frame rate, computed in
+    // usb_link from the measured vsync period and the measured sensor gap.
+    // {reserve_ticks[15:0], valid, reg_limited, 6'b0, max_expo[15:0]}
+    input  wire [39:0]  maxexp_i,
     input  wire        cam_spi_busy,
     input  wire        cam_spi_done,      // 1-clk strobe from cam_spi_master
 
@@ -380,6 +388,66 @@ case (addr)
             8'h3F:   rd_data  = cam_stat_i[47:40];
             8'h40:   rd_data  = cam_stat_i[55:48];
             8'h41:   rd_data  = cam_stat_i[63:56];
+            // ---- 0x42..0x49: MONITOR-PIN TIMESTAMPS (genlock G0) ------------
+            // How long after the trigger edge the sensor actually starts
+            // integrating, from monitor0 (= Integration Time, monitor_select 0x1
+            // in reg 192[13:11], which the boot ROM already sets).
+            //
+            //   0x42/0x43/0x44  trigger -> integration start, MINIMUM, 10 ns units
+            //   0x45/0x46/0x47  same, MAXIMUM
+            //   0x48/0x49       last integration length, 160 ns units
+            //
+            // MIN AND MAX ARE THE POINT. The datasheet gives no trigger-to-
+            // exposure delay at all, and says the start snaps to a line boundary
+            // (~5.7 us) whenever integration begins during a readout -- which in
+            // pipelined mode is always. max-min IS that jitter, measured. A
+            // single sample could not show it.
+            //
+            // The window resets every status tick (~10 Hz), so each read
+            // describes a fresh ~12-frame window rather than a high-water mark
+            // that only ever widens.
+            8'h42:   rd_data  = cam_stat_i[71:64];
+            8'h43:   rd_data  = cam_stat_i[79:72];
+            8'h44:   rd_data  = cam_stat_i[87:80];
+            8'h45:   rd_data  = cam_stat_i[95:88];
+            8'h46:   rd_data  = cam_stat_i[103:96];
+            8'h47:   rd_data  = cam_stat_i[111:104];
+            8'h48:   rd_data  = cam_stat_i[119:112];
+            8'h49:   rd_data  = cam_stat_i[127:120];
+            // ---- 0x4A..0x52: VSYNC PERIOD (genlock G0) --------------------
+            //   0x4A/0x4B/0x4C  last period, 10 ns units
+            //   0x4D/0x4E/0x4F  minimum over the status window
+            //   0x50/0x51/0x52  maximum over the status window
+            // max-min IS the master's jitter. `N=` in the telemetry line is an
+            // edge COUNT and dithers between 51 and 52 at 120 Hz, so it cannot
+            // resolve the period better than ~2% and cannot see jitter at all.
+            8'h4A:   rd_data  = vs_per_i[7:0];
+            8'h4B:   rd_data  = vs_per_i[15:8];
+            8'h4C:   rd_data  = vs_per_i[23:16];
+            8'h4D:   rd_data  = vs_per_i[31:24];
+            8'h4E:   rd_data  = vs_per_i[39:32];
+            8'h4F:   rd_data  = vs_per_i[47:40];
+            8'h50:   rd_data  = vs_per_i[55:48];
+            8'h51:   rd_data  = vs_per_i[63:56];
+            8'h52:   rd_data  = vs_per_i[71:64];
+            // ---- 0x53..0x57: MAX USABLE EXPOSURE (answer to "how long can
+            // I expose at this frame rate?") -----------------------------
+            //   0x53/0x54  max exposure in EXPOSURE REGISTER UNITS -- write
+            //              this straight back with opcode 1, no conversion
+            //   0x55       {7: valid, 6: limited by the 16-bit register
+            //              rather than by the frame period}
+            //   0x56/0x57  the reserve subtracted, in 10 ns ticks
+            //
+            // valid = 0 means the vsync period was not plausible (no edges,
+            // counter saturated). DO NOT fall back to a default in that case:
+            // commanding an exposure longer than the frame period wedges the
+            // sensor until the FPGA is reconfigured, which is the exact
+            // failure this register exists to prevent.
+            8'h53:   rd_data  = maxexp_i[7:0];
+            8'h54:   rd_data  = maxexp_i[15:8];
+            8'h55:   rd_data  = maxexp_i[23:16];
+            8'h56:   rd_data  = maxexp_i[31:24];
+            8'h57:   rd_data  = maxexp_i[39:32];
             default: rd_data  = 8'h00;
         endcase
     end

@@ -28,6 +28,12 @@ module usb_link #(
     input  wire [7:0]  olp,
     input  wire        usb_rx,
     output wire        usb_tx,
+    // G0: the vsync whose PERIOD is measured at 0x4A..0x52. Deliberately a
+    // separate port from led[7]: that one carries `vsync` and feeds the N=
+    // telemetry count, but genlock locks to out_vsync -- what is SENT to the
+    // projector -- and measuring the wrong one would give a plausible number
+    // for a signal nothing is locked to.
+    input  wire        vs_meas,
 
     // ---- pin-state readback (reg 0x10): physical switches + post-override value ----
     input  wire [3:0]  phys_sw,          // raw newSW pins {R,G,B,orient} (async)
@@ -85,7 +91,7 @@ module usb_link #(
     output wire        cam_reset_n,
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
-    input  wire [63:0] cam_stat_i,       // M4: camera datapath status -> regs 0x3A..0x41
+    input  wire [127:0] cam_stat_i,      // M4 status 0x3A..0x41 + G0 monitor timestamps 0x42..0x49
     // M6a: a SECOND source of 0xA5 bytes, arriving over the FT601 instead of the
     // UART. Merged below rather than muxed: the two are alternative transports
     // for one protocol, never both mid-command at once, and the receiver already
@@ -117,6 +123,11 @@ module usb_link #(
     end
     wire vs_rise = vs1 & ~vs2;
 
+    // Separate 2FF sync + edge for the measured vsync (pixel clock -> clk100).
+    reg vm0=0, vm1=0, vm2=0;
+    always @(posedge clk100) begin vm0<=vs_meas; vm1<=vm0; vm2<=vm1; end
+    wire vm_rise = vm1 & ~vm2;
+
     // 2FF sync of the quasi-static switch/override bits into clk100 (reg 0x10).
     reg [3:0] psw0=0, psw1=0, esw0=0, esw1=0;
     always @(posedge clk100) begin
@@ -131,6 +142,109 @@ module usb_link #(
         if (win >= WIN-1) begin win<=0; vs_lat<=vs_run; vs_run<=0; stat_tick<=1'b1; end
         else begin win<=win+1; if (vs_rise) vs_run<=vs_run+1'b1; end
     end
+
+    //---- vsync PERIOD and its jitter (genlock G0) --------------------------
+    // vs_lat above is an edge COUNT per window -- the `N=` field. It answers
+    // "is vsync alive" and nothing else: at 120 Hz it reads 51 or 52 and
+    // dithers, so it cannot resolve a period to better than ~2%, and it cannot
+    // see jitter at all.
+    //
+    // Genlock needs the period itself, and needs to know how much it moves.
+    // This is the master clock the camera would be locked to, so its stability
+    // IS the achievable lock quality -- there is no point specifying a 5 us
+    // trigger delay against a master that wanders by more than that.
+    //
+    // Counted at 100 MHz: 10 ns resolution, and 24 bits reaches 167 ms so every
+    // rate from 6 Hz upward fits. Saturating rather than wrapping, because a
+    // wrapped period reads as a plausible short one.
+    //
+    // ARMED on the first edge so the first interval -- which is measured from
+    // reset, not from an edge -- is discarded rather than published as a
+    // spuriously short period.
+    //
+    // min/max accumulate over one status window and reset with it, so each read
+    // is a fresh window rather than a high-water mark that only ever widens.
+    // All three values are latched together at the tick: read as three separate
+    // bytes over a UART, an unlatched counter would tear and produce a period
+    // that never occurred.
+    reg [23:0] vsp_cnt = 24'd0, vsp_last = 24'd0;
+    reg [23:0] vsp_min = 24'hFFFFFF, vsp_max = 24'd0;
+    reg [23:0] vsp_last_p = 24'd0, vsp_min_p = 24'd0, vsp_max_p = 24'd0;
+    reg        vsp_armed = 1'b0;
+    always @(posedge clk100) begin
+        if (vm_rise) begin
+            vsp_cnt <= 24'd0;
+            if (vsp_armed) begin
+                vsp_last <= vsp_cnt;
+                if (vsp_cnt < vsp_min) vsp_min <= vsp_cnt;
+                if (vsp_cnt > vsp_max) vsp_max <= vsp_cnt;
+            end
+            vsp_armed <= 1'b1;
+        end else if (vsp_cnt != 24'hFFFFFF) begin
+            vsp_cnt <= vsp_cnt + 24'd1;
+        end
+        if (stat_tick) begin
+            vsp_last_p <= vsp_last;
+            vsp_min_p  <= vsp_min;
+            vsp_max_p  <= vsp_max;
+            vsp_min <= 24'hFFFFFF;
+            vsp_max <= 24'd0;
+        end
+    end
+    wire [71:0] vs_per_w = {vsp_max_p, vsp_min_p, vsp_last_p};
+
+    //---- MAX USABLE EXPOSURE for the CURRENT frame rate (regs 0x53..0x57) ---
+    // "What is the longest exposure I can ask for right now?" answered by the
+    // FPGA, from the vsync period it just measured and the sensor overhead that
+    // was measured on this silicon.
+    //
+    //     max_exposure = vsync_period - 44.1 us (gap) - 10 us (margin)
+    //
+    // THE 44.1 us IS MEASURED, NOT FROM THE DATASHEET. Sweeping the trigger
+    // period against exposure gave min_period = exposure + 44.1 us with a slope
+    // of 1.0015 over a 6.0..8.0 ms span -- a constant, to within the 5 us search
+    // resolution. At 120 Hz this formula returns 8279 us against the clamp of
+    // 8280 us that was previously found by walking into the cliff. Reproducing a
+    // known-good number is what makes it trustworthy.
+    //
+    // IT MUST FAIL SAFE, and that is the whole point of per_ok. vsp_last_p
+    // SATURATES at 0xFFFFFF when no vsync edges arrive. Fed naively into the
+    // subtraction that reports a 167 ms "maximum exposure" -- and commanding an
+    // exposure longer than the frame period WEDGES the sensor until the FPGA is
+    // reconfigured. A feature whose job is to prevent that must not become the
+    // thing that causes it. So the period has to be inside a plausible band or
+    // the answer is reported invalid and zero.
+    //
+    // THE EXPOSURE REGISTER RUNS OUT BEFORE THE FRAME DOES at low rates. Opcode
+    // 1 takes 16 bits, so the largest settable exposure is 65535 x 375 ns =
+    // 24.576 ms. Below ~40.7 Hz the binding limit is the REGISTER, not the frame
+    // period, and the reply says which -- otherwise a user at 30 Hz is told
+    // 88755 and writes a silently truncated value.
+    //
+    // Reported in EXPOSURE REGISTER UNITS so the host writes it straight back
+    // with opcode 1: no conversion, no rounding at the one boundary where a
+    // rounding error wedges the part.
+    localparam [23:0] GAP_TICKS     = 24'd4410;      // 44.1 us, measured
+    localparam [23:0] MARGIN_TICKS  = 24'd1000;      // 10 us
+    localparam [23:0] RESERVE_TICKS = GAP_TICKS + MARGIN_TICKS;
+    localparam [23:0] PER_MIN = 24'd200_000;         // 2 ms  -> 500 Hz
+    localparam [23:0] PER_MAX = 24'd8_000_000;       // 80 ms -> 12.5 Hz
+
+    wire        per_ok  = (vsp_last_p >= PER_MIN) && (vsp_last_p <= PER_MAX);
+    wire [23:0] usable  = (vsp_last_p > RESERVE_TICKS)
+                            ? (vsp_last_p - RESERVE_TICKS) : 24'd0;
+    // ticks (10 ns) -> exposure units (375 ns) is a divide by 37.5, done as
+    // x 2/75 ~= x 27962 >> 20. 27962*75/2 = 1048575 against 2^20 = 1048576, so
+    // the error is about 1 ppm -- far below the 375 ns quantisation itself.
+    wire [43:0] mexp_mul  = usable * 44'd27962;
+    wire [23:0] mexp_full = mexp_mul[43:20];
+    wire        mexp_rlim = per_ok && (mexp_full > 24'd65535);
+    wire [15:0] mexp      = (!per_ok)  ? 16'd0
+                          : (mexp_rlim ? 16'hFFFF : mexp_full[15:0]);
+    // The reserve is published too: if the FPGA says "max is X" and the host
+    // writes X, a wrong reserve wedges the sensor. Better inspectable than
+    // buried in a bitstream.
+    wire [39:0] maxexp_w = {RESERVE_TICKS[15:0], per_ok, mexp_rlim, 6'd0, mexp};
 
     // ---- producers ----
     wire [7:0] s_data;  wire s_send, s_busy;        // status_line producer
@@ -285,6 +399,8 @@ module usb_link #(
         .cam_spi_addr(cam_spi_addr), .cam_spi_rw(cam_spi_rw),
         .cam_spi_wdata(cam_spi_wdata), .cam_spi_start(cam_spi_start),
         .cam_stat_i(cam_stat_i),
+        .vs_per_i(vs_per_w),
+        .maxexp_i(maxexp_w),
         .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
         .cam_spi_done(cam_spi_done),
         .cam_gpio(cam_gpio), .cam_gpio_in(cam_gpio_in),
