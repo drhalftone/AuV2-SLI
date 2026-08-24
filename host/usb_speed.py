@@ -20,8 +20,20 @@ Together they separate "the link is USB2" from "the link is USB3 but the source
 is not filling it".
 
 REFERENCE NUMBERS on this design, 1280x1024 packed-10 (1.6384 MB/frame):
-    USB 3 SuperSpeed   ~325 MB/s   ~120 fps   (M7 soak: 117.8 fps, host-limited)
+    USB 3 SuperSpeed   ~196 MB/s   ~120 fps   (M7 soak: 117.8 fps, host-limited)
     USB 2 High Speed    ~49 MB/s    ~30 fps   (~4x slower; viewer visibly lags)
+
+LIVE CAPTURE IS SENSOR-LIMITED, NOT LINK-LIMITED, AND THE PASS THRESHOLD HAS TO
+SAY SO. The sensor reads out 120.000 fps; at 1.6384 MB that is 196.6 MB/s, and
+that IS full rate. The link can do more -- 325 MB/s was measured replaying from
+DDR faster than the camera fills it -- but no live stream will ever reach that,
+because there is nothing to send.
+
+The first version of this script judged "OK" on >200 MB/s and duly reported a
+perfect 196.5 MB/s / 119.9 fps run as a shortfall, pointing at the FPGA. That is
+this project's recurring failure in miniature: an instrument confidently wrong
+about healthy hardware. Judge on FPS AGAINST THE SENSOR RATE, not on bytes
+against the link ceiling.
 """
 import ctypes, sys, time
 
@@ -31,6 +43,8 @@ from ftd3xx.defines import FT_OPEN_BY_INDEX, FT_FLAGS_HISPEED, FT_FLAGS_SUPERSPE
 IN_PIPE = 0x82
 CH = 1 << 22
 FBYTES = 1280 * 1024 * 10 // 8      # packed-10 frame
+FPS_SENSOR = 120.0                  # the sensor rate; the real ceiling
+FPS_OK = 110.0                      # allow host-limited skid (soak saw 117.5)
 
 SECS = float(sys.argv[1]) if len(sys.argv) > 1 else 5.0
 
@@ -69,13 +83,22 @@ def main():
     print("stream : %.1f MB in %.2f s = %.1f MB/s (%.1f fps at %d B/frame)"
           % (tot / 1e6, dt, mbs, (tot / FBYTES) / dt, FBYTES))
 
+    fps = (tot / FBYTES) / dt
     print()
-    if ss and mbs > 200:
-        print("OK -- USB 3, full rate.")
+    if ss and fps >= FPS_OK:
+        print("OK -- USB 3 at %.1f fps. That is the SENSOR's rate (120.000 Hz),"
+              " which is\nfull rate for live capture. The link has headroom above"
+              " it and always will." % fps)
+    elif ss and fps > 1.0:
+        print("USB 3 negotiated but only %.1f fps (%.1f MB/s) against the sensor's"
+              " 120.\nThe LINK is fine, so look at the FPGA end: is the camera"
+              " streaming, and is\nthe ring reader running?" % (fps, mbs))
     elif ss:
-        print("USB 3 negotiated but only %.1f MB/s. The LINK is fine, so look at"
-              " the\nFPGA end: is the camera streaming, and is the ring reader"
-              " running?" % mbs)
+        print("USB 3 negotiated but NOTHING is arriving. The FT601 enumerates from"
+              " its own\nEEPROM whether or not the FPGA is configured, so this is"
+              " what an UNCONFIGURED\nFPGA looks like -- most often a --ram load"
+              " lost to a power cycle, and the board\nis USB-powered, so"
+              " re-plugging it counts. Re-load the bitstream.")
     else:
         print("USB 2. Expect about a quarter of full rate, and a viewer that lags"
               "\nbecause the sensor still produces 120 fps the link cannot carry."
@@ -84,7 +107,7 @@ def main():
               "\n  2. a USB 2 port, or a hub/dock in the path -- go direct, rear panel"
               "\n  3. marginal SuperSpeed signal integrity forcing a fallback"
               "\n\nRe-plug and run this again; you want flags 0x4.")
-    return 0 if (ss and mbs > 200) else 1
+    return 0 if (ss and fps >= FPS_OK) else 1
 
 
 if __name__ == "__main__":
