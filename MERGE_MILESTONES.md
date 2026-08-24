@@ -580,6 +580,80 @@ still required to read anything back.
 
 ---
 
+## M6b — RESULT: PASS (2026-08-24): replies over the Ft+
+
+The reply direction. With this the Pt UART is no longer load-bearing: the control
+plane can be both commanded and read through the Ft+ alone.
+
+```
+  [1] read 0x00 over USB3 -> 0x48   (serial says 0x48)   23.6 ms
+  [2] write 0x13=0xAB/0x5A/0x33/0xC7 -> ack 'K', USB3 and serial agree   4/4
+  [3] 422 register reads over 15 s while streaming, 0 wrong
+      latency  min 17.1  median 44.6  max 51.0 ms
+  [4] frames seen 422   malformed packets 0   ldrop 0 -> 0   ovf 00
+```
+
+**The serial port is the witness, never the transport under test.** Verifying a
+USB3 reply by reading the same register back over USB3 would pass even if the
+FPGA were replaying something stale. Checking it over the *other* link is what
+proves the value the reply carried is the value the register actually holds.
+
+### The structure was right on the first build; the payload was off by one
+
+Header, sequence, format and byte count were all correct on the first hardware
+run, and the reply came back interleaved with video exactly as designed. A 3-byte
+register reply arrived as `b8 00 48` instead of `00 48 b8` — every byte one late.
+
+`rf_rd` is a register, so setting it in cycle A makes it high during B;
+`cam_reply_fifo` has a REGISTERED read, so `rd_data` is latched at the end of B
+and is valid only in C. The drain FSM consumed `rf_dout` during B. Fixed with a
+third phase — issue, in flight, capture — at 3 cycles per byte. Worst case 2,048
+bytes = 61 us against an 8.3 ms frame period.
+
+Same family as the M6a bug from the opposite direction: that one registered a read
+that should have been combinational and delivered every byte TWICE; this one
+treated a registered read as combinational and delivered every byte one LATE.
+Both FIFOs, both one cycle, both invisible from outside.
+
+### Two things that made it read as a hardware fault
+
+- **It looked like a WIRE FAULT.** Three bytes, one packet, correct header,
+  correct count, checksum failing. Nothing in the shape said "logic".
+- **It looked like a STALE BYTE**, so a drain was written — and the drain reported
+  nothing pending. That was the clue, not a contradiction: the stray byte sat in
+  the FIFO's OUTPUT REGISTER, not in the FIFO, so draining could never see it.
+
+What settled it was five reads in a row returning an IDENTICAL rotation. Leftover
+state does not repeat; systematic logic does.
+
+### Two numbers in the passing output that do NOT mean what they look like
+
+Recorded because both would read as regressions later:
+
+- **"frames seen 422" is not a frame rate.** `link.frames` counts frames the HOST
+  consumed while waiting for replies, and the loop only issues small register
+  reads — it never runs the bulk streaming path. 422 in 15 s looks like 28 fps
+  against the soak's 117. The stream's actual health is `ldrop 0 -> 0` and the
+  clear overflow flags, read from the FPGA over the side channel.
+- **Median latency 44.6 ms, not the ~8.3 ms the design implies.** One frame period
+  is the floor, but the host must then read through everything already queued in
+  the USB pipe ahead of the reply. The extra ~36 ms is host-side backlog, not FPGA
+  delay — consistent with `min 17.1`, about two frame periods. The docstring's
+  "bounded by the frame period by construction" is true of the FPGA half only.
+
+### The build that carried the fix
+
+WNS **+0.082 ns**, bit-identical to M6a — the three-phase drain FSM cost no timing.
+The verification build on 2026-08-21 died mid-`place_design` (the fifth Vivado
+crash that session) and the fix sat unverified until it was rebuilt on 2026-08-24,
+which went straight through.
+
+**Still open:** M6c — tables + EDID, the `test_silicon` equivalent over D3XX. That
+is the first thing to exercise the LONG reply path, which is what the 2,048-byte
+reply FIFO was sized for.
+
+---
+
 ## Milestones
 
 | # | Milestone | Proof (all must hold) | Effort | Risk |
