@@ -25,6 +25,49 @@ reconstruction. The system targets high-frame-rate scanning (e.g. **800×600 @ 1
 
 ---
 
+## Where this is now — read this first
+
+Everything above is the **HDMI/SLI half**, and it is still accurate. But the project
+grew a second half and changed FPGAs, and neither is visible from the description
+above.
+
+| | This README's original framing | Now |
+|---|---|---|
+| FPGA | Alchitry **Au V2**, XC7A35T | Alchitry **Pt V2**, XC7A100T |
+| Cameras | two DB9 modules over a 4-line GPIO handshake | one **ON Semi PYTHON 1300** on a custom stack board, 4-lane LVDS at 720 Mbps |
+| Image path to the PC | each camera's own USB | the **Alchitry Ft+** (FT601Q) USB 3 — 196 MB/s, 120.000 fps, byte-exact |
+| Control path | 115200 baud UART on Port A | the **Ft+**, with Port A kept deliberately as an independent witness |
+
+**Both datapaths now run in one bitstream on one FPGA, proven independent.** That was
+the merge campaign — see [`MERGE_MILESTONES.md`](MERGE_MILESTONES.md), M0 through M7.
+
+### Where to look
+
+| Document | For |
+|---|---|
+| [`FTPLUS_API.md`](FTPLUS_API.md) | **Every parameter the host can read or write over USB 3** — registers, opcodes, tables, marked R / W / R-W |
+| [`MERGE_MILESTONES.md`](MERGE_MILESTONES.md) | How the two designs were merged, and what each step had to prove |
+| [`GENLOCK_MILESTONES.md`](GENLOCK_MILESTONES.md) | **Current work** — locking the camera's exposure to the projected frame |
+| [`CAMERA_RTL_PLAN.md`](CAMERA_RTL_PLAN.md) | The camera receive chain and its bring-up |
+| [`ROADMAP.md`](ROADMAP.md) | Board stack, DF40 geometry, future hardware |
+
+### Current work: genlock
+
+Locking exposure to the projected frame is the entire reason the FPGA sits inline on
+HDMI. `ROADMAP.md` §6.5 recorded it as blocked on getting a sync wire between two
+separate boards — **the merge dissolved that blocker**, because the vsync and the
+camera are now signals in the same architecture.
+
+### Builds
+
+| Script | Part | Contents |
+|---|---|---|
+| `build_merged.tcl` | XC7A100T (Pt V2) | **The current design** — HDMI/SLI + camera + Ft+ |
+| `build.tcl` | XC7A35T (Au V2) | The original HDMI/SLI-only design; still builds |
+| `build_pt.tcl` | XC7A100T | **Stale** — predates M2 and no longer picks up the camera datapath |
+
+---
+
 ## Operating modes
 
 The **Mode** GPIO line (and HDMI presence) select between three behaviors:

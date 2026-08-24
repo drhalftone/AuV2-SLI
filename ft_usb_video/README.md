@@ -1,5 +1,11 @@
 # ft_usb_video — FT601 USB-3 video throughput test (Pt V2 + Ft+)
 
+> **STATUS: this subproject answered its question and was absorbed.** The FT601
+> datapath proven here is now part of the merged design (`build_merged.tcl`), where
+> `cam_frame_ft` carries the camera, DDR3 ring and Ft+ together with the HDMI/SLI
+> path. The measurements below stand; the *separate build* does not need running
+> again. Current interface: [`../FTPLUS_API.md`](../FTPLUS_API.md).
+
 **Goal:** answer "how many 1280×1024 frames/second can we push over the Ft+ (FT601Q)
 USB-3 port?" — by generating real SLI video on the FPGA (the same phase-shifting
 cosine fringes the HDMI path emits) at the **PYTHON 1300 raster**, streaming it out

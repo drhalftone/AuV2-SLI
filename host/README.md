@@ -1,8 +1,44 @@
-# AuV2-SLI host — camera ↔ FPGA linearisation tool
+# AuV2-SLI host tools
 
-A minimal Qt app that coordinates a **Basler USB camera** with the **Alchitry Au V2
-SLI FPGA** to measure the projector response and build an **8-bit intensity
-correction (linearisation) table**, then upload it to the FPGA over USB.
+Two things live here, and they speak to the board over **different transports**.
+
+## 1. Python tools over the Ft+ (USB 3) — the current interface
+
+Everything the host does with the merged design goes through
+[`ftlink.py`](ftlink.py), which implements the `0xA5` control plane and the camera
+opcodes over D3XX. Register and opcode reference: [`../FTPLUS_API.md`](../FTPLUS_API.md).
+
+| Tool | What it does |
+|---|---|
+| `ftlink.py` | The transport. `send_bytes` (0xA5 protocol), `send_word` (camera opcodes), register and table read/write |
+| `usb_speed.py` | **Run this first when anything looks slow.** Reports the enumerated USB speed *and* measured throughput — a USB 2 cable in a USB 3 port looks identical from the outside and costs 4x |
+| `max_exposure.py` | Asks the FPGA the longest exposure usable at the current frame rate, and optionally applies it |
+| `measure_vsync_period.py` | Display frame period and its jitter, at 10 ns (genlock G0) |
+| `measure_trigger_latency.py` | Trigger to exposure-start delay and its jitter, from the sensor's own monitor pin |
+| `measure_exposure_gap.py` | Sweeps exposure to find the constant inter-exposure gap and the readout floor |
+| `test_m6c_silicon.py` | The full control-plane test over D3XX — registers, all three tables, EDID |
+| `test_m6a_ctlpath.py`, `test_m6a_under_load.py`, `test_m6b_reply.py` | Control-plane bring-up, command and reply directions |
+| `test_3b_cameraidle.py` | M3/3b — idle the camera, prove HDMI does not notice |
+| `soak.py`, `stress_attack.py` | Long-run and adversarial tests |
+| `read_cam_status.py`, `dump_edid.py`, `read_mode.py`, `force_mode.py`, `upload_corr.py` | Point tools over the serial port |
+
+### Why several of these read over the serial port on purpose
+
+Port A is not legacy. It is the **independent witness**: a test that measures the
+camera over the same link whose traffic it is disrupting cannot distinguish the two.
+This matters concretely — the Ft+ reply path currently goes silent whenever the
+frame stream stops, so anything that wedges or idles the camera also stops USB 3
+readback. See the known limitation in [`../FTPLUS_API.md`](../FTPLUS_API.md).
+
+## 2. The Qt linearisation app — NOT yet migrated
+
+A minimal Qt app that coordinates a **Basler USB camera** with the SLI FPGA to
+measure the projector response, build an **8-bit intensity correction
+(linearisation) table**, and upload it over USB.
+
+> **It still speaks `QSerialPort` at 115200 baud.** Moving it to D3XX is the
+> outstanding half of merge milestone M7 — the soak half passed, the host migration
+> did not start. Everything below describes the app as it stands.
 
 The FPGA renders the *linearised* sinusoid on the fly: it reads the cosine amplitude
 from its pattern table and passes it through the uploaded correction table —

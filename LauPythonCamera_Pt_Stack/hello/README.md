@@ -1,5 +1,11 @@
 # `hello/` — "is the PYTHON 1300 actually there?"
 
+> **STATUS: milestone #5 PASSED 2026-08-10** (reg 0 = `0x50D0`, 40/40). The staged
+> bitstreams here remain the bring-up ladder and the recovery path when the merged
+> design misbehaves. `cam_boot_stage1.v` is NOT historical — the merged build
+> instantiates it directly as `i_cam_frame_ft/u_boot`, so it owns the sensor SPI,
+> reset and 72 MHz reference in the shipping design.
+
 The bring-up bitstream for **[`CAMERA_RTL_PLAN.md`](../../CAMERA_RTL_PLAN.md) milestone #5**, the
 red hardware gate: **reset the sensor, read register 0 over SPI, and check it against the chip ID
 `0x50D0`.**

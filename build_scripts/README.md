@@ -3,12 +3,18 @@
 Historical Vivado build scripts, rescued from the (gitignored) `build/` directory
 before it was deleted. They were the only copies in existence.
 
-**These are not the current build.** The current, reproducible build is the
-repo-root [`build.tcl`](../build.tcl): it builds straight from the git-tracked
-RTL and XDC, with no Vivado project and no zip:
+**These are not the current build.** The current builds are repo-root TCL scripts
+that read straight from the git-tracked RTL and XDC, with no Vivado project and no
+zip:
+
+| Script | Part | Contents |
+|---|---|---|
+| [`build_merged.tcl`](../build_merged.tcl) | XC7A100T (Pt V2) | **The current design** — HDMI/SLI + camera + Ft+ in one bitstream |
+| [`build.tcl`](../build.tcl) | XC7A35T (Au V2) | The original HDMI/SLI-only design |
+| [`build_pt.tcl`](../build_pt.tcl) | XC7A100T | **Stale** — predates M2, no longer reads `cam_frame_ft.v` |
 
 ```
-vivado -mode batch -source build.tcl
+vivado -mode batch -source build_merged.tcl
 ```
 
 Everything below predates that. They are **project-mode** scripts: they operate on

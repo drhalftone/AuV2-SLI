@@ -1,9 +1,10 @@
-# Mechanical models — camera sensor and bracket
+# Mechanical models — camera sensor, bracket, and stack shroud
 
 | | writes | |
 |---|---|---|
 | `gen_sensor_step.py` | `../3dmodels/NOIP1SN1300A_LCC48.step` | the PYTHON 1300 package — the reference body everything else is designed around |
 | `gen_socket_tile.py` | `../3dmodels/camera_socket_tile.step` | iteration 0 of the bracket: the contact tile |
+| `gen_stack_shroud.py` | `../3dmodels/stack_shroud_<layer>.step` | **CNC aluminium** shroud rings, one per board of the Alchitry stack |
 | `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens |
 | `gen_lens_holder.py` | `../3dmodels/camera_lens_holder.step` | M12 / S-mount alternative: plate on four posts with a threaded barrel |
 | `step_writer.py` | — | shared AP214 writer and 2D helpers |
@@ -313,3 +314,44 @@ bodies are genus 0, the tile is genus 1 because the window goes all the way thro
 Both models were additionally imported with OCCT (`cadquery`), which reports every solid
 valid with volumes and bounding boxes matching the tables above. `check_step.py` needs no
 third-party packages; the OCCT pass was a one-off confirmation.
+
+
+---
+
+## `gen_stack_shroud.py` — the stack shroud (CNC aluminium)
+
+One rectangular ring per board — Hd+ / Ft+ / Pt V2 / camera — surrounding the PCB
+and the gap above it, so the rings stack beside the boards to form a tube.
+
+**Outboard of the PCB, not between the boards.** The measured board-to-board gap is
+3.68 mm and it is already full of components and connectors; there is nothing to fit
+into. The rings clear the 55 x 45 outline laterally instead.
+
+### Two schemes, and it refuses to blur them
+
+Four rigid aluminium rings totalling 0.2 mm over will pry the stack apart, and the
+only thing holding it together is a row of 0.4 mm-pitch DF40 connectors. Aluminium
+does not yield the way a printed part does — the connector will.
+
+- `--scheme shroud` (default): rings cut SHORT, touching nothing. The generator
+  asserts the total is under the board stack and exits otherwise.
+- `--scheme spacer`: rings machined to the pitch exactly, corner bolts carrying the
+  load. Refuses to emit without `--i-verified-hole-align`, because it needs aligned
+  corner holes on all four boards and nothing in this repo verifies that.
+
+### Aluminium is conductive — a design input, not a footnote
+
+Clearance is 0.75 mm per side, not the 0.3 mm that would do in plastic, because
+board edges carry ground pours and via stubs. Every ring has a bond tap so the
+shroud is **deliberately grounded**: a floating metal box beside 720 Mbps LVDS and
+the FT601's source-synchronous bus is a coupling path. Bonded, it is a shield.
+Anodising is not the insulator.
+
+### Cutouts require a cited source
+
+`--notch` will not work without `--notch-source`, which is stamped into the STEP
+description. There is **no Alchitry board CAD in this repo**, so connector positions
+for the Hd+/Ft+/Pt V2 are unknown — and a STEP file looks authoritative in a way a
+caveat in conversation does not. A shop cannot tell a measured cutout from a guessed
+one. **The committed rings are closed bands**: no cable can leave the stack, on
+purpose, until real positions are measured.

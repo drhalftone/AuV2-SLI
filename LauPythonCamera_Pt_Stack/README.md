@@ -1,5 +1,15 @@
 # LauPythonCamera_Pt_Stack — Design Blueprint
 
+> **STATUS: the board works and is in the merged design.** The sensor is alive,
+> aligned and streaming 1280x1024 at 120.000 Hz over the Ft+, concurrently with
+> the HDMI/SLI datapath in one bitstream — see
+> [`../MERGE_MILESTONES.md`](../MERGE_MILESTONES.md). This document remains the
+> design blueprint for the PCB itself.
+>
+> Known hardware note: the Andon LCC48 socket is effectively unobtainable, so the
+> sensor is held by a printed fixture clamping wires to the bottom castellations —
+> see [`mech/README.md`](mech/README.md).
+
 > ### Power: §§6.2 and 6.5 were rewritten on 2026-07-18 and now match the board.
 >
 > **[`../CAMERA_POWER_DESIGN.md`](../CAMERA_POWER_DESIGN.md) remains authoritative** for the
