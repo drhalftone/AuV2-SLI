@@ -174,7 +174,7 @@ module uart_ctrl #(
     input  wire [15:0] cam_spi_rdata,
     // M4: camera datapath status, 8 bytes at 0x3A..0x41. Read-only, and already
     // captured on a stable snapshot upstream -- see cam_frame_ft's cstat_r.
-    input  wire [127:0] cam_stat_i,
+    input  wire [143:0] cam_stat_i,
     // G0: vsync period measured at 100 MHz -- {max, min, last}, 24 bits each.
     // The master clock genlock would lock to; its stability bounds the
     // achievable lock quality. Regs 0x4A..0x52.
@@ -448,6 +448,11 @@ case (addr)
             8'h55:   rd_data  = maxexp_i[23:16];
             8'h56:   rd_data  = maxexp_i[31:24];
             8'h57:   rd_data  = maxexp_i[39:32];
+            // ---- 0x58/0x59: G1 -- ext_sync edge count, free-running, wraps.
+            // Read twice and check it moved: that is G1's functional proof
+            // that the projector's vsync actually reaches cam_frame_ft.
+            8'h58:   rd_data  = cam_stat_i[135:128];
+            8'h59:   rd_data  = cam_stat_i[143:136];
             default: rd_data  = 8'h00;
         endcase
     end

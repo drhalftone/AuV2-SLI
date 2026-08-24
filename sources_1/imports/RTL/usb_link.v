@@ -91,7 +91,7 @@ module usb_link #(
     output wire        cam_reset_n,
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
-    input  wire [127:0] cam_stat_i,      // M4 status 0x3A..0x41 + G0 monitor timestamps 0x42..0x49
+    input  wire [143:0] cam_stat_i,      // M4 0x3A..0x41, G0 timestamps 0x42..0x49, G1 sync count 0x58..0x59
     // M6a: a SECOND source of 0xA5 bytes, arriving over the FT601 instead of the
     // UART. Merged below rather than muxed: the two are alternative transports
     // for one protocol, never both mid-command at once, and the receiver already
@@ -230,14 +230,26 @@ module usb_link #(
     localparam [23:0] PER_MIN = 24'd200_000;         // 2 ms  -> 500 Hz
     localparam [23:0] PER_MAX = 24'd8_000_000;       // 80 ms -> 12.5 Hz
 
-    wire        per_ok  = (vsp_last_p >= PER_MIN) && (vsp_last_p <= PER_MAX);
-    wire [23:0] usable  = (vsp_last_p > RESERVE_TICKS)
-                            ? (vsp_last_p - RESERVE_TICKS) : 24'd0;
+    // PIPELINED, three stages. As a single combinational chain -- subtract, then a
+    // 24x15 multiply, then compare -- this took WNS from +0.082 ns to +0.014 ns.
+    // 14 ps is not margin. The value is read over a 115200 baud serial link and
+    // only changes once per status window, so spending three clocks on it costs
+    // literally nothing and hands the slack back.
+    reg        per_ok_r = 1'b0;
+    reg [23:0] usable_r = 24'd0;
+    reg [43:0] mul_r    = 44'd0;
+    always @(posedge clk100) begin
+        per_ok_r <= (vsp_last_p >= PER_MIN) && (vsp_last_p <= PER_MAX);
+        usable_r <= (vsp_last_p > RESERVE_TICKS)
+                      ? (vsp_last_p - RESERVE_TICKS) : 24'd0;
+        mul_r    <= usable_r * 44'd27962;
+    end
+    wire        per_ok  = per_ok_r;
+    wire [23:0] usable  = usable_r;
     // ticks (10 ns) -> exposure units (375 ns) is a divide by 37.5, done as
     // x 2/75 ~= x 27962 >> 20. 27962*75/2 = 1048575 against 2^20 = 1048576, so
     // the error is about 1 ppm -- far below the 375 ns quantisation itself.
-    wire [43:0] mexp_mul  = usable * 44'd27962;
-    wire [23:0] mexp_full = mexp_mul[43:20];
+    wire [23:0] mexp_full = mul_r[43:20];
     wire        mexp_rlim = per_ok && (mexp_full > 24'd65535);
     wire [15:0] mexp      = (!per_ok)  ? 16'd0
                           : (mexp_rlim ? 16'hFFFF : mexp_full[15:0]);

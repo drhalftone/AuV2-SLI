@@ -123,7 +123,7 @@ module cam_frame_ft #(
     // M4: the same status this module already assembles for its own UART, handed
     // to the parent so a MERGED build can report camera health on Port A without
     // taking Port A away from the SLI control plane. See cstat_r below.
-    output wire [127:0] cam_stat_o,
+    output wire [143:0] cam_stat_o,
     output wire        cam_stat_tog_o,
 
     // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
@@ -148,6 +148,13 @@ module cam_frame_ft #(
     output wire        cam_reset_n, cam_clk_pll,
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
+    // G1: the projector's vsync, crossed in from the parent's pixel-clock
+    // domain. ARRIVES AND IS DELIBERATELY IGNORED at G1 -- the camera still
+    // free-runs on TRIG_CY. Only the edge counter proves it got here, so that
+    // G2 can rewire the trigger in a design where the wire is already known
+    // good. Wiring the signal AND changing the trigger in one step would make
+    // any failure unattributable.
+    input  wire        ext_sync,
 
     input  wire        ft_clk,
     inout  wire [31:0] ft_data,
@@ -363,6 +370,20 @@ module cam_frame_ft #(
                 ms_cnt <= ms_cnt + 17'd1;
             end
         end
+    end
+
+    //------------------------------------------- G1: ext_sync edge counter
+    // Free-running, wraps. The host reads it twice and checks it moved --
+    // that is the whole of G1's functional proof. A 2FF sync because
+    // out_vsync is generated in the pixel-clock domain, whose frequency
+    // changes with the video mode.
+    reg [1:0]  xs_s  = 2'b00;
+    reg        xs_d  = 1'b0;
+    reg [15:0] xs_cnt = 16'd0;
+    always @(posedge clk) begin
+        xs_s <= {xs_s[0], ext_sync};
+        xs_d <= xs_s[1];
+        if (xs_s[1] && !xs_d) xs_cnt <= xs_cnt + 16'd1;
     end
 
     wire boot_cam_reset_n;
@@ -2080,7 +2101,7 @@ module cam_frame_ft #(
     // some from the new -- and a torn status word is worse than none, because it
     // reads as a plausible state that never existed. The toggle lets the parent
     // capture only when the whole word is known stable.
-    reg [127:0] cstat_r  = 128'd0;
+    reg [143:0] cstat_r  = 144'd0;
     reg        cstat_tog = 1'b0;
     assign cam_stat_o     = cstat_r;
     assign cam_stat_tog_o = cstat_tog;
@@ -2114,7 +2135,8 @@ module cam_frame_ft #(
                 // silently truncated from the TOP -- losing dur_p and shifting
                 // nothing else, so every other field would still have looked
                 // right. Arithmetic checked rather than assumed.
-                cstat_r <= { dur_p,                             // 0x48..0x49
+                cstat_r <= { xs_cnt,                            // 0x58..0x59
+                             dur_p,                             // 0x48..0x49
                              rise_max_p,                        // 0x45..0x47
                              rise_min_p,                        // 0x42..0x44
                              expo_cur,

@@ -40,7 +40,13 @@ import os, sys, time
 
 import serial
 
-PORT = sys.argv[1] if len(sys.argv) > 1 else "COM6"
+PORT = "COM6"
+SECONDS = 5.0
+for _a in sys.argv[1:]:
+    if _a.startswith("--seconds="):
+        SECONDS = float(_a.split("=", 1)[1])
+    else:
+        PORT = _a
 SYNC, OP_R = 0xA5, 0x52
 TICK_NS = 10.0
 
@@ -82,24 +88,44 @@ def main():
 
     print("   sample     last_us      Hz      min_us     max_us    jitter_us")
     print("   " + "-" * 62)
-    jit = []
-    for i in range(12):
+    jit, lows, highs, lasts = [], [], [], []
+    t0, i, bad = time.time(), 0, 0
+    while time.time() - t0 < SECONDS:
         last, mn, mx = rd24(ser, 0x4A), rd24(ser, 0x4D), rd24(ser, 0x50)
         if None in (last, mn, mx):
-            print("   %6d   (register read timeout)" % i)
-            time.sleep(0.4)
+            bad += 1
+            time.sleep(0.3)
             continue
         lu, mnu, mxu = last * TICK_NS / 1e3, mn * TICK_NS / 1e3, mx * TICK_NS / 1e3
         hz = 1e6 / lu if lu else 0.0
         jit.append(mxu - mnu)
-        print("   %6d  %10.3f  %7.3f  %10.3f %10.3f   %10.3f"
-              % (i, lu, hz, mnu, mxu, mxu - mnu))
-        time.sleep(0.35)
+        lows.append(mnu); highs.append(mxu); lasts.append(lu)
+        if i < 12 or (i % 10) == 0:      # keep long runs readable
+            print("   %6d  %10.3f  %7.3f  %10.3f %10.3f   %10.3f"
+                  % (i, lu, hz, mnu, mxu, mxu - mnu))
+        i += 1
+        time.sleep(0.30)
+    ran = time.time() - t0
     ser.close()
 
     if jit:
         j = sum(jit) / len(jit)
-        print("\n  mean jitter over %d windows: %.3f us" % (len(jit), j))
+        # THE NUMBER THAT MATTERS FOR G0 IS THE AGGREGATE, NOT A WINDOW.
+        # min/max reset every status window (~0.5 s), so a per-window jitter only
+        # describes ~50 frames. G0 asks for >= 30 s, which means the excursion
+        # across EVERY window in the run -- a slow wander would hide completely
+        # inside per-window figures that each look tiny.
+        span = max(highs) - min(lows)
+        print("\n  ran %.1f s, %d windows, %d read failures" % (ran, len(jit), bad))
+        print("  mean period      : %.3f us  (%.4f Hz)"
+              % (sum(lasts) / len(lasts), 1e6 / (sum(lasts) / len(lasts))))
+        print("  per-window jitter: %.3f us mean" % j)
+        print("  AGGREGATE across the whole run: min %.3f  max %.3f  span %.3f us"
+              % (min(lows), max(highs), span))
+        if ran < 30.0:
+            print("\n  NOTE: G0 asks for >= 30 s and this ran %.1f s. Not a sign-off."
+                  % ran)
+        j = span
         if j <= 0.02:
             print("  -> at the 10 ns measurement floor. This master is clean enough")
             print("     that the camera's own trigger-to-exposure behaviour, not the")

@@ -237,10 +237,10 @@ architecture Behavioral of Au2_SLI is
     signal rpl_we_w    : std_logic;
     signal rpl_full_w  : std_logic;
 
-    signal cam_stat_raw : std_logic_vector(127 downto 0);
+    signal cam_stat_raw : std_logic_vector(143 downto 0);
     signal cam_stat_tog : std_logic;
     signal cst_s        : std_logic_vector(2 downto 0) := "000";
-    signal cam_stat_q   : std_logic_vector(127 downto 0) := (others => '0');
+    signal cam_stat_q   : std_logic_vector(143 downto 0) := (others => '0');
 
     -- Port A arbitration, see the CAM_DIAG generic.
     signal sli_usb_tx : std_logic;
@@ -434,7 +434,7 @@ architecture Behavioral of Au2_SLI is
                cam_trigger : out STD_LOGIC_VECTOR(2 downto 0);
                cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
                vs_meas     : in  STD_LOGIC := '0';
-               cam_stat_i  : in  STD_LOGIC_VECTOR(127 downto 0) := (others => '0');
+               cam_stat_i  : in  STD_LOGIC_VECTOR(143 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                rx2_valid   : in  STD_LOGIC := '0';
                rpl_byte    : out STD_LOGIC_VECTOR(7 downto 0);
@@ -591,7 +591,8 @@ architecture Behavioral of Au2_SLI is
                clk200_ext : in std_logic; clk100_ext : in std_logic;
                led    : out std_logic_vector(7 downto 0);
                usb_tx : out std_logic;
-               cam_stat_o     : out std_logic_vector(127 downto 0);
+               cam_stat_o     : out std_logic_vector(143 downto 0);
+               ext_sync       : in  std_logic := '0';
                cam_stat_tog_o : out std_logic;
                ctl_byte       : out std_logic_vector(7 downto 0);
                ctl_valid      : out std_logic;
@@ -1160,6 +1161,9 @@ i_cam_frame_ft : cam_frame_ft
         clk200_ext => clk200, clk100_ext => clk100_g,
         led => open, usb_tx => cam_usb_tx,
         cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
+        -- G1: the projector's vsync reaches the camera module. Ignored there
+        -- for now; only the edge counter proves the wire works.
+        ext_sync => out_vsync,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 
