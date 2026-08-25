@@ -46,6 +46,7 @@ C_THREAD_OD    = 25.4        # 1"-32 UN-2A major diameter
 C_SHOULDER_OD  = 32.0        # typical flange shoulder; the seat must exceed this
 
 COLORS = {"box": (0.32, 0.34, 0.38), "boss": (0.28, 0.30, 0.33)}
+EPS = 1e-9
 
 
 def circle_phase(cx, cy, r, n, phase):
@@ -64,6 +65,70 @@ def circle_phase(cx, cy, r, n, phase):
     """
     return [(cx + r * math.cos(2.0 * math.pi * i / n + phase),
              cy + r * math.sin(2.0 * math.pi * i / n + phase)) for i in range(n)]
+
+
+def aperture_notched(cx, cy, w, h, bosses, r, seg=10):
+    """A rectangle whose four corners are pushed OUT around each boss, CCW.
+
+    The thick wall's inner face wants to sit inboard of the board edge, but that
+    puts it straight through the screw-head pockets: each pocket's centre is
+    inside the rectangle while the circle reaches past BOTH edges near the
+    corner. Cutting it as a hole is not an option -- a hole that crosses its own
+    outline is not a hole, and prism() would produce a solid that is not
+    watertight rather than an error.
+
+    So the aperture is the UNION of the rectangle with a circle at each boss.
+    The pocket then lies wholly in the void and needs no hole at all, and the
+    wall stays a CONNECTED ring with material still outboard of every pocket --
+    which four separate bars, the obvious alternative, would not.
+
+    Light is not lost at the notches: the washer (z 0 -> washer_t) and the column
+    above it are the same diameter and fill exactly that region, sealing down
+    onto the board at each corner.
+    """
+    hw, hh = w / 2.0, h / 2.0
+    x0, x1, y0, y1 = cx - hw, cx + hw, cy - hh, cy + hh
+
+    def boss(sx, sy):
+        for b in bosses:                      # (x, y) or (x, y, r) -- only xy matters
+            px, py = b[0], b[1]
+            if (px - cx) * sx > 0 and (py - cy) * sy > 0:
+                return px, py
+        sys.exit("aperture_notched: no boss in quadrant (%+d, %+d)" % (sx, sy))
+
+    def leg(a):                       # half-chord of the circle at offset a
+        if abs(a) >= r:
+            sys.exit("aperture_notched: boss is %.2f mm from the aperture edge but "
+                     "its radius is only %.2f -- it no longer straddles the corner, "
+                     "so the notch is unnecessary. Reduce --overlap." % (abs(a), r))
+        return math.sqrt(r * r - a * a)
+
+    # CCW: ...S edge -> BR -> E edge -> TR -> N edge -> TL -> W edge -> BL -> ...
+    # Each corner contributes the arc from where the incoming edge meets its
+    # circle to where the outgoing edge does; the straight runs are implied by
+    # joining one corner's exit to the next corner's entry.
+    corners = []
+    nx, ny = boss(+1, -1)                                            # BR
+    corners.append(((nx - leg(ny - y0), y0), (x1, ny + leg(x1 - nx)), (nx, ny)))
+    nx, ny = boss(+1, +1)                                            # TR
+    corners.append(((x1, ny - leg(x1 - nx)), (nx - leg(y1 - ny), y1), (nx, ny)))
+    # Leaving TL we head DOWN the W edge, so the exit is BELOW the notch centre;
+    # arriving at BL we are still heading down, so the entry is ABOVE it. Getting
+    # either the wrong way round runs the arc the long way and closes the polygon
+    # back over the pocket -- which reads as a plausible aperture and blocks two
+    # of the four screws.
+    nx, ny = boss(-1, +1)                                            # TL
+    corners.append(((nx + leg(y1 - ny), y1), (x0, ny - leg(nx - x0)), (nx, ny)))
+    nx, ny = boss(-1, -1)                                            # BL
+    corners.append(((x0, ny + leg(nx - x0)), (nx + leg(ny - y0), y0), (nx, ny)))
+
+    pts = []
+    for (ex, ey), (fx, fy), (nx, ny) in corners:
+        a1 = math.atan2(ey - ny, ex - nx)
+        a2 = math.atan2(fy - ny, fx - nx)
+        sweep = (a2 - a1) % (2.0 * math.pi)
+        pts += sw.arc(nx, ny, r, a1, a1 + sweep, seg)
+    return sw.dedupe(pts)
 
 
 def seam_profile(cx, cy, out_w, out_h, wall, tongue_w, clear, corner_r, seg=6):
@@ -206,7 +271,7 @@ def build(args):
     #    top-side component, so it is derived from the board and then checked,
     #    the same way --expose derives the socket tile's outer size.
     lip_ov = lip_open_w = lip_open_h = None
-    if args.lip:
+    if args.thick_wall:
         def inset_of(c):
             mx, my = to_model(c["x"], c["y"])
             hw, hh = c["w"] / 2.0, c["h"] / 2.0
@@ -215,7 +280,7 @@ def build(args):
         top_side = [c for c in comps if c["layer"] == "F.Cu"]
         nearest = min(top_side, key=inset_of)
         headroom = inset_of(nearest) - args.wall_clear
-        lip_ov = args.lip_overlap if args.lip_overlap is not None else headroom
+        lip_ov = args.overlap if args.overlap is not None else headroom
         if lip_ov <= 0:
             sys.exit("NO ROOM FOR A LIP: %s (%s) is %.2f mm from the board edge and "
                      "--wall-clear is %.2f." % (nearest["ref"],
@@ -231,14 +296,49 @@ def build(args):
             if inset_of(c) >= lip_ov:
                 continue
             hz = glass_z if c["ref"] == "U1" else body_height(c["lib"])
-            if hz >= args.lip_relief:
+            if hz >= args.board_relief:
                 sys.exit(
                     "LIP FOULS %s (%s): it lies %.2f mm from the board edge, inside a "
                     "%.2f mm overhang,\nand stands %.2f mm tall against a %.2f mm relief.\n"
-                    "Either --lip-overlap below %.2f, or --lip-relief above %.2f."
+                    "Either --overlap below %.2f, or --board-relief above %.2f."
                     % (c["ref"], c["lib"].split(":")[-1], inset_of(c), lip_ov,
-                       hz, args.lip_relief, inset_of(c), hz))
+                       hz, args.board_relief, inset_of(c), hz))
         lip_open_w, lip_open_h = bw - 2 * lip_ov, bh - 2 * lip_ov
+        if args.bosses:
+            aperture = aperture_notched(cx, cy, lip_open_w, lip_open_h, mh,
+                                        args.head_dia / 2.0 + args.wall_clear,
+                                        max(args.segments // 6, 6))
+        else:
+            aperture = sw.rect(cx, cy, lip_open_w, lip_open_h)
+
+        # THE SCREWS MUST STILL GO IN. The notches are the whole reason the wall
+        # can be this thick, and a wrong one does not look wrong: the first
+        # version of aperture_notched() ran two of the four arcs the long way
+        # round, producing a closed, valid, entirely plausible aperture that
+        # quietly buried two screw heads in 1 mm of wall. Nothing else here would
+        # have caught it -- the solid was watertight and the volume was right.
+        # So the head circle is walked against the aperture, every boss, always.
+        if args.bosses:
+            def in_void(px, py):
+                c, n = False, len(aperture)
+                for k in range(n):
+                    ax, ay = aperture[k]
+                    bx, by = aperture[(k + 1) % n]
+                    if (ay > py) != (by > py) and px < (bx - ax) * (py - ay) / (by - ay) + ax:
+                        c = not c
+                return c
+            head_r = args.head_dia / 2.0
+            for px, py, _ in mh:
+                blocked = [a for a in range(0, 360, 5)
+                           if not in_void(px + head_r * math.cos(math.radians(a)),
+                                          py + head_r * math.sin(math.radians(a)))]
+                if blocked:
+                    sys.exit(
+                        "WALL BURIES A SCREW HEAD at (%.2f, %.2f): %d of 72 points on the "
+                        "%.1f mm\nhead circle fall in wall material. The aperture notch for "
+                        "that corner is wrong\nor too small -- a driver could not reach the "
+                        "screw and the box could not be\nfitted." % (px, py, len(blocked),
+                                                                     args.head_dia))
         # It must not intrude on the light cone. The bore is the widest the cone
         # ever is, so clearing the bore's footprint clears everything below it.
         if (abs(ox - cx) + bore_r > lip_open_w / 2.0 or
@@ -277,11 +377,30 @@ def build(args):
                        * args.groove_depth)
         wall_bot = z_gt
 
-    n = "walls"
-    hs = [sw.reverse(inner)]
-    step.prism(outer, wall_bot, top_under, n, COLORS["box"], holes=hs)
-    expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(inner)))
-                   * (top_under - wall_bot))
+    # ABOVE THE BOARD THE WALL IS SIMPLY THICKER. The cavity has to be the board
+    # plus --pcb-clear only where the BOARD is; above its top face nothing needs
+    # that width, so the wall steps inboard and stays there to the top. That is
+    # what closes the 0.75 mm slot the LEDs were coming through -- not a ledge
+    # hung off the wall, just a wall with a rebate at the bottom to clear the
+    # board. One face, no shelf.
+    if args.thick_wall:
+        n = "wall_lower"                       # the rebate that clears the board
+        if args.board_relief - wall_bot > EPS:
+            step.prism(outer, wall_bot, args.board_relief, n, COLORS["box"],
+                       holes=[sw.reverse(inner)])
+            expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(inner)))
+                           * (args.board_relief - wall_bot))
+        n = "walls"
+        step.prism(outer, args.board_relief, top_under, n, COLORS["box"],
+                   holes=[sw.reverse(aperture)])
+        expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(aperture)))
+                       * (top_under - args.board_relief))
+    else:
+        n = "walls"
+        step.prism(outer, wall_bot, top_under, n, COLORS["box"],
+                   holes=[sw.reverse(inner)])
+        expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(inner)))
+                       * (top_under - wall_bot))
 
     # the top face, with the lens clearance bore
     n = "top"
@@ -294,19 +413,6 @@ def build(args):
     step.prism(outer, top_under, top_surf, n, COLORS["box"], holes=tholes)
     expected[n] = (abs(sw.signed_area(outer))
                    - sum(abs(sw.signed_area(h)) for h in tholes)) * args.top_t
-
-    # The light lip: a ledge from the cavity wall inboard, standing off the board.
-    # Its outer profile IS the wall's inner profile, so the two merge into one
-    # wall on print rather than meeting at a seam a ray could find. The aperture
-    # is a plain rectangle -- rounding it would give back overlap at the corners,
-    # which are the hardest place to seal and the furthest from the sensor.
-    if args.lip:
-        n = "lip"
-        aperture = sw.reverse(sw.rect(cx, cy, lip_open_w, lip_open_h))
-        step.prism(inner, args.lip_relief, args.lip_relief + args.lip_t, n,
-                   COLORS["box"], holes=[aperture])
-        expected[n] = ((abs(sw.signed_area(inner)) - abs(sw.signed_area(aperture)))
-                       * args.lip_t)
 
     # Optional locating bosses on the PCB's own corner holes.
     #
@@ -385,25 +491,27 @@ def build(args):
              z_table + args.groove_depth, t, leg))
         w("           mates gen_base_box.py's tongue -- both halves import "
           "seam_profile()\n           from this file, so the joint is defined once\n")
-    if args.lip:
+    if args.thick_wall:
         run = args.pcb_clear + lip_ov
-        w("lip        overhangs the board %.2f mm all round, aperture %.1f x %.1f,\n"
-          "           z %.2f -> %.2f, standing %.2f mm off the board (never touching it)\n"
-          % (lip_ov, lip_open_w, lip_open_h, args.lip_relief,
-             args.lip_relief + args.lip_t, args.lip_relief))
-        w("           %s the %.2f mm slot round the board: a ray must climb it, run\n"
+        w("wall       %.2f thick where the board is, %.2f thick above it. It steps\n"
+          "           inboard %.2f mm at z %.2f and stays there to the top face.\n"
+          % (t, t + args.pcb_clear + lip_ov, lip_ov, args.board_relief))
+        w("           inner face %.1f x %.1f, notched round each screw pocket so an M2\n"
+          "           head still clears -- the ledge this replaced left it only 3.20 mm\n"
+          % (lip_open_w, lip_open_h))
+        w("           CLOSES the %.2f mm slot round the board: a ray must climb it, run\n"
           "           %.2f mm inboard through a %.2f mm channel, then turn back up --\n"
           "           %.1f:1, so nothing within %.0f deg of horizontal gets through\n"
-          % ("CLOSES" if lip_ov > 0 else "", args.pcb_clear, run, args.lip_relief,
-             run / args.lip_relief, math.degrees(math.atan2(args.lip_relief, run))))
-        if args.lip_overlap is None:
+          % (args.pcb_clear, run, args.board_relief,
+             run / args.board_relief, math.degrees(math.atan2(args.board_relief, run))))
+        if args.overlap is None:
             w("           overlap DERIVED: %s (%s) sits %.2f mm in, less %.2f clearance\n"
               % (nearest["ref"], nearest["lib"].split(":")[-1],
                  inset_of(nearest), args.wall_clear))
         w("           print this part in a MATTE BLACK material -- the geometry stops\n"
           "           the direct path, absorption is what deals with the scattered rest\n")
     else:
-        w("lip        NONE -- the cavity is open to the boards below through a %.2f mm\n"
+        w("wall       NOT thickened -- the cavity is open to the boards below through a %.2f mm\n"
           "           slot all round. This is the path the Pt's LEDs used.\n" % args.pcb_clear)
     ok = check_step.validate(OUT, expected, out=open(os.devnull, "w"))
     w("volumes    %s\n" % ("OK" if ok else "MISMATCH"))
@@ -457,20 +565,18 @@ def main():
                         "tall so the tongue can never bottom out -- the board stack "
                         "is the axial datum, not this joint")
     p.add_argument("--arc-seg", type=int, default=6)
-    p.add_argument("--no-lip", dest="lip", action="store_false",
+    p.add_argument("--no-thick-wall", dest="thick_wall", action="store_false",
                    help="omit the light lip. The cavity is then open to the boards "
                         "below through a %s mm slot all round, which is how the Pt's "
                         "LEDs reached the sensor.")
-    p.add_argument("--lip-overlap", type=float, default=None,
+    p.add_argument("--overlap", type=float, default=None,
                    help="how far the lip reaches over the board, mm. DERIVED from the "
                         "nearest top-side component when not given; passing a larger "
                         "value is checked against every part it would then cover.")
-    p.add_argument("--lip-relief", type=float, default=0.30,
+    p.add_argument("--board-relief", type=float, default=0.30,
                    help="gap between the board's top face and the lip's underside, mm. "
                         "The lip must NOT touch the board -- the four washers are the "
                         "seating datum and a proud lip would fight them (default 0.30)")
-    p.add_argument("--lip-t", type=float, default=1.20,
-                   help="lip thickness in Z, mm")
     p.add_argument("--corner-r", type=float, default=2.0)
     p.add_argument("--segments", type=int, default=64)
     p.add_argument("--timestamp", default="2026-08-13T00:00:00")

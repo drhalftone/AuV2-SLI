@@ -87,47 +87,71 @@ wall is stiffer than one standing alone.
 > board's hole, and this README described that for a while after the code had moved on. It is
 > now a washer-and-through-screw. If you are reading a Ø5 pin anywhere else, that text is stale.
 
-### The light lip — stray light from the boards below
+### The thick wall — stray light from the boards below
 
 **Symptom: the LED array on the Pt board was lighting the sensor.** The path was not the
 lens. The cavity is the board plus `--pcb-clear` on every side, which leaves a **0.75 mm slot
 running the full height of the wall, all the way around the board** — a direct opening from
 the space below the camera PCB, where the Pt's LEDs are, into the optical cavity.
 
-The lip is a ledge standing inboard off the wall, overhanging the board edge, so a ray has to
-climb the slot, run inward under the lip, and turn back up:
+The fix is not a part added to the box; it is the box's own wall being thicker. The cavity has
+to be board-plus-clearance only **where the board is**. Above its top face nothing needs that
+width, so the wall steps inboard and stays there to the top:
 
 ```
-lip       overhangs the board 1.40 mm all round, aperture 52.2 x 42.2
-          z 0.30 -> 1.50, standing 0.30 mm off the board (never touching it)
-          2.15 mm inboard through a 0.30 mm channel  ->  7.2:1
-          nothing within 8 deg of horizontal gets through
+wall   3.00 thick where the board is, 5.15 thick above it
+       steps inboard 1.40 mm at z = 0.30 and holds to the top face
+       inner face 52.2 x 42.2
+       2.15 mm inboard through a 0.30 mm channel  ->  7.2:1
+       nothing within 8 deg of horizontal gets through
 ```
 
-**The overhang is derived, not chosen.** How far the lip may reach is set by the nearest
-top-side component — **C31, an 0805, 1.80 mm in from the edge** — less `--wall-clear`, giving
-1.40 mm. That is the same discipline as the socket tile's `--expose`. Staying under 1.80 mm is
-what matters: with nothing beneath the lip, it can sit **0.30 mm** off the board instead of
-having to clear a 1.05 mm capacitor, and a tighter channel is a better trap. Pass
-`--lip-overlap` to reach further and every part it would then cover is checked against the
-relief, by name and height, rather than assumed to fit.
+One face with a rebate at the bottom to clear the board — not a ledge hung off the wall.
 
-**It must not touch the board.** The four washers are the seating datum; a lip that came down
-proud would fight them and could rock or stress the PCB. Hence the relief, and hence the lip
-being cut short deliberately — the same reasoning as the shroud's `--relief`.
+**The step is derived, not chosen.** How far the wall may reach over the board is set by the
+nearest top-side component — **C31, an 0805, 1.80 mm in from the edge** — less `--wall-clear`,
+giving 1.40 mm. Same discipline as the socket tile's `--expose`. Staying under 1.80 mm is what
+matters: with nothing beneath it, the step can sit **0.30 mm** above the board instead of
+having to clear a 1.05 mm capacitor, and a tighter channel is a better trap. Pass `--overlap`
+to reach further and every part it would then cover is checked against the relief, by name and
+height.
+
+**It must not touch the board.** The four washers are the seating datum; wall material coming
+down proud would fight them and could rock the PCB. Hence `--board-relief`.
 
 **It is continuous all the way round**, including across the side where the base box's wall is
-left off for LED visibility. The lip is in the *upper* half and the LED opening is in the
-*lower* one, so they are independent: the opening can be as generous as you like without
+left off for LED visibility. The step is in the *upper* half and the LED opening is in the
+*lower* one, so they are independent — the opening can be as generous as you like without
 reopening the path to the sensor.
 
-Its outer profile *is* the wall's inner profile, so the two merge into one wall on print rather
-than meeting at a seam a ray could find. The aperture is a plain rectangle — rounding it would
-give back overlap at the corners, which are the hardest place to seal.
+#### The notches, and the screws they nearly buried
+
+A thick wall runs straight through the four screw-head pockets: each pocket's centre is inside
+the aperture rectangle while its circle reaches past **both** edges near the corner. Cutting it
+as a hole is not available — a hole crossing its own outline is not a hole, and `prism()` would
+emit a solid that is not watertight rather than an error. So the aperture is the **union of the
+rectangle with a circle at each boss**: the pocket lies wholly in the void, needs no hole, and
+the wall stays a **connected ring** with material still outboard of every pocket (four separate
+bars would not). Nothing is lost optically — the washer and the column are the same diameter
+and fill exactly those notches, sealing onto the board at each corner.
+
+> **This bit bit.** The first version ran two of the four arcs the long way round. The result
+> was a closed, valid, entirely plausible aperture that buried two of the four screw heads in
+> 1 mm of wall. The solid was watertight, the genus was right, the volume matched — every check
+> in this repo passed. `gen_lens_box.py` now walks the full head circle against the aperture at
+> every boss on every run and refuses:
+>
+> ```
+> WALL BURIES A SCREW HEAD at (-33.50, 19.50): 23 of 72 points on the 4.2 mm
+> head circle fall in wall material.
+> ```
+>
+> The shelf this replaced had the same defect in a quieter form — it left **3.20 mm of clear
+> width for a 3.80 mm M2 head** and nothing said so.
 
 **Geometry stops the direct path; absorption deals with the rest.** Print this part in a
 **matte black** material. A light-coloured or translucent print will scatter round the
-labyrinth no matter how good the numbers are. `--no-lip` returns the old open cavity.
+labyrinth no matter how good the numbers are. `--no-thick-wall` returns the old open cavity.
 
 ### The seam joint — tongue and groove
 
