@@ -103,6 +103,56 @@ COLORS = {"box": (0.32, 0.34, 0.38), "boss": (0.28, 0.30, 0.33)}
 EDGE_MIN = 0.80          # minimum material from a hole to the edge of its bar
 EPS = 1e-6
 
+# ---------------------------------------------------------------------------
+# The Alchitry ports, measured from the vendor's own CAD
+# ---------------------------------------------------------------------------
+# Extracted 2026-08-25 from the OFFICIAL Alchitry models:
+#     https://cdn.alchitry.com/docs/Hd-V2/Hd.step       (45.6 MB)
+#     https://cdn.alchitry.com/docs/Ft-V2/FtPlus.step   (65.3 MB)
+# Those files are NOT committed -- they are 110 MB of vendor CAD. What is
+# recorded here is the result of reading them, so the enclosure rebuilds
+# without them.
+#
+# HOW THE FRAMES WERE TIED TOGETHER, because this is the part that could
+# silently be wrong: all three boards carry the same DF40 sites, so the sites
+# are the datum. Hd and Ft+ both place them at (16.5, 41.0) / (38.0, 4.0) /
+# (38.0, 41.0), and the camera board's plugs land on exactly those three points
+# once KiCad's Y-DOWN is converted to the STEP frame's Y-UP. That gives
+#
+#     model_x = alchitry_x - 36        model_y = alchitry_y - 23
+#
+# and it is verified, not assumed -- three sites match to 0.00 mm. (Read as a
+# mirrored stack the numbers also "work", which is why the DF40 check matters:
+# a mirror would put every port on the wrong face.)
+#
+# WHAT WAS MEASURED           placement origins and footprint extents:
+#     Hd   MICRO-HDMI  x2     ay 10.00..15.00 and 22.50..27.50, at ax -0.54..4.00
+#     Ft+  USB-C-MOLEX        placed at (4.50, 22.50), same rotation
+# All three sit on the ax ~ 0 edge, which is this enclosure's WEST face.
+#
+# WHAT IS NOT MEASURED, AND WHY THE WINDOWS ARE BIGGER THAN THE CONNECTORS:
+# the openings have to pass a CABLE, and a cable's overmold is not in any board
+# CAD -- it is not part of the board. The along-edge span and the height below
+# therefore come from typical micro-HDMI (Type D) and USB-C plug overmolds,
+# ~12 mm wide and ~7 mm tall, centred on the measured port centres. Those two
+# figures are the only ones here that are not read off the vendor model, and
+# they are stamped into the STEP description as such.
+#
+# THE TWO HDMI PORTS SHARE ONE SLOT. Their centres are 12.50 mm apart (ay 12.50
+# and 25.00) and a plug overmold is about 12 mm wide, so two separate windows
+# would merge anyway -- and two cables cannot sit side by side at that pitch
+# regardless. One slot spanning both is the honest shape.
+PORT_RISE = 5.10         # overmold above the board surface, mm
+PORT_DROP = 1.90         # ...and below it
+ALCHITRY_PORTS = [
+    # board index counted from the TOP of the stack: camera 0, Pt 1, Ft+ 2, Hd 3
+    dict(port="micro-HDMI x2", board=3, along=(6.50, 31.00),
+         basis="MICRO-HDMI footprints at ay 10.00-15.00 and 22.50-27.50 (Hd.step)"),
+    dict(port="USB-C", board=2, along=(21.00, 33.00),
+         basis="USB-C-MOLEX placed at ay 22.50 (FtPlus.step)"),
+]
+PORT_FACE = "W"
+
 
 # ---------------------------------------------------------------------------
 # 2D helpers
@@ -354,6 +404,25 @@ def build(args):
         if f not in ("N", "S", "E", "W"):
             sys.exit("--open-face %r is not N/S/E/W" % f)
     windows = [parse_window(s, board, z_stack_bot) for s in args.window]
+
+    # The measured Alchitry ports. Their Z comes from the stack itself -- each
+    # connector stands on its own board's top face -- so nothing about the
+    # height is guessed except the overmold reach either side of it.
+    if args.alchitry_ports:
+        pitch = (args.stack_h - args.board_t) / 3.0
+        for p in ALCHITRY_PORTS:
+            top = -p["board"] * pitch + args.stack_h       # board top, above Hd bottom
+            lo, hi = p["along"]
+            windows.append(dict(edge=PORT_FACE,
+                                lo=board["y0"] + lo, hi=board["y0"] + hi,
+                                z0=z_stack_bot + top - PORT_DROP,
+                                z1=z_stack_bot + top + PORT_RISE,
+                                spec="%s (measured)" % p["port"]))
+        if not args.window_source:
+            args.window_source = (
+                "Alchitry Hd.step / FtPlus.step (cdn.alchitry.com, 2026-08-25): "
+                "port positions MEASURED, frames tied via the DF40 sites; "
+                "opening sizes are cable-overmold clearance, ~12 x 7 mm, NOT from CAD")
     if windows and not args.window_source:
         sys.exit("--window given without --window-source.\n"
                  "Say where the numbers came from. There is no CAD for the Hd+, Ft+ or\n"
@@ -619,6 +688,11 @@ def main():
     p.add_argument("--stack-h", type=float, default=STACK_H,
                    help="MEASURED camera PCB top surface -> Hd+ bottom surface, mm "
                         "(default %.2f). Not derived from board thickness x gap." % STACK_H)
+    p.add_argument("--board-t", type=float, default=1.60,
+                   help="ASSUMED board thickness, mm. Only used to place the "
+                        "INTERMEDIATE boards for --alchitry-ports: the 19.00 mm stack "
+                        "is measured but how it divides is not, so this sets where the "
+                        "Ft+ and Hd faces sit and therefore each port's height.")
     p.add_argument("--z-split", type=float, default=Z_SPLIT,
                    help="mating plane; must equal the lens box's wall bottom")
     p.add_argument("--wall", type=float, default=3.0, help="wall thickness, mm")
@@ -645,6 +719,11 @@ def main():
     p.add_argument("--window", action="append", default=[],
                    help="edge:along:width:zbot:ztop -- a measured cutout. Repeatable. "
                         "Requires --window-source.")
+    p.add_argument("--alchitry-ports", action="store_true",
+                   help="cut the WEST-face openings for the Hd's two micro-HDMI "
+                        "ports and the Ft+'s USB-C, at positions MEASURED from "
+                        "the vendor STEP models (see ALCHITRY_PORTS at the top of "
+                        "this file). Sized to pass a cable, not just the connector.")
     p.add_argument("--window-source", default=None,
                    help="WHERE THE WINDOW NUMBERS CAME FROM. Stamped into the STEP.")
     p.add_argument("--closed-box", action="store_true",

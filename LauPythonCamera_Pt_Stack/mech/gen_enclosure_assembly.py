@@ -103,6 +103,9 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--open-face", action="append", default=["E"],
                    help="passed through to gen_base_box.py (default E)")
+    p.add_argument("--alchitry-ports", action="store_true",
+                   help="pass through to gen_base_box.py: the measured WEST-face "
+                        "HDMI and USB-C openings")
     p.add_argument("--stack-h", type=float, default=STACK_H)
     p.add_argument("--board-t", type=float, default=BOARD_T,
                    help="ASSUMED board thickness for the reference plates, mm")
@@ -120,7 +123,7 @@ def main():
     # one of them leaves the tongue and the groove fill occupying the same
     # millimetre, which gen_base_box.py refuses -- but only if it is told.
     lens_argv = ["gen_lens_box.py", "--bosses"]
-    base_argv = ["gen_base_box.py"]
+    base_argv = ["gen_base_box.py"] + (["--alchitry-ports"] if args.alchitry_ports else [])
     for f in args.open_face:
         lens_argv += ["--open-face", f]
         base_argv += ["--open-face", f]

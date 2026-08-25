@@ -566,6 +566,67 @@ the lens box *is* the upper half with no change at all. The base box picks up ex
 python gen_base_box.py --open-face E          # buildable today, no measurements needed
 ```
 
+### The HDMI and USB-C openings — measured from Alchitry's own CAD
+
+```
+python gen_base_box.py --open-face E --alchitry-ports
+```
+
+Positions come from the **official** Alchitry models, not from guesswork:
+
+```
+https://cdn.alchitry.com/docs/Hd-V2/Hd.step       45.6 MB   MICRO-HDMI x2
+https://cdn.alchitry.com/docs/Ft-V2/FtPlus.step   65.3 MB   USB-C-MOLEX
+```
+
+Neither is committed — that is 110 MB of vendor CAD. The *result* of reading them lives in
+`ALCHITRY_PORTS` at the top of `gen_base_box.py`, so the enclosure rebuilds without them.
+(`Br.step` at the same CDN path is byte-identical in size to the copy already on this machine,
+which is how the source was confirmed.) **There is no Pt V2 model** — five plausible CDN paths
+all 403'd; Au and Br are there, Pt is not. That is fine here: the Pt is programmed before the
+stack goes in the box.
+
+**Tying the frames together is the part that could silently be wrong.** All three boards carry
+the same DF40 sites, so the sites are the datum:
+
+| | 50-pin | 80-pin | 80-pin |
+|---|---|---|---|
+| Hd / Ft+ | (16.5, 41.0) | (38.0, 4.0) | (38.0, 41.0) |
+| camera board plugs | (16.5, 41.0) | (38.0, 4.0) | (38.0, 41.0) |
+
+They match to 0.00 mm — but only once KiCad's **Y-down** is converted to the STEP frame's
+**Y-up**, giving `model_x = alchitry_x − 36`, `model_y = alchitry_y − 23`. Read carelessly the
+same numbers look like a *mirrored* stack, and that reading also "works" arithmetically — it
+just puts every port on the wrong face. The DF40 check is what settles it.
+
+**What was measured, and where it put the ports:**
+
+| board | part | alchitry | model |
+|---|---|---|---|
+| Hd | MICRO-HDMI #1 | ay 10.00…15.00 @ ax −0.54…4.00 | y −13.00…−8.00 |
+| Hd | MICRO-HDMI #2 | ay 22.50…27.50 @ ax −0.54…4.00 | y −0.50…4.50 |
+| Ft+ | USB-C-MOLEX | placed (4.50, 22.50) | (−31.50, −0.50) |
+
+All three are on the `ax ≈ 0` edge — the **WEST** face. The east opening is the LED window
+(the camera PCB's notch at ax 49.5…55); the two are opposite ends of the board and always were.
+
+**The openings are sized for a CABLE, not a connector, and that part is not from CAD.** A
+plug's overmold is not on the board, so it is not in any board model. The along-edge span and
+the height come from typical micro-HDMI (Type D) and USB-C overmolds, ~12 × 7 mm, centred on
+the measured port centres — and that distinction is stamped into the STEP description rather
+than left to be inferred.
+
+**The two HDMI ports share one slot.** Their centres are 12.50 mm apart and an overmold is
+about 12 mm wide, so two windows would merge anyway — and two cables cannot sit side by side at
+that pitch regardless. One slot spanning both is the honest shape.
+
+Heights are *derived*, not guessed: each connector stands on its own board's top face, and the
+board faces follow from the measured 19.00 mm stack. Only how that stack divides is assumed
+(`--board-t`, 1.60 mm), which is the same caveat the reference plates carry.
+
+> The wall keeps a solid band from z −6.50 to −1.80 across the full width, so the seam tongue
+> is still supported above both openings.
+
 ### It refuses to emit a box no cable can leave
 
 Every external connector in the design — HDMI, USB 3, power, JTAG — is on one of the three
