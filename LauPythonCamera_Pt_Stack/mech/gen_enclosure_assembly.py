@@ -115,10 +115,16 @@ def main():
     w = sys.stdout.write
 
     # The base box reads the lens box's STEP, so the lens box must exist first.
-    lens = capture("gen_lens_box", ["gen_lens_box.py", "--bosses"])
+    # BOTH halves get the same --open-face. The base box omits its wall and its
+    # tongue there; the lens box fills its groove to match. Passing it to only
+    # one of them leaves the tongue and the groove fill occupying the same
+    # millimetre, which gen_base_box.py refuses -- but only if it is told.
+    lens_argv = ["gen_lens_box.py", "--bosses"]
     base_argv = ["gen_base_box.py"]
     for f in args.open_face:
+        lens_argv += ["--open-face", f]
         base_argv += ["--open-face", f]
+    lens = capture("gen_lens_box", lens_argv)
     base = capture("gen_base_box", base_argv)
 
     step = sw.StepFile(

@@ -223,6 +223,9 @@ def upper_half():
         if name == "wall_seam_inner" and sx:           # its outline IS the groove's inner face
             groove["in_w"] = max(sx) - min(sx)
             groove["in_h"] = max(sy) - min(sy)
+        if name.startswith("wall_seam_fill") and sx:
+            groove.setdefault("fills", []).append(
+                (name, min(sx), max(sx), min(sy), max(sy)))
         if name.startswith("wall_seam"):
             groove["z_top"] = max(groove.get("z_top", -1e9), max(p[2] for f in faces
                                   for lp in ([model.face(f)[0]] if model.face(f)[0] else [])
@@ -467,14 +470,62 @@ def build(args):
     # the lens box's groove. Its profile comes from seam_profile() in
     # gen_lens_box.py -- the same call that cut the groove -- so the two cannot
     # drift apart.
+    # THE TONGUE FOLLOWS THE WALLS, INCLUDING WHERE THERE ARE NONE. It was a
+    # single closed ring, which meant it ran straight across the --open-face
+    # opening -- the one cut for the HDMI and USB-C ports. That is wrong twice
+    # over: it bars the opening, and on that side it has NO WALL BENEATH IT, so
+    # it is a 1.2 x 1.5 mm rail bridging the full width of the gap in mid-air.
+    # It would print as a sagging bridge holding nothing up.
+    n_tongue = 0
+    tongue_boxes = []
     if args.tongue:
-        t_out, t_in, _, _ = seam_profile(cx, cy, out_w, out_h, t, args.tongue_w,
-                                         args.seam_clear, args.corner_r, args.arc_seg)
-        nm = "tongue"
-        step.prism(t_out, z_rim, z_rim + args.tongue_h, nm, COLORS["box"],
-                   holes=[sw.reverse(t_in)])
-        expected[nm] = ((abs(sw.signed_area(t_out)) - abs(sw.signed_area(t_in)))
-                        * args.tongue_h)
+        off = (t - args.tongue_w) / 2.0
+        tb = (x0 + off, y0 + off, x1 - off, y1 - off)
+        for edge, rectangle in sorted(bars(tb[0], tb[1], tb[2], tb[3],
+                                           args.tongue_w).items()):
+            if edge in open_faces:
+                continue
+            # A window only reaches the tongue if it runs all the way up to the
+            # rim; anything lower passes under it and leaves it supported.
+            active = [wn for wn in windows
+                      if wn["edge"] == edge and wn["z1"] >= z_rim - EPS]
+            for rx0, ry0, rx1, ry1 in split_bar(rectangle, edge, active):
+                corners = set()
+                if edge == "S":
+                    if abs(rx0 - tb[0]) < EPS: corners.add("SW")
+                    if abs(rx1 - tb[2]) < EPS: corners.add("SE")
+                if edge == "N":
+                    if abs(rx0 - tb[0]) < EPS: corners.add("NW")
+                    if abs(rx1 - tb[2]) < EPS: corners.add("NE")
+                poly = bar_poly(rx0, ry0, rx1, ry1,
+                                max(args.corner_r - off, 0.2), corners, args.arc_seg)
+                nm = "tongue_%s_%d" % (edge, n_tongue)
+                step.prism(poly, z_rim, z_rim + args.tongue_h, nm, COLORS["box"])
+                expected[nm] = abs(sw.signed_area(poly)) * args.tongue_h
+                tongue_boxes.append((nm, rx0, ry0, rx1, ry1))
+                n_tongue += 1
+        if not n_tongue:
+            sys.exit("EVERY tongue segment was removed by --open-face/--window; "
+                     "the seam joint would do nothing. Pass --no-tongue if that is "
+                     "what you want.")
+
+        # WHERE THE LENS BOX FILLED ITS GROOVE, THERE MUST BE NO TONGUE. The two
+        # halves are told about the open faces separately, so they can disagree:
+        # give --open-face E to this part only and the lens box is left with a
+        # harmless empty groove, but give it to the LENS BOX only and its fill
+        # sits exactly where this tongue still is. That is a solid interference
+        # of a whole millimetre, invisible in either file on its own, and it
+        # would simply stop the halves closing.
+        for nm, fx0, fx1, fy0, fy1 in (up.get("groove", {}).get("fills") or []):
+            for tnm, tx0_, ty0_, tx1_, ty1_ in tongue_boxes:
+                if (tx0_ < fx1 - EPS and tx1_ > fx0 + EPS and
+                        ty0_ < fy1 - EPS and ty1_ > fy0 + EPS):
+                    sys.exit(
+                        "SEAM CLASH: %s in camera_lens_box.step fills the groove over\n"
+                        "x %.2f..%.2f y %.2f..%.2f, but %s still has tongue there\n"
+                        "(x %.2f..%.2f y %.2f..%.2f). The two halves were given different\n"
+                        "--open-face lists; give both the SAME faces."
+                        % (nm, fx0, fx1, fy0, fy1, tnm, tx0_, tx1_, ty0_, ty1_))
 
     # Four support bosses: the surface the whole board stack actually rests on.
     for i, (px, py) in enumerate(mh):
@@ -514,10 +565,14 @@ def build(args):
       % (z_floor_top, z_rim, z_rim - z_floor_top, nbar))
     if args.tongue:
         g = up["groove"]
-        w("tongue     %.2f wide x %.2f tall on the rim, z %.2f -> %.2f, entering the\n"
-          "           lens box groove %.2f mm with %.3f/%.3f mm clearance per side\n"
-          % (args.tongue_w, args.tongue_h, z_rim, z_rim + args.tongue_h,
+        w("tongue     %.2f wide x %.2f tall on the rim, z %.2f -> %.2f, in %d segment(s),\n"
+          "           entering the lens box groove %.2f mm with %.3f/%.3f mm clearance\n"
+          % (args.tongue_w, args.tongue_h, z_rim, z_rim + args.tongue_h, n_tongue,
              args.tongue_h - args.seam_relief, slack_out, slack_in))
+        if open_faces:
+            w("           NO tongue on face(s) %s -- it would bar the opening and, with\n"
+              "           no wall under it there, bridge it in mid-air\n"
+              % ",".join(sorted(open_faces)))
         w("seam       rim stops %.2f mm SHORT of the mating plane -- the halves NEVER\n"
           "           touch. The board stack is the axial datum; a seam that closed\n"
           "           first would fight it, and print tolerance would pick the winner.\n"

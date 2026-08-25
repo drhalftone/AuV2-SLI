@@ -209,6 +209,35 @@ The joint would then set the spacing instead of the board stack.
 NO GROOVE IN THE LENS BOX. This part's tongue has nothing to enter.
 ```
 
+**The joint stops where the opening starts.** The tongue was a single closed ring, so it ran
+straight across the `--open-face` opening — the one cut for the HDMI and USB-C ports. That is
+wrong twice over: it bars the opening, and on that side there is **no wall beneath it**, so it
+is a 1.2 × 1.5 mm rail bridging the full width of the gap in mid-air. It would print as a
+sagging bridge holding nothing up. The tongue is now built as bars on the same split as the
+walls and skips open faces (and any window that reaches the rim):
+
+```
+tongue   1.20 wide x 1.50 tall on the rim, z -1.80 -> -0.30, in 3 segment(s)
+         NO tongue on face(s) E
+```
+
+The lens box takes the **same** `--open-face` and fills its groove back to solid over exactly
+that span, so no empty channel is left along the bottom of the wall above the access slot. Its
+*wall* is never opened — that half is the optical enclosure.
+
+> **The two halves are told separately, so they can disagree.** Give `--open-face E` to the base
+> box only and the lens box keeps a harmless empty groove. Give it to the **lens box only** and
+> its fill sits exactly where the tongue still is — a solid interference a millimetre wide,
+> invisible in either file alone, that would simply stop the halves closing. `gen_base_box.py`
+> reads the fills out of `camera_lens_box.step` and refuses:
+>
+> ```
+> SEAM CLASH: wall_seam_fill_E in camera_lens_box.step fills the groove over
+> x 20.50..22.00 y -24.50..23.50, but tongue_E_0 still has tongue there.
+> ```
+>
+> `gen_enclosure_assembly.py` passes the same faces to both, so the assembly cannot drift.
+
 > Splitting the wall for the groove also split the solid named `walls` into three.
 > `gen_base_box.py`'s `upper_half()` now reads **every** solid named `wall*`; matching only
 > `walls` would have read the mating face as the *top* of the groove and shifted the whole

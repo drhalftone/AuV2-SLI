@@ -523,6 +523,10 @@ def build(args):
     # in two Z bands and the lower one is two concentric rings -- the same
     # stacking gen_socket_tile.py uses to turn a slot onto another face.
     wall_bot = z_table
+    seam_open = set(f.upper() for f in args.open_face)
+    for f in seam_open:
+        if f not in ("N", "S", "E", "W"):
+            sys.exit("--open-face %r is not N/S/E/W" % f)
     if args.groove:
         z_gt = z_table + args.groove_depth
         _, _, g_out, g_in = seam_profile(cx, cy, out_w, out_h, t, args.tongue_w,
@@ -535,6 +539,40 @@ def build(args):
         step.prism(g_in, z_table, z_gt, n, COLORS["box"], holes=[sw.reverse(inner)])
         expected[n] = ((abs(sw.signed_area(g_in)) - abs(sw.signed_area(inner)))
                        * args.groove_depth)
+
+        # A GROOVE WITH NO TONGUE IN IT IS JUST A SLOT. gen_base_box.py omits the
+        # tongue across an --open-face, because there it would bar the opening
+        # and bridge it in mid-air. Give this half the same faces and the groove
+        # is filled back to solid wall over exactly that span -- so the seam
+        # feature stops where the joint stops, instead of leaving an open channel
+        # along the bottom of the wall above the access slot.
+        #
+        # The fill is inset by --seam-clear from the tongue's own ends, so it can
+        # never touch the tongue segments that wrap the corners either side.
+        off = (t - args.tongue_w) / 2.0
+        tw = args.tongue_w
+        tb = (cx - out_w / 2.0 + off, cy - out_h / 2.0 + off,
+              cx + out_w / 2.0 - off, cy + out_h / 2.0 - off)
+        gi, go = off + tw + args.seam_clear, off - args.seam_clear
+        for f in sorted(seam_open):
+            lo, hi = ((tb[0] + tw + args.seam_clear, tb[2] - tw - args.seam_clear)
+                      if f in "NS" else
+                      (tb[1] + tw + args.seam_clear, tb[3] - tw - args.seam_clear))
+            if hi - lo < 1.0:
+                sys.exit("seam fill on face %s is only %.2f mm long" % (f, hi - lo))
+            if f == "N":
+                r = (lo, cy + out_h / 2.0 - gi, hi, cy + out_h / 2.0 - go)
+            elif f == "S":
+                r = (lo, cy - out_h / 2.0 + go, hi, cy - out_h / 2.0 + gi)
+            elif f == "E":
+                r = (cx + out_w / 2.0 - gi, lo, cx + out_w / 2.0 - go, hi)
+            else:
+                r = (cx - out_w / 2.0 + go, lo, cx - out_w / 2.0 + gi, hi)
+            poly = sw.rect((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0,
+                           r[2] - r[0], r[3] - r[1])
+            nm = "wall_seam_fill_%s" % f
+            step.prism(poly, z_table, z_gt, nm, COLORS["box"])
+            expected[nm] = abs(sw.signed_area(poly)) * args.groove_depth
         wall_bot = z_gt
 
     # ABOVE THE BOARD THE WALL IS SIMPLY THICKER. The cavity has to be the board
@@ -717,6 +755,12 @@ def main():
                    help="pocket the box arches over the screw head with, mm "
                         "(M2 socket head is 3.8, pan head 4.0)")
     p.add_argument("--screw-dia", type=float, default=2.40)
+    p.add_argument("--open-face", action="append", default=[],
+                   help="N/S/E/W -- face(s) where gen_base_box.py leaves the wall "
+                        "off. The WALL here is never opened (this is the optical "
+                        "enclosure); it only fills the seam groove back to solid, "
+                        "so no empty channel is left where there is no tongue. "
+                        "Give both halves the SAME faces.")
     p.add_argument("--no-groove", dest="groove", action="store_false",
                    help="omit the groove half of the seam joint")
     p.add_argument("--tongue-w", type=float, default=1.20,
