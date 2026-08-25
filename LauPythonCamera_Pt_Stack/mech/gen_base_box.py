@@ -90,6 +90,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import step_writer as sw
 import check_step
 from gen_lens_holder import read_pcb
+from gen_lens_box import seam_profile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "3dmodels", "camera_base_box.step")
@@ -195,20 +196,41 @@ def upper_half():
                  "against it.\nRun: python gen_lens_box.py --bosses" % UPPER)
     _, ents = check_step.parse(UPPER)
     model = check_step.Model(ents)
+    # EVERY wall solid, not just the one called 'walls'. With a seam groove the
+    # lens box's wall is three solids -- the main ring plus the two legs either
+    # side of the groove -- and the legs are the ones that reach down to the
+    # mating plane. Matching only 'walls' would read the mating face as the TOP
+    # of the groove and silently shift this whole part by the groove depth.
+    xs, ys, zs = [], [], []
+    groove = {}
     for name, faces in model.solids():
-        if name != "walls":
+        if not (name == "walls" or name.startswith("wall_")):
             continue
-        xs, ys, zs = [], [], []
+        sx, sy, inner_x, inner_y = [], [], [], []
         for f in faces:
             outer, inners, _, _ = model.face(f)
-            for loop in ([outer] if outer else []) + inners:
+            for loop in ([outer] if outer else []):
                 for p in loop:
-                    xs.append(p[0])
-                    ys.append(p[1])
-                    zs.append(p[2])
-        return dict(x0=min(xs), x1=max(xs), y0=min(ys), y1=max(ys),
-                    z_bot=min(zs), z_top=max(zs))
-    sys.exit("no 'walls' solid in %s" % UPPER)
+                    xs.append(p[0]); ys.append(p[1]); zs.append(p[2])
+                    sx.append(p[0]); sy.append(p[1])
+            for loop in inners:
+                for p in loop:
+                    xs.append(p[0]); ys.append(p[1]); zs.append(p[2])
+                    inner_x.append(p[0]); inner_y.append(p[1])
+        if name == "wall_seam_outer" and inner_x:      # its hole IS the groove's outer face
+            groove["out_w"] = max(inner_x) - min(inner_x)
+            groove["out_h"] = max(inner_y) - min(inner_y)
+        if name == "wall_seam_inner" and sx:           # its outline IS the groove's inner face
+            groove["in_w"] = max(sx) - min(sx)
+            groove["in_h"] = max(sy) - min(sy)
+        if name.startswith("wall_seam"):
+            groove["z_top"] = max(groove.get("z_top", -1e9), max(p[2] for f in faces
+                                  for lp in ([model.face(f)[0]] if model.face(f)[0] else [])
+                                  for p in lp))
+    if not xs:
+        sys.exit("no wall solids in %s" % UPPER)
+    return dict(x0=min(xs), x1=max(xs), y0=min(ys), y1=max(ys),
+                z_bot=min(zs), z_top=max(zs), groove=groove)
 
 
 def parse_window(text, board, stack_bot):
@@ -266,6 +288,15 @@ def build(args):
 
     # ---- Z scheme ---------------------------------------------------------
     z_split = args.z_split                       # mating plane, from the lens box
+    # THE BOARD STACK IS THE AXIAL DATUM, NOT THE SEAM. The screws clamp the
+    # stack between the lens box's washers and this part's bosses. If the two
+    # halves ALSO met face to face there would be a second load path, and print
+    # tolerance -- not the design -- would decide which one won: a base box
+    # 0.1 mm tall stops the stack being clamped at all and bows both parts
+    # instead. So the rim is cut SHORT by --seam-relief and the halves never
+    # touch. The tongue spans that gap, which is what keeps the joint light
+    # tight and located despite there being air in it.
+    z_rim = z_split - args.seam_relief
     z_stack_bot = -args.stack_h                  # Hd+ bottom face (MEASURED)
     z_floor_top = z_stack_bot - args.floor_clear
     z_floor_bot = z_floor_top - args.floor_t
@@ -284,6 +315,35 @@ def build(args):
                      "--pcb-clear.\n(lens box outer %.3f x %.3f, mating face z = %.3f)"
                      % (what, mine, theirs, up["x1"] - up["x0"],
                         up["y1"] - up["y0"], up["z_bot"]))
+
+    # ---- the seam joint, checked against the groove actually in the file ---
+    slack_out = slack_in = None
+    if args.tongue:
+        g = up.get("groove") or {}
+        if not g.get("out_w") or not g.get("in_w"):
+            sys.exit("NO GROOVE IN THE LENS BOX. This part's tongue has nothing to\n"
+                     "enter -- camera_lens_box.step was built with --no-groove.\n"
+                     "Rebuild it (python gen_lens_box.py --bosses) or pass --no-tongue.")
+        t_out, t_in, _, _ = seam_profile(cx, cy, out_w, out_h, t, args.tongue_w,
+                                         args.seam_clear, args.corner_r, args.arc_seg)
+        tw = max(p[0] for p in t_out) - min(p[0] for p in t_out)
+        ti = max(p[0] for p in t_in) - min(p[0] for p in t_in)
+        # Per-side clearance, measured off the two parts rather than assumed.
+        slack_out = (g["out_w"] - tw) / 2.0
+        slack_in = (ti - g["in_w"]) / 2.0
+        for what, got in (("outer", slack_out), ("inner", slack_in)):
+            if got < 0.02:
+                sys.exit("TONGUE WILL NOT ENTER: %s face has %.3f mm of clearance "
+                         "against\nthe groove in camera_lens_box.step. Both halves must "
+                         "use the same\n--tongue-w and --seam-clear." % (what, got))
+        # ...and it must not bottom out, or the seam becomes the axial datum and
+        # fights the board stack for control of the assembly.
+        reach = args.tongue_h - args.seam_relief          # how far it enters
+        if reach >= g["z_top"] - z_split:
+            sys.exit("TONGUE BOTTOMS OUT: it enters %.2f mm into a %.2f mm groove.\n"
+                     "The joint would then set the spacing instead of the board stack.\n"
+                     "Shorten --tongue-h or deepen the lens box's --groove-depth."
+                     % (reach, g["z_top"] - z_split))
 
     # ---- cable exits ------------------------------------------------------
     open_faces = set(f.upper() for f in args.open_face)
@@ -307,9 +367,9 @@ def build(args):
                  "  --closed-box                                 you really do want it sealed")
 
     for wn in windows:
-        if wn["z0"] < z_floor_top - EPS or wn["z1"] > z_split + EPS:
+        if wn["z0"] < z_floor_top - EPS or wn["z1"] > z_rim + EPS:
             sys.exit("window %r spans z %.2f..%.2f, outside the wall (%.2f..%.2f)."
-                     % (wn["spec"], wn["z0"], wn["z1"], z_floor_top, z_split))
+                     % (wn["spec"], wn["z0"], wn["z1"], z_floor_top, z_rim))
 
     # ---- assertions on the geometry we can actually check -----------------
     # The support bosses land on the Hd+, which is not modelled anywhere. What
@@ -355,7 +415,7 @@ def build(args):
     # Walls, in Z bands so a window can change the profile with height. A prism
     # has vertical walls and cannot do that on its own; stacking bands can. It
     # is the same trick gen_socket_tile.py uses to turn a groove onto a face.
-    zbands = sorted(set([z_floor_top, z_split]
+    zbands = sorted(set([z_floor_top, z_rim]
                         + [w["z0"] for w in windows] + [w["z1"] for w in windows]))
     nbar = 0
     for bi in range(len(zbands) - 1):
@@ -403,6 +463,19 @@ def build(args):
                      - sum(abs(sw.signed_area(h)) for h in bores))
                     * (z_floor_top - z_nut_top))
 
+    # The tongue, standing on the rim and reaching up across the seam gap into
+    # the lens box's groove. Its profile comes from seam_profile() in
+    # gen_lens_box.py -- the same call that cut the groove -- so the two cannot
+    # drift apart.
+    if args.tongue:
+        t_out, t_in, _, _ = seam_profile(cx, cy, out_w, out_h, t, args.tongue_w,
+                                         args.seam_clear, args.corner_r, args.arc_seg)
+        nm = "tongue"
+        step.prism(t_out, z_rim, z_rim + args.tongue_h, nm, COLORS["box"],
+                   holes=[sw.reverse(t_in)])
+        expected[nm] = ((abs(sw.signed_area(t_out)) - abs(sw.signed_area(t_in)))
+                        * args.tongue_h)
+
     # Four support bosses: the surface the whole board stack actually rests on.
     for i, (px, py) in enumerate(mh):
         nm = "boss%d" % (i + 1)
@@ -438,7 +511,19 @@ def build(args):
     w("stack      camera PCB top 0.00 | Hd+ bottom %.2f  (MEASURED %.2f mm)\n"
       % (z_stack_bot, args.stack_h))
     w("walls      z %.2f -> %.2f  (%.2f mm tall), %d bar solids\n"
-      % (z_floor_top, z_split, z_split - z_floor_top, nbar))
+      % (z_floor_top, z_rim, z_rim - z_floor_top, nbar))
+    if args.tongue:
+        g = up["groove"]
+        w("tongue     %.2f wide x %.2f tall on the rim, z %.2f -> %.2f, entering the\n"
+          "           lens box groove %.2f mm with %.3f/%.3f mm clearance per side\n"
+          % (args.tongue_w, args.tongue_h, z_rim, z_rim + args.tongue_h,
+             args.tongue_h - args.seam_relief, slack_out, slack_in))
+        w("seam       rim stops %.2f mm SHORT of the mating plane -- the halves NEVER\n"
+          "           touch. The board stack is the axial datum; a seam that closed\n"
+          "           first would fight it, and print tolerance would pick the winner.\n"
+          % args.seam_relief)
+        w("           that %.2f mm gap is baffled by the tongue, so it is not a light\n"
+          "           path either -- which the plain butt joint was.\n" % args.seam_relief)
     w("floor      z %.2f -> %.2f  (%.2f thick), nut pocket %.1f AF x %.1f deep\n"
       % (z_floor_bot, z_floor_top, args.floor_t, args.nut_af, args.nut_depth))
     w("bosses     4 x %.1f dia, z %.2f -> %.2f (%.2f tall) -- the stack rests on these\n"
@@ -509,6 +594,18 @@ def main():
                    help="WHERE THE WINDOW NUMBERS CAME FROM. Stamped into the STEP.")
     p.add_argument("--closed-box", action="store_true",
                    help="emit a sealed box with no cable exit at all")
+    p.add_argument("--no-tongue", dest="tongue", action="store_false",
+                   help="omit the tongue half of the seam joint")
+    p.add_argument("--tongue-w", type=float, default=1.20,
+                   help="tongue thickness, mm -- must match the lens box")
+    p.add_argument("--tongue-h", type=float, default=1.50,
+                   help="tongue height above the rim, mm")
+    p.add_argument("--seam-clear", type=float, default=0.15,
+                   help="clearance per side between tongue and groove, mm")
+    p.add_argument("--seam-relief", type=float, default=0.20,
+                   help="how far this rim stops SHORT of the mating plane, mm. The "
+                        "halves must never meet face to face: the board stack is the "
+                        "axial datum and a seam that closed first would fight it")
     p.add_argument("--corner-r", type=float, default=2.0)
     p.add_argument("--arc-seg", type=int, default=6)
     p.add_argument("--segments", type=int, default=64)

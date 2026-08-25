@@ -129,6 +129,62 @@ give back overlap at the corners, which are the hardest place to seal.
 **matte black** material. A light-coloured or translucent print will scatter round the
 labyrinth no matter how good the numbers are. `--no-lip` returns the old open cavity.
 
+### The seam joint — tongue and groove
+
+The two halves meet at z = −1.60 in a 3.00 mm wall. That seam started as a plain butt
+joint located only by the four screws, which left it both unregistered and — since the wall
+is the same wall the light lip protects — a **straight-through gap into the enclosure**.
+
+```
+tongue   1.20 wide x 1.50 tall on the base box rim, z -1.80 -> -0.30
+groove   1.50 wide x 1.70 deep in the lens box wall, z -1.60 -> +0.10
+         clearance 0.150 mm per side, both faces
+         engagement 1.300 mm, axial free play 0.400 mm
+         legs 0.750 mm either side of the groove in a 3.00 mm wall
+```
+
+**The board stack is the axial datum, not the seam.** The screws clamp the stack between the
+lens box's washers and the base box's bosses. If the two halves *also* met face to face there
+would be a second load path and **print tolerance, not the design, would decide which one
+won** — a base box 0.1 mm tall would stop the stack being clamped at all and bow both parts
+instead. So the base rim stops `--seam-relief` (0.20 mm) **short** and the halves never touch,
+and the groove is cut deeper than the tongue is tall so the tongue cannot bottom out either.
+Same reasoning as the shroud's `--relief`, and as the lip standing off the board.
+
+That 0.20 mm gap is not a light path, because the tongue baffles it — which is the second
+reason to have the joint at all.
+
+**The joint is defined once.** `seam_profile()` lives in `gen_lens_box.py` and
+`gen_base_box.py` **imports** it, so the tongue and the groove come from the same call. Two
+files computing the same joint from the same formula is exactly the arrangement that drifts
+the first time one is edited, and a tongue 0.2 mm proud of its groove is invisible in either
+STEP on its own.
+
+The tongue is centred in the wall so the legs are equal, and each profile's corner radius is
+the outer radius less that profile's inset — which keeps the groove concentric with the wall
+and the legs a uniform 0.75 mm right around the corners. A square joint inside a rounded wall
+pinches to about a third of its width at the corners.
+
+**And it is checked against the part it mates to, not against its own parameters.**
+`gen_base_box.py` reads the groove's real faces out of `camera_lens_box.step` — the hole in
+`wall_seam_outer`, the outline of `wall_seam_inner` — and refuses on a measured interference,
+on a tongue that would bottom out, or on a lens box built with `--no-groove`:
+
+```
+TONGUE WILL NOT ENTER: outer face has -0.050 mm of clearance against
+the groove in camera_lens_box.step.
+
+TONGUE BOTTOMS OUT: it enters 2.00 mm into a 1.70 mm groove.
+The joint would then set the spacing instead of the board stack.
+
+NO GROOVE IN THE LENS BOX. This part's tongue has nothing to enter.
+```
+
+> Splitting the wall for the groove also split the solid named `walls` into three.
+> `gen_base_box.py`'s `upper_half()` now reads **every** solid named `wall*`; matching only
+> `walls` would have read the mating face as the *top* of the groove and shifted the whole
+> lower half by the groove depth.
+
 ### `gen_lens_holder.py` — M12 / S-mount
 
 Kept as the alternative. A plate on four corner posts with a tapped barrel; bore 11.5 mm is

@@ -66,6 +66,30 @@ def circle_phase(cx, cy, r, n, phase):
              cy + r * math.sin(2.0 * math.pi * i / n + phase)) for i in range(n)]
 
 
+def seam_profile(cx, cy, out_w, out_h, wall, tongue_w, clear, corner_r, seg=6):
+    """The tongue-and-groove at the mating plane, defined ONCE for both halves.
+
+    gen_base_box.py imports this rather than re-deriving it. Two files computing
+    the same joint from the same formula is exactly the arrangement that drifts
+    the first time one of them is edited, and a tongue 0.2 mm proud of its groove
+    is not visible in either STEP on its own.
+
+    The tongue is CENTRED in the wall, so the material either side of the groove
+    is equal. Each profile's corner radius is the outer radius less that
+    profile's inset from the outer face, which keeps the groove concentric with
+    the wall and the leg thickness uniform right around the corners -- a square
+    joint inside a rounded wall pinches to a third of its width at the corners.
+
+    Returns (tongue_outer, tongue_inner, groove_outer, groove_inner).
+    """
+    off = (wall - tongue_w) / 2.0
+    def prof(inset):
+        return sw.rounded_rect(cx, cy, out_w - 2 * inset, out_h - 2 * inset,
+                               max(corner_r - inset, 0.2), seg)
+    return (prof(off), prof(off + tongue_w),
+            prof(off - clear), prof(off + tongue_w + clear))
+
+
 def build(args):
     edge, pcb_holes, comps, u1 = read_pcb()
     xs = [v for e in edge for v in (e[0], e[2])]
@@ -231,12 +255,33 @@ def build(args):
     outer = sw.rounded_rect(cx, cy, out_w, out_h, args.corner_r)
     inner = sw.rounded_rect(cx, cy, cav_w, cav_h, max(args.corner_r - t, 0.1))
 
-    # four walls, one ring, standing on the TABLE
+    # four walls, one ring, standing on the TABLE.
+    #
+    # With --groove the bottom of that ring is split into two legs with the
+    # groove between them, which a single prism cannot express: a prism has
+    # vertical walls and cannot change profile with height. So the wall is built
+    # in two Z bands and the lower one is two concentric rings -- the same
+    # stacking gen_socket_tile.py uses to turn a slot onto another face.
+    wall_bot = z_table
+    if args.groove:
+        z_gt = z_table + args.groove_depth
+        _, _, g_out, g_in = seam_profile(cx, cy, out_w, out_h, t, args.tongue_w,
+                                         args.seam_clear, args.corner_r, args.arc_seg)
+        n = "wall_seam_outer"
+        step.prism(outer, z_table, z_gt, n, COLORS["box"], holes=[sw.reverse(g_out)])
+        expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(g_out)))
+                       * args.groove_depth)
+        n = "wall_seam_inner"
+        step.prism(g_in, z_table, z_gt, n, COLORS["box"], holes=[sw.reverse(inner)])
+        expected[n] = ((abs(sw.signed_area(g_in)) - abs(sw.signed_area(inner)))
+                       * args.groove_depth)
+        wall_bot = z_gt
+
     n = "walls"
     hs = [sw.reverse(inner)]
-    step.prism(outer, z_table, top_under, n, COLORS["box"], holes=hs)
+    step.prism(outer, wall_bot, top_under, n, COLORS["box"], holes=hs)
     expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(inner)))
-                   * (top_under - z_table))
+                   * (top_under - wall_bot))
 
     # the top face, with the lens clearance bore
     n = "top"
@@ -332,6 +377,14 @@ def build(args):
       % (top_surf, image_z, C_FLANGE_FOCAL))
     w("clearance  tallest part under the top: %s at %.2f, top underside %.2f (%.2f gap)\n"
       % (worst[0], worst[1], top_under, top_under - worst[1]))
+    if args.groove:
+        leg = (t - (args.tongue_w + 2 * args.seam_clear)) / 2.0
+        w("groove     %.2f wide x %.2f deep in the wall bottom, z %.2f -> %.2f,\n"
+          "           centred in the %.2f wall leaving %.2f mm of leg either side\n"
+          % (args.tongue_w + 2 * args.seam_clear, args.groove_depth, z_table,
+             z_table + args.groove_depth, t, leg))
+        w("           mates gen_base_box.py's tongue -- both halves import "
+          "seam_profile()\n           from this file, so the joint is defined once\n")
     if args.lip:
         run = args.pcb_clear + lip_ov
         w("lip        overhangs the board %.2f mm all round, aperture %.1f x %.1f,\n"
@@ -391,6 +444,19 @@ def main():
                    help="pocket the box arches over the screw head with, mm "
                         "(M2 socket head is 3.8, pan head 4.0)")
     p.add_argument("--screw-dia", type=float, default=2.40)
+    p.add_argument("--no-groove", dest="groove", action="store_false",
+                   help="omit the groove half of the seam joint")
+    p.add_argument("--tongue-w", type=float, default=1.20,
+                   help="tongue thickness, mm -- the GROOVE is this plus 2x "
+                        "--seam-clear, so the wall keeps (wall - groove)/2 either "
+                        "side (default 1.20 leaves 0.75 mm legs in a 3 mm wall)")
+    p.add_argument("--seam-clear", type=float, default=0.15,
+                   help="clearance per side between tongue and groove, mm")
+    p.add_argument("--groove-depth", type=float, default=1.70,
+                   help="groove depth, mm. Deliberately DEEPER than the tongue is "
+                        "tall so the tongue can never bottom out -- the board stack "
+                        "is the axial datum, not this joint")
+    p.add_argument("--arc-seg", type=int, default=6)
     p.add_argument("--no-lip", dest="lip", action="store_false",
                    help="omit the light lip. The cavity is then open to the boards "
                         "below through a %s mm slot all round, which is how the Pt's "
