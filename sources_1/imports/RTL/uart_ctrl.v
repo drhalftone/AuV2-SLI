@@ -90,6 +90,11 @@ module uart_ctrl #(
 
     // ---- quasi-static control outputs (Stage 2: drive pixel_pipe) ----
     output reg  [7:0]  sli_ctrl,         // register 0x13
+    // reg 0x16 CAMSIM {7:rdy_en, 0:rdy_val} -- drive the camera-ready GPIO from
+    // the host. `rdy` is a pin from the old DB9 camera board and NOTHING drives
+    // it in the PYTHON1300 stack, so the pacing logic it feeds was untestable.
+    // An untestable fix is an unverified fix.
+    output reg  [7:0]  cam_sim,
     output wire        sli_ctrl_en,      // = sli_ctrl[7]  (USB overrides switches)
     output wire        lut_loaded,       // a table has been uploaded since reset
 
@@ -345,6 +350,7 @@ case (addr)
             8'h13:   rd_data  = sli_ctrl;
             8'h14:   rd_data  = mode_force;
             8'h15:   rd_data  = {link_drop_proj, link_drop_host, link_secs};
+            8'h16:   rd_data  = cam_sim;
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -472,6 +478,7 @@ case (addr)
             corr_ld <= 1'b0; lut_ld <= 1'b0; lutv_ld <= 1'b0;
             mode_force <= 8'h00;       // force_en=0 -> EDID pick is in charge
             link_drop_host <= 1'b0; link_drop_proj <= 1'b0;
+            cam_sim <= 8'h00;
             link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
@@ -543,6 +550,8 @@ case (addr)
                         sli_ctrl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h14) begin    // MODEFORCE (bring-up / test)
                         mode_force <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h16) begin    // CAMSIM: host-driven rdy
+                        cam_sim <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h15) begin    // LINKCTL: self-timed disconnect
                         link_tgt    <= dbyte[1:0];
                         link_secs   <= dbyte[7:2];

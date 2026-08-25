@@ -81,6 +81,9 @@ module usb_link #(
     output wire        link_drop_host,   // force hdmi_rx_hpa low (host re-negotiates)
     output wire        link_drop_proj,   // tristate TMDS out (projector loses signal)
 
+    // reg 0x16 CAMSIM: host-driven camera-ready, {7:rdy_en, 0:rdy_val}
+    output wire [7:0]  cam_sim,
+
     // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
     // The SPI master lives in here, right next to the control plane that drives it,
     // so the top level only ever sees the sensor's physical pins.
@@ -394,7 +397,8 @@ module usb_link #(
         .rx_data(rx_data), .rx_valid(rx_valid),
         .tx_data(c_data), .tx_send(c_send), .tx_busy(c_tx_busy), .tx_active(c_active),
         .led(led_s), .pins({esw1, psw1}),
-        .sli_ctrl(sli_ctrl), .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
+        .sli_ctrl(sli_ctrl),
+        .cam_sim(cam_sim), .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
         .lutv_addr(lutv_addr), .lutv_dout(lutv_dout),

@@ -99,19 +99,93 @@ module pixel_pipe(
 
         if (~in_vsync && vsync_reg) display_mode <= mode;
     end
-    //count rising edges of camera-ready GPIO input (line 4 / rdy).
-    //Each rdy rising edge that occurs while mode is high queues exactly one
-    //trigger; each vsync consumes one. Entering local mode (mode going high) does
-    //NOT itself trigger - we wait for a genuine rdy rising edge that arrives after
-    //mode is already high. If rdy is held high across the mode change there is no
-    //rising edge, so no trigger is sent.
+    //=========================================================================
+    // CAMERA-READY PACING -- 1-DEEP, NOT AN ACCUMULATOR
+    //=========================================================================
+    // WHAT THIS REPLACED, AND WHY. rdy_cnt was a 4-bit COUNTER: every rdy rising
+    // edge incremented it and every vsync decremented it. Two readies arriving
+    // between frame boundaries therefore queued TWO advances, and the sequence
+    // then advanced on two consecutive frames to catch up. Any gap or burst on
+    // the ready line becomes a PERMANENT phase error between the projected
+    // pattern and the captured frame, and it presents as the camera being out of
+    // step -- which is looked for in the camera.
+    //
+    // The MimasA7 GPIO_TIMING.md blames exactly this model for a failed bring-up.
+    // The replacement is its cam_pace.v behaviour:
+    //
+    //   1-DEEP PENDING   one rdy rising edge means exactly one advance. A second
+    //                    ready before the next vsync is ABSORBED, not queued.
+    //                    Losing an advance is recoverable; accumulating one is
+    //                    not, because the error never washes out.
+    //
+    //   FRESH-READY      the first advance after `mode` goes high requires a
+    //                    genuine low->high on rdy that happens AFTER mode is
+    //                    already high. A ready line sitting high across the mode
+    //                    change is stale and must not fire. Hardware-confirmed on
+    //                    the Mimas: this rejects a stale FrameTriggerWait and the
+    //                    Line1->Line3 crosstalk pulse.
+    //
+    //   DE-GLITCH        rdy must be stable for GLITCH_CYC before it is believed.
+    //                    Two-flop synchronising says nothing about noise, and the
+    //                    camera cable is long, unshielded, and has a documented
+    //                    grounding defect. A glitch here does not corrupt a pixel,
+    //                    it desynchronises the whole scan.
+    //
+    // NOT CHANGED HERE: `mode` still means "SLI output select". On the Mimas the
+    // equivalent line also starts/stops the scan and resets counters, and those
+    // two jobs need separating -- but that changes HDMI output selection, which is
+    // load-bearing and unrelated to pacing. It belongs with G2.
+    localparam integer GLITCH_CYC = 10000;   // ~135 us at 74 MHz
+
+    reg [13:0] rdy_deb  = 14'd0;    // how long the raw input has held its new level
+    reg        rdy_stab = 1'b0;     // de-glitched ready
+    reg        rdy_arm  = 1'b0;     // a fresh low->high has been seen since mode rose
+    reg        pending  = 1'b0;     // 1-deep: at most ONE advance owed
+    reg        mode_reg = 1'b0;
+    reg        rdy_stab_d = 1'b0;   // one-cycle delay, for edge detect
+
     always@(posedge clk) begin
-        if (~mode) rdy_cnt<=4'h0;                                       // mode low: clear pending triggers
-        else case ({(in_vsync && ~vsync_reg), (rdy && ~rdy_reg)})
-            2'b01: rdy_cnt <= rdy_cnt + 4'h1;                           // rdy rising edge: queue a trigger
-            2'b10: rdy_cnt <= (rdy_cnt==4'h0) ? 4'h0 : rdy_cnt - 4'h1;  // vsync: consume one queued trigger
-            default: rdy_cnt <= rdy_cnt;                                // both (rare) or neither: no change
-        endcase
+        mode_reg <= mode;
+
+        // ---- de-glitch: believe a level only after it has held ----
+        if (rdy_reg != rdy_stab) begin
+            if (rdy_deb == GLITCH_CYC[13:0]) begin
+                rdy_stab <= rdy_reg;
+                rdy_deb  <= 14'd0;
+            end else begin
+                rdy_deb <= rdy_deb + 14'd1;
+            end
+        end else begin
+            rdy_deb <= 14'd0;
+        end
+
+        if (~mode) begin
+            // Leaving local mode clears everything, INCLUDING the arm. Re-entering
+            // must wait for a fresh edge rather than resuming on a stale level.
+            pending <= 1'b0;
+            rdy_arm <= 1'b0;
+        end else begin
+            // ---- fresh-ready arming ----
+            // Entering mode with rdy already high does NOT arm: only a low->high
+            // seen while mode is high counts.
+            if (~mode_reg && mode) rdy_arm <= 1'b0;
+            else if (~rdy_stab)    rdy_arm <= 1'b1;   // seen low while in mode: armed
+
+            // ---- 1-deep pending ----
+            // Set on an armed rising edge; cleared when vsync consumes it. A
+            // rising edge while pending is already set is DISCARDED.
+            if (rdy_arm && rdy_stab && ~rdy_stab_d) pending <= 1'b1;
+            else if (in_vsync && ~vsync_reg)        pending <= 1'b0;
+        end
+
+        // Delayed copy for the edge detect above. Assigned LAST in this block, so
+        // the comparison above still sees the previous value -- which is the whole
+        // point. In its own always block it would race the de-glitch update.
+        rdy_stab_d <= rdy_stab;
+
+        // The rest of the pipe reads rdy_cnt. Present the 1-deep pending in its
+        // place so nothing downstream changes: non-zero means "one advance owed".
+        rdy_cnt <= {3'b000, pending};
     end
 
     always@(posedge clk) begin  //// examine rdy counter at rising edge of vsync

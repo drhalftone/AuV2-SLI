@@ -237,6 +237,9 @@ architecture Behavioral of Au2_SLI is
     signal rpl_we_w    : std_logic;
     signal rpl_full_w  : std_logic;
 
+    -- reg 0x16 CAMSIM: host-driven camera-ready, so the pacing logic in
+    -- pixel_pipe can be exercised with no camera board attached.
+    signal cam_sim_w    : std_logic_vector(7 downto 0) := (others => '0');
     signal cam_stat_raw : std_logic_vector(143 downto 0);
     signal cam_stat_tog : std_logic;
     signal cst_s        : std_logic_vector(2 downto 0) := "000";
@@ -424,6 +427,7 @@ architecture Behavioral of Au2_SLI is
                -- LINKCTL (reg 0x15) self-timed disconnect pulse
                link_drop_host : out STD_LOGIC;
                link_drop_proj : out STD_LOGIC;
+               cam_sim        : out STD_LOGIC_VECTOR(7 downto 0);
                -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
                -- usb_link, so these are the sensor's physical pins.
                cam_sck     : out STD_LOGIC;
@@ -767,6 +771,7 @@ begin
         cam_reset_n => open,
         cam_trigger => open,
         cam_monitor => cam_monitor,
+        cam_sim     => cam_sim_w,
         vs_meas     => out_vsync,
         cam_stat_i  => cam_stat_q,
         rx2_data    => ctl_byte_w,
@@ -1029,7 +1034,10 @@ vsync_Pos <= vsync xor VPolarity;
 process(pixel_clk)
 begin
     if rising_edge(pixel_clk) then
-        rdy_buf    <= C1_in(0);
+        -- CAMSIM (0x16) bit 7 hands the ready line to the host. `rdy` is a pin
+        -- from the DB9 camera board and nothing drives it in the PYTHON1300
+        -- stack, so without this the pacing logic it feeds cannot be tested.
+        rdy_buf    <= cam_sim_w(0) when cam_sim_w(7) = '1' else C1_in(0);
         -- SLI pattern enable. C1_in(1) is the camera board's "mode" GPIO and is PULLED
         -- LOW in the XDC ("default passthrough for color-bar test"), so with no camera
         -- board attached pattern_gen is disabled and the vga colour bars just pass
