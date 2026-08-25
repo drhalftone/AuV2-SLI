@@ -7,6 +7,7 @@
 | `gen_stack_shroud.py` | `../3dmodels/stack_shroud_<layer>.step` | **CNC aluminium** shroud rings, one per board of the Alchitry stack |
 | `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens. Also the **upper half** of the two-part enclosure |
 | `gen_base_box.py` | `../3dmodels/camera_base_box.step` | **base box** — the lower half: encloses the Hd+/Ft+/Pt V2 and sandwiches to the lens box |
+| `gen_enclosure_assembly.py` | `../3dmodels/camera_enclosure_assembly.step` | **both halves in one file** — what you open to check they meet; not a printed part |
 | `gen_lens_holder.py` | `../3dmodels/camera_lens_holder.step` | M12 / S-mount alternative: plate on four posts with a threaded barrel |
 | `step_writer.py` | — | shared AP214 writer and 2D helpers |
 | `check_step.py` | — | validates any of the above |
@@ -20,6 +21,7 @@ python gen_sensor_step.py --tolerance max    # worst-case envelope
 python gen_socket_tile.py
 python gen_lens_box.py --bosses              # the C-mount box, located on the corner holes
 python gen_base_box.py --open-face E         # ...and the lower half that sandwiches to it
+python gen_enclosure_assembly.py             # both halves in ONE file, to check the fit
 python gen_lens_holder.py                    # the M12 alternative
 python check_step.py
 ```
@@ -478,6 +480,40 @@ damaged, so the generator warns rather than refuses.
 
 ---
 
+## `gen_enclosure_assembly.py` — both halves in one file
+
+The two half boxes print separately. This is the file you **open** to check they meet.
+
+```
+python gen_enclosure_assembly.py                 # 23 solids, 43.79 mm tall
+python gen_enclosure_assembly.py --no-reference  # printed parts only
+```
+
+**It does not re-describe any geometry.** It runs the two generators, captures the `StepFile`
+each one built, and replays their recorded prisms into a single file — so every solid is the
+same geometry as the part you print. Verified by comparing all 19 solid volumes against the
+half files: every one matches to better than 1e-9 mm³. If this file and the halves ever
+disagree, that is a bug in the assembler, not a difference in the design.
+
+**The board plates are reference geometry and half assumed.** Two numbers about the stack are
+known — the 55 × 45 outline (from KiCad) and the **measured 19.00 mm** camera-PCB-top to
+Hd+-bottom. Board thickness is *not* measured; 1.60 mm is assumed, which then forces the
+pitch:
+
+```
+pitch = (19.00 - 1.60) / 3 = 5.800 mm     gap = 4.200 mm
+```
+
+The two **outer** faces are measured and correct. The two **intermediate** boards sit where
+that assumption puts them — check clearance against them, do not dimension from them. They are
+named `board_REF_*`, coloured green so they cannot be mistaken for a printed part, and
+excluded from the STL. `--no-reference` drops them.
+
+Contact is by design, not coincidence: the lens box's washers meet the camera plate at z = 0,
+and the base box's bosses meet the Hd+ plate at z = −19.00.
+
+---
+
 ## A measured fault on this machine: silently corrupted STEP writes
 
 While generating the base box, the same command run 20 times produced a file that differed
@@ -508,6 +544,24 @@ corruption occurring after the writing process has already verified and exited. 
 system-level fault (storage, memory, or something else touching files in this tree), not a
 Python one, and it is worth running Windows Memory Diagnostic and checking for an antivirus or
 sync client with its hands on `Developer/`.
+
+**It is not confined to STEP files.** Within the same session, and after the write-verify was
+already in place, this tree also produced:
+
+- a **segmentation fault** in CPython while running `gen_enclosure_assembly.py`;
+- a **corrupt object in the git repository itself** — `git status` and `git fsck` both failing
+  with `inflate: data stream error (incorrect data check)` on the loose object holding
+  `camera_base_box.step`.
+
+That object was recoverable only because these files are byte-reproducible: the working copy
+re-hashed to exactly the corrupt object's SHA, so deleting the unreadable object and
+re-running `git hash-object -w` restored the repository bit-for-bit, and `git fsck` came back
+clean. Had it been a hand-edited file, the content would simply have been gone.
+
+**Three independent symptoms — silent single-byte file corruption, a CPython segfault, and a
+corrupt git object — is the signature of failing memory, not of a bug in this repo.** Treat
+build artifacts produced here as suspect until the machine is cleared: run Windows Memory
+Diagnostic (or memtest86), and `git fsck` before trusting a push.
 
 **The real backstop is byte-reproducibility.** Every generator here emits a byte-identical file
 for identical inputs, which is what turned an invisible one-digit defect into a one-line
