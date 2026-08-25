@@ -29,7 +29,7 @@ holes, U1 and every component courtyard come from ../LauPythonCamera_Pt_Stack.ki
 on every run. The script FAILS rather than warns if a wall lands on a component
 or the top face is too low. A box that fouls a 0402 is discovered with a scalpel.
 """
-import argparse, math, os, sys
+import argparse, math, os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import step_writer as sw
@@ -39,6 +39,7 @@ from gen_lens_holder import read_pcb, body_height, OPTICAL_CENTER, \
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "3dmodels", "camera_lens_box.step")
+PCB = os.path.join(HERE, "..", "LauPythonCamera_Pt_Stack.kicad_pcb")
 
 # --- C-mount, ISO 10935 / JIS B 7141 -----------------------------------------
 C_FLANGE_FOCAL = 17.526      # mounting shoulder -> image plane, mm. THE datum.
@@ -65,6 +66,118 @@ def circle_phase(cx, cy, r, n, phase):
     """
     return [(cx + r * math.cos(2.0 * math.pi * i / n + phase),
              cy + r * math.sin(2.0 * math.pi * i / n + phase)) for i in range(n)]
+
+
+def board_polygon(pcb, u1x, u1y):
+    """The board's REAL outline, chained into one ordered CCW loop in model coords.
+
+    Everything else in this file has only ever used the bounding box, and for
+    this board that is wrong in a way that mattered: there is a 29 x 5.5 mm
+    NOTCH cut into the east edge -- 164 mm2 of missing board -- so the Pt's LED
+    array shines straight up through it. A wall built on the bounding box caps
+    1.4 mm of that notch and leaves the other 4.1 x 26 mm wide open into the
+    optical cavity, which is most of the light this box was trying to keep out.
+    """
+    s = open(pcb, encoding="utf-8", errors="replace").read()
+    segs = []
+    for m in re.finditer(r'\(gr_line\b(.*?)\(layer "Edge\.Cuts"', s, re.S):
+        p = re.findall(r'\((?:start|end)\s+([-\d.]+)\s+([-\d.]+)\)', m.group(1))
+        if len(p) == 2:
+            segs.append(tuple((float(a), float(b)) for a, b in p))
+    if not segs:
+        sys.exit("no Edge.Cuts lines in %s" % pcb)
+    loop, used = [segs[0][0], segs[0][1]], {0}
+    while len(used) < len(segs):
+        for i, (a, b) in enumerate(segs):
+            if i in used:
+                continue
+            if abs(a[0] - loop[-1][0]) < 1e-6 and abs(a[1] - loop[-1][1]) < 1e-6:
+                loop.append(b); used.add(i); break
+            if abs(b[0] - loop[-1][0]) < 1e-6 and abs(b[1] - loop[-1][1]) < 1e-6:
+                loop.append(a); used.add(i); break
+        else:
+            break
+    if len(used) != len(segs):
+        sys.exit("Edge.Cuts does not chain into ONE closed loop: %d of %d segments "
+                 "used.\nA second loop means a cutout this code would silently ignore."
+                 % (len(used), len(segs)))
+    if abs(loop[0][0] - loop[-1][0]) < 1e-6 and abs(loop[0][1] - loop[-1][1]) < 1e-6:
+        loop.pop()
+    poly = [(x - u1x, u1y - y) for x, y in loop]
+    return poly if sw.signed_area(poly) > 0 else list(reversed(poly))
+
+
+def offset_polygon(poly, dists):
+    """Inward offset of a CCW polygon, each edge by its OWN distance.
+
+    Per-edge and not uniform, because the board does not allow uniform: R14 and
+    R1 sit 0.47 mm off the notch's inner wall, so that one 26 mm edge can only be
+    covered by 0.07 mm while every other edge has 1.4 mm or more to give. A
+    single figure would either foul two 0402s or throw away the overlap
+    everywhere else.
+
+    Vertices are the intersections of consecutive offset lines, so a corner
+    between two different offsets simply lands where the two faces meet.
+    """
+    n = len(poly)
+    lines = []
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy)
+        if L < 1e-9:
+            sys.exit("offset_polygon: zero-length edge %d" % i)
+        nx, ny = -dy / L, dx / L                 # CCW -> interior is to the LEFT
+        lines.append((a[0] + nx * dists[i], a[1] + ny * dists[i], dx / L, dy / L))
+    out = []
+    for i in range(n):
+        px, py, ux, uy = lines[i - 1]
+        qx, qy, vx, vy = lines[i]
+        den = ux * vy - uy * vx
+        if abs(den) < 1e-12:                     # collinear: faces already meet
+            out.append((qx, qy))
+            continue
+        t = ((qx - px) * vy - (qy - py) * vx) / den
+        out.append((px + ux * t, py + uy * t))
+    return out
+
+
+def union_circle(poly, cx, cy, r, seg=24):
+    """Union a CCW polygon with a circle that crosses its boundary exactly twice.
+
+    The rectangle-only version of this was analytic and assumed the corner was
+    one vertex between two axis-aligned edges. The real outline has chamfers, so
+    a boss can straddle three edges and the analytic form does not apply. This
+    finds the crossings, works out which side of the boundary is inside the
+    circle, and swaps that stretch for the outward arc.
+    """
+    n = len(poly)
+    hits = []
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        fx, fy = a[0] - cx, a[1] - cy
+        A, B, C = dx * dx + dy * dy, 2 * (fx * dx + fy * dy), fx * fx + fy * fy - r * r
+        disc = B * B - 4 * A * C
+        if disc <= 1e-12:
+            continue
+        sq = math.sqrt(disc)
+        for t in ((-B - sq) / (2 * A), (-B + sq) / (2 * A)):
+            if 1e-9 < t < 1 - 1e-9:
+                hits.append((i, t, (a[0] + t * dx, a[1] + t * dy)))
+    if len(hits) != 2:
+        return None
+    hits.sort(key=lambda h: (h[0], h[1]))
+    (i1, _, p1), (i2, _, p2) = hits
+    fwd = [poly[k % n] for k in range(i1 + 1, i2 + 1)]
+    inside = all((v[0] - cx) ** 2 + (v[1] - cy) ** 2 < r * r for v in fwd)
+    if inside:                                   # p1 -> p2 forward is buried
+        start, end, keep = p1, p2, [poly[k % n] for k in range(i2 + 1, i1 + 1 + n)]
+    else:                                        # the other stretch is
+        start, end, keep = p2, p1, [poly[k % n] for k in range(i1 + 1, i2 + 1)]
+    a1 = math.atan2(start[1] - cy, start[0] - cx)
+    a2 = math.atan2(end[1] - cy, end[0] - cx)
+    return sw.dedupe(sw.arc(cx, cy, r, a1, a1 + ((a2 - a1) % (2.0 * math.pi)), seg) + keep)
 
 
 def aperture_notched(cx, cy, w, h, bosses, r, seg=10):
@@ -270,46 +383,85 @@ def build(args):
     #    HOW FAR IT MAY REACH IS NOT A FREE CHOICE. It is set by the nearest
     #    top-side component, so it is derived from the board and then checked,
     #    the same way --expose derives the socket tile's outer size.
-    lip_ov = lip_open_w = lip_open_h = None
+    lip_ov = None
+    contour = board_polygon(PCB, u1["x"], u1["y"])
     if args.thick_wall:
-        def inset_of(c):
+        top_side = [c for c in comps if c["layer"] == "F.Cu"]
+
+        def near_edge(a, b, c):
+            """Closest approach of a component's courtyard to one outline edge."""
             mx, my = to_model(c["x"], c["y"])
             hw, hh = c["w"] / 2.0, c["h"] / 2.0
-            return min(mx - hw - x0, x1 - (mx + hw), my - hh - y0, y1 - (my + hh))
+            best = 1e9
+            for sx in (-1, 1):
+                for sy in (-1, 1):
+                    px, py = mx + sx * hw, my + sy * hh
+                    dx, dy = b[0] - a[0], b[1] - a[1]
+                    L = dx * dx + dy * dy
+                    t = 0.0 if L == 0 else max(0.0, min(1.0, ((px - a[0]) * dx +
+                                                              (py - a[1]) * dy) / L))
+                    best = min(best, math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy)))
+            return best
 
-        top_side = [c for c in comps if c["layer"] == "F.Cu"]
-        nearest = min(top_side, key=inset_of)
-        headroom = inset_of(nearest) - args.wall_clear
-        lip_ov = args.overlap if args.overlap is not None else headroom
+        # EVERY EDGE GETS AS MUCH AS ITS OWN NEIGHBOURS ALLOW, capped by --overlap.
+        # Derived, never chosen: the notch's 26 mm inner wall can only give
+        # 0.07 mm because R14 sits 0.47 mm off it, while the far side of the
+        # board gives the full 1.40.
+        room, who = [], []
+        for i in range(len(contour)):
+            a, b = contour[i], contour[(i + 1) % len(contour)]
+            best, blame = 1e9, None
+            for c in top_side:
+                hz = glass_z if c["ref"] == "U1" else body_height(c["lib"])
+                if hz < args.board_relief:
+                    continue                      # fits under the wall; no constraint
+                d = near_edge(a, b, c) - args.wall_clear
+                if d < best:
+                    best, blame = d, c
+            room.append(best)
+            who.append(blame)
+
+        # THE CAP IS DERIVED FROM THE PERIMETER, NOT FROM THE NOTCH. Left
+        # uncapped, each edge takes its own maximum -- up to 5.3 mm on the north
+        # edge -- which makes the wall wander, eats the aperture, and (found the
+        # hard way) deforms it enough that a boss no longer straddles the
+        # boundary and its notch cannot be built. So the cap is what the true
+        # outer perimeter allows, and interior edges are then reduced from it by
+        # their own neighbours. An edge is "perimeter" when it lies on the
+        # bounding box; everything else is notch or chamfer.
+        xs2 = [p[0] for p in contour]
+        ys2 = [p[1] for p in contour]
+        pb = (min(xs2), max(xs2), min(ys2), max(ys2))
+        perim = []
+        for i in range(len(contour)):
+            a, b = contour[i], contour[(i + 1) % len(contour)]
+            mx2, my2 = (a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0
+            if (abs(mx2 - pb[0]) < 1e-6 or abs(mx2 - pb[1]) < 1e-6 or
+                    abs(my2 - pb[2]) < 1e-6 or abs(my2 - pb[3]) < 1e-6):
+                perim.append(i)
+        cap = args.overlap if args.overlap is not None else min(room[i] for i in perim)
+        dists = [max(0.0, min(cap, r_)) for r_ in room]
+        lip_ov = max(dists)
+        capped = [i for i in range(len(contour)) if dists[i] < cap - 1e-9]
         if lip_ov <= 0:
-            sys.exit("NO ROOM FOR A LIP: %s (%s) is %.2f mm from the board edge and "
-                     "--wall-clear is %.2f." % (nearest["ref"],
-                     nearest["lib"].split(":")[-1], inset_of(nearest), args.wall_clear))
-        if lip_ov >= min(bw, bh) / 2.0:
-            sys.exit("LIP OVERLAP %.2f closes the aperture (board %.1f x %.1f)"
-                     % (lip_ov, bw, bh))
-        # Anything the lip reaches over must fit in the relief beneath it. With
-        # the derived overlap nothing does, which is the point -- it lets the lip
-        # sit 0.3 mm off the board instead of clearing a 1.05 mm capacitor, and a
-        # tighter relief is a better light trap.
-        for c in top_side:
-            if inset_of(c) >= lip_ov:
-                continue
-            hz = glass_z if c["ref"] == "U1" else body_height(c["lib"])
-            if hz >= args.board_relief:
-                sys.exit(
-                    "LIP FOULS %s (%s): it lies %.2f mm from the board edge, inside a "
-                    "%.2f mm overhang,\nand stands %.2f mm tall against a %.2f mm relief.\n"
-                    "Either --overlap below %.2f, or --board-relief above %.2f."
-                    % (c["ref"], c["lib"].split(":")[-1], inset_of(c), lip_ov,
-                       hz, args.board_relief, inset_of(c), hz))
-        lip_open_w, lip_open_h = bw - 2 * lip_ov, bh - 2 * lip_ov
+            sys.exit("NO ROOM TO THICKEN THE WALL anywhere: every edge is blocked by a "
+                     "part taller than --board-relief %.2f." % args.board_relief)
+        notch_area = abs(sw.signed_area(sw.rect(cx, cy, bw, bh))) - abs(sw.signed_area(contour))
+        aperture = offset_polygon(contour, dists)
+        if sw.signed_area(aperture) <= 0:
+            sys.exit("the offset outline inverted -- --overlap %.2f is too large for "
+                     "this board" % lip_ov)
+
+        # The bosses straddle the aperture near the corners; push it out round each.
         if args.bosses:
-            aperture = aperture_notched(cx, cy, lip_open_w, lip_open_h, mh,
-                                        args.head_dia / 2.0 + args.wall_clear,
-                                        max(args.segments // 6, 6))
-        else:
-            aperture = sw.rect(cx, cy, lip_open_w, lip_open_h)
+            for px, py, _ in mh:
+                merged = union_circle(aperture, px, py,
+                                      args.head_dia / 2.0 + args.wall_clear,
+                                      max(args.segments // 4, 8))
+                if merged is None:
+                    sys.exit("boss at (%.2f, %.2f) does not cross the aperture boundary "
+                             "exactly twice;\nthe notch for it cannot be built." % (px, py))
+                aperture = merged
 
         # THE SCREWS MUST STILL GO IN. The notches are the whole reason the wall
         # can be this thick, and a wrong one does not look wrong: the first
@@ -341,10 +493,18 @@ def build(args):
                                                                      args.head_dia))
         # It must not intrude on the light cone. The bore is the widest the cone
         # ever is, so clearing the bore's footprint clears everything below it.
-        if (abs(ox - cx) + bore_r > lip_open_w / 2.0 or
-                abs(oy - cy) + bore_r > lip_open_h / 2.0):
-            sys.exit("LIP VIGNETTES: aperture %.1f x %.1f does not clear the %.1f mm "
-                     "bore at (%.2f, %.2f)" % (lip_open_w, lip_open_h, 2 * bore_r, ox, oy))
+        # Checked against the real aperture polygon now, not a pair of half-widths.
+        for a in range(0, 360, 5):
+            qx, qy = ox + bore_r * math.cos(math.radians(a)), oy + bore_r * math.sin(math.radians(a))
+            hit, m = False, len(aperture)
+            for k in range(m):
+                ax, ay = aperture[k]
+                bx2, by2 = aperture[(k + 1) % m]
+                if (ay > qy) != (by2 > qy) and qx < (bx2 - ax) * (qy - ay) / (by2 - ay) + ax:
+                    hit = not hit
+            if not hit:
+                sys.exit("WALL VIGNETTES: the %.1f mm bore at (%.2f, %.2f) is not clear "
+                         "of the wall" % (2 * bore_r, ox, oy))
 
     # ---- geometry ------------------------------------------------------------
     step = sw.StepFile("camera_lens_box",
@@ -496,18 +656,23 @@ def build(args):
         w("wall       %.2f thick where the board is, %.2f thick above it. It steps\n"
           "           inboard %.2f mm at z %.2f and stays there to the top face.\n"
           % (t, t + args.pcb_clear + lip_ov, lip_ov, args.board_relief))
-        w("           inner face %.1f x %.1f, notched round each screw pocket so an M2\n"
-          "           head still clears -- the ledge this replaced left it only 3.20 mm\n"
-          % (lip_open_w, lip_open_h))
+        w("           inner face FOLLOWS THE BOARD OUTLINE (%d edges), notched round each\n"
+          "           screw pocket so an M2 head still clears\n" % len(contour))
         w("           CLOSES the %.2f mm slot round the board: a ray must climb it, run\n"
           "           %.2f mm inboard through a %.2f mm channel, then turn back up --\n"
           "           %.1f:1, so nothing within %.0f deg of horizontal gets through\n"
           % (args.pcb_clear, run, args.board_relief,
              run / args.board_relief, math.degrees(math.atan2(args.board_relief, run))))
-        if args.overlap is None:
-            w("           overlap DERIVED: %s (%s) sits %.2f mm in, less %.2f clearance\n"
-              % (nearest["ref"], nearest["lib"].split(":")[-1],
-                 inset_of(nearest), args.wall_clear))
+        w("           cap %.2f mm %s; %d of %d edges cut back by their own neighbours:\n"
+          % (cap, "DERIVED from the perimeter" if args.overlap is None else "given",
+             len(capped), len(contour)))
+        for i in capped:
+            a, b = contour[i], contour[(i + 1) % len(contour)]
+            w("             %5.1f mm edge (%6.1f,%6.1f)->(%6.1f,%6.1f)  %.2f mm  (%s)\n"
+              % (math.hypot(b[0] - a[0], b[1] - a[1]), a[0], a[1], b[0], b[1],
+                 dists[i], who[i]["ref"] if who[i] else "-"))
+        w("           the 26 mm one is the NOTCH's inner wall -- covering it is what\n"
+          "           takes %.0f mm2 of open board out of the light path\n" % notch_area)
         w("           print this part in a MATTE BLACK material -- the geometry stops\n"
           "           the direct path, absorption is what deals with the scattered rest\n")
     else:

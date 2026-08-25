@@ -89,69 +89,74 @@ wall is stiffer than one standing alone.
 
 ### The thick wall — stray light from the boards below
 
-**Symptom: the LED array on the Pt board was lighting the sensor.** The path was not the
-lens. The cavity is the board plus `--pcb-clear` on every side, which leaves a **0.75 mm slot
-running the full height of the wall, all the way around the board** — a direct opening from
-the space below the camera PCB, where the Pt's LEDs are, into the optical cavity.
+**Symptom: the LED array on the Pt board was lighting the sensor.** There are two paths, and
+the second one is much the larger.
 
-The fix is not a part added to the box; it is the box's own wall being thicker. The cavity has
-to be board-plus-clearance only **where the board is**. Above its top face nothing needs that
-width, so the wall steps inboard and stays there to the top:
+**Path 1 — the perimeter slot.** The cavity is the board plus `--pcb-clear` on every side,
+leaving a 0.75 mm slot running the full height of the wall all the way round. The fix is not a
+part added to the box, it is the box's own wall being thicker: the cavity has to be
+board-plus-clearance only **where the board is**, so above the board's top face the wall steps
+inboard and stays there to the top. One face with a rebate at the bottom, not a ledge hung off
+the wall.
+
+**Path 2 — the notch, which is 164 mm² of missing board.** Everything here used the board's
+*bounding box* until it was checked. The real outline has a **29 × 5.5 mm notch cut into the
+east edge** — the slot that makes the Pt's LEDs visible — and a wall built on the bounding box
+caps 1.4 mm of it and leaves **4.1 × 26 mm wide open** straight into the optical cavity. That
+was most of the light this box was trying to keep out.
+
+So the wall's inner face now **follows the real outline**, notch included:
 
 ```
 wall   3.00 thick where the board is, 5.15 thick above it
-       steps inboard 1.40 mm at z = 0.30 and holds to the top face
-       inner face 52.2 x 42.2
-       2.15 mm inboard through a 0.30 mm channel  ->  7.2:1
-       nothing within 8 deg of horizontal gets through
+       inner face FOLLOWS THE BOARD OUTLINE (16 edges)
+       cap 1.40 mm DERIVED from the perimeter
+       1 of 16 edges cut back by its own neighbours:
+         26.0 mm edge (13.5,-13.5)->(13.5,12.5)   0.07 mm   (R14)
+       -> 99.0% of the notch is now wall, not aperture
 ```
 
-One face with a rebate at the bottom to clear the board — not a ledge hung off the wall.
+**The offset is per-edge, and it has to be.** R14 and R1 (0402s, 0.60 tall) sit **0.47 mm** off
+the notch's inner wall, so that one 26 mm edge can only be covered by 0.07 mm — while the far
+side of the board gives the full 1.40. A single uniform figure would either foul two 0402s or
+throw the overlap away everywhere else. Each edge takes what its own neighbours allow.
 
-**The step is derived, not chosen.** How far the wall may reach over the board is set by the
-nearest top-side component — **C31, an 0805, 1.80 mm in from the edge** — less `--wall-clear`,
-giving 1.40 mm. Same discipline as the socket tile's `--expose`. Staying under 1.80 mm is what
-matters: with nothing beneath it, the step can sit **0.30 mm** above the board instead of
-having to clear a 1.05 mm capacitor, and a tighter channel is a better trap. Pass `--overlap`
-to reach further and every part it would then cover is checked against the relief, by name and
-height.
+**The cap is derived from the perimeter, not the notch.** Left uncapped each edge takes its own
+maximum — up to 5.3 mm on the north edge — which makes the wall wander, eats the aperture, and
+(found the hard way) deforms it enough that a boss stops straddling the boundary and its notch
+cannot be built at all. So the cap is what the true outer perimeter allows, and interior edges
+are reduced from it.
 
 **It must not touch the board.** The four washers are the seating datum; wall material coming
 down proud would fight them and could rock the PCB. Hence `--board-relief`.
 
-**It is continuous all the way round**, including across the side where the base box's wall is
-left off for LED visibility. The step is in the *upper* half and the LED opening is in the
-*lower* one, so they are independent — the opening can be as generous as you like without
-reopening the path to the sensor.
-
-#### The notches, and the screws they nearly buried
+#### The boss notches, and the screws they nearly buried
 
 A thick wall runs straight through the four screw-head pockets: each pocket's centre is inside
-the aperture rectangle while its circle reaches past **both** edges near the corner. Cutting it
-as a hole is not available — a hole crossing its own outline is not a hole, and `prism()` would
-emit a solid that is not watertight rather than an error. So the aperture is the **union of the
-rectangle with a circle at each boss**: the pocket lies wholly in the void, needs no hole, and
-the wall stays a **connected ring** with material still outboard of every pocket (four separate
-bars would not). Nothing is lost optically — the washer and the column are the same diameter
-and fill exactly those notches, sealing onto the board at each corner.
+the aperture while its circle reaches past **both** edges near the corner. Cutting it as a hole
+is not available — a hole crossing its own outline is not a hole, and `prism()` would emit a
+solid that is not watertight rather than an error. So the aperture is **unioned with a circle
+at each boss**: the pocket lies wholly in the void, and the wall stays a **connected ring** with
+material outboard of every pocket. Nothing is lost optically — the washer and column are the
+same diameter and fill exactly those notches.
 
-> **This bit bit.** The first version ran two of the four arcs the long way round. The result
-> was a closed, valid, entirely plausible aperture that buried two of the four screw heads in
-> 1 mm of wall. The solid was watertight, the genus was right, the volume matched — every check
-> in this repo passed. `gen_lens_box.py` now walks the full head circle against the aperture at
-> every boss on every run and refuses:
+> **This bit, twice.** The first version was analytic and rectangle-only; it ran two of the four
+> arcs the long way round and produced a closed, valid, entirely plausible aperture that buried
+> two screw heads in 1 mm of wall — watertight, right genus, right volume, every check in this
+> repo passed. (The shelf it replaced had the same defect quietly: **3.20 mm of clear width for
+> a 3.80 mm M2 head**.) `gen_lens_box.py` now walks the full head circle against the aperture at
+> every boss on every run:
 >
 > ```
 > WALL BURIES A SCREW HEAD at (-33.50, 19.50): 23 of 72 points on the 4.2 mm
 > head circle fall in wall material.
 > ```
 >
-> The shelf this replaced had the same defect in a quieter form — it left **3.20 mm of clear
-> width for a 3.80 mm M2 head** and nothing said so.
+> `union_circle()` is now general — the real outline has chamfers, so a boss can straddle three
+> edges and the analytic form simply does not apply.
 
 **Geometry stops the direct path; absorption deals with the rest.** Print this part in a
-**matte black** material. A light-coloured or translucent print will scatter round the
-labyrinth no matter how good the numbers are. `--no-thick-wall` returns the old open cavity.
+**matte black** material. `--no-thick-wall` returns the old open cavity.
 
 ### The seam joint — tongue and groove
 
