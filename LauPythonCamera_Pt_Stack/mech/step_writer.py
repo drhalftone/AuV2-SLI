@@ -14,9 +14,11 @@ outer outline for you, but hole winding is load-bearing -- see `planar_face`.
 """
 
 import math
+import os
 import struct
 
-__all__ = ["StepFile", "signed_area", "dedupe", "arc", "rect", "rounded_rect", "circle"]
+__all__ = ["StepFile", "signed_area", "dedupe", "arc", "rect", "rounded_rect", "circle",
+           "write_verified"]
 
 
 # --------------------------------------------------------------------------------------
@@ -183,6 +185,51 @@ def _r(v):
 
 def _cross(a, b):
     return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
+
+
+def write_verified(path, text, retries=4):
+    """Write `text`, read the file back, and refuse to return until they match.
+
+    THIS IS NOT PARANOIA, IT IS A MEASURED FAULT ON THIS MACHINE. Generating
+    camera_base_box.step 20 times in a row produced a file differing from the
+    other 19 on 4 of those runs. Every instance was the same shape:
+
+        good  #4256=CARTESIAN_POINT('',(-32.6514719,-19.6514719,-22.));
+        bad   #4256=CARTESIAN_POINT('',(-32.6511719,-19.6514719,-22.));
+
+    one ASCII digit substituted inside the X coordinate of one point, file
+    length unchanged, everything else byte-identical. Two independent runs
+    produced the SAME defect at the SAME line, so it is not a random bit flip.
+
+    Why it has to be caught here rather than downstream: a 0.3 um displacement
+    of a single vertex does not break the B-rep, does not unbalance the
+    edge-use check, does not change the genus, and moves the integrated volume
+    far less than check_step.validate's tolerance. It passes every test this
+    repo has. It is a silent corruption of exactly the kind that shipped a
+    build streaming at full rate while mangling half the FT601 bus -- correct
+    by every measurement being taken, and wrong.
+
+    A read-back catches it when the damage happens on the way to disk. It
+    cannot catch damage to `text` itself before the first write, since the
+    retry would then rewrite the same wrong bytes -- but the generators are
+    byte-reproducible by design, so `git diff` is the backstop for that case.
+    Both together are why the "regenerate, never hand-edit" rule in the README
+    is load-bearing and not just tidiness.
+
+    Returns the number of attempts it took: 1 is the normal, quiet case.
+    """
+    want = text.encode("utf-8")
+    for attempt in range(1, retries + 1):
+        with open(path, "w", newline="\n", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        if open(path, "rb").read() == want:
+            return attempt
+    raise IOError(
+        "%s: wrote %d bytes %d times and read back something different every "
+        "time.\nThis machine is corrupting file writes; the part was NOT saved."
+        % (path, len(want), retries))
 
 
 class StepFile:

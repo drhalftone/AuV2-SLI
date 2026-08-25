@@ -1,11 +1,12 @@
-# Mechanical models — camera sensor, bracket, and stack shroud
+# Mechanical models — camera sensor, bracket, stack shroud, and the printed enclosure
 
 | | writes | |
 |---|---|---|
 | `gen_sensor_step.py` | `../3dmodels/NOIP1SN1300A_LCC48.step` | the PYTHON 1300 package — the reference body everything else is designed around |
 | `gen_socket_tile.py` | `../3dmodels/camera_socket_tile.step` | iteration 0 of the bracket: the contact tile |
 | `gen_stack_shroud.py` | `../3dmodels/stack_shroud_<layer>.step` | **CNC aluminium** shroud rings, one per board of the Alchitry stack |
-| `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens |
+| `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens. Also the **upper half** of the two-part enclosure |
+| `gen_base_box.py` | `../3dmodels/camera_base_box.step` | **base box** — the lower half: encloses the Hd+/Ft+/Pt V2 and sandwiches to the lens box |
 | `gen_lens_holder.py` | `../3dmodels/camera_lens_holder.step` | M12 / S-mount alternative: plate on four posts with a threaded barrel |
 | `step_writer.py` | — | shared AP214 writer and 2D helpers |
 | `check_step.py` | — | validates any of the above |
@@ -18,9 +19,15 @@ python gen_sensor_step.py                    # typical dimensions
 python gen_sensor_step.py --tolerance max    # worst-case envelope
 python gen_socket_tile.py
 python gen_lens_box.py --bosses              # the C-mount box, located on the corner holes
+python gen_base_box.py --open-face E         # ...and the lower half that sandwiches to it
 python gen_lens_holder.py                    # the M12 alternative
 python check_step.py
 ```
+
+The **printed enclosure is those two commands** — `gen_lens_box.py` is the upper half and
+`gen_base_box.py` the lower, split on the camera PCB's bottom face at z = −1.60. Run them in
+that order: the base box reads the lens box's STEP and refuses to emit if the halves would not
+meet. See [the base box](#gen_base_boxpy--the-base-box-and-the-two-part-enclosure) at the end.
 
 The first section below covers the sensor; [the socket tile](#the-socket-tile-iteration-0)
 and [the lens mounts](#the-lens-mounts) are further down.
@@ -54,10 +61,29 @@ left edge, leaving nowhere for a wall worth printing. Straddling the PCB removes
 constraint entirely — the 56.5 × 46.5 cavity swallows the 55 × 45 board with 0.75 mm all
 round, and the box touches nothing.
 
-`--bosses` adds four Ø5 columns that **hang from the top face** down to the board, each with
-a Ø2.0 pin entering the board's own Ø2.2 hole 1 mm (a slip fit — this part is meant to lift
-off). Ø5 rather than Ø6 because the holes sit 2.5 mm in from the edge and anything larger
-overhangs; the script asserts that too.
+`--bosses` is what makes the box hold the board rather than merely cover it, and it is worth
+being precise about because it is the whole load path:
+
+| | z | |
+|---|---|---|
+| top face | 16.786 → 19.786 | the optical datum; the lens shoulder rests here |
+| column ×4 | 1.200 → 16.786 | hangs from the top face, bored Ø4.2 for the screw head |
+| washer ×4 | 0.000 → 1.200 | a flat Ø7.0 annulus **bearing down on the PCB** at its corner holes |
+| walls | −1.600 → 16.786 | stand on the table and touch nothing |
+
+So the **walls are a skirt, not a support**. The PCB is clamped between the four washers above
+and a nut below, and the board therefore hangs from the box at exactly four points — the
+Ø2.2 corner holes. The Ø4.2 head pocket runs all the way out through the top face so a driver
+reaches each screw without lifting the box.
+
+The washer OD is Ø7.0 and **deliberately overhangs the cavity into the wall by ~0.25 mm**. The
+corner holes are only 2.5 mm in from the board edge, so a boss small enough to stay clear of
+the wall cannot also carry an M2 head. The two solids union on print, and a boss tied into the
+wall is stiffer than one standing alone.
+
+> An earlier revision of this part used Ø5 columns with a Ø2.0 locating pin entering the
+> board's hole, and this README described that for a while after the code had moved on. It is
+> now a washer-and-through-screw. If you are reading a Ø5 pin anywhere else, that text is stale.
 
 ### `gen_lens_holder.py` — M12 / S-mount
 
@@ -355,3 +381,139 @@ for the Hd+/Ft+/Pt V2 are unknown — and a STEP file looks authoritative in a w
 caveat in conversation does not. A shop cannot tell a measured cutout from a guessed
 one. **The committed rings are closed bands**: no cable can leave the stack, on
 purpose, until real positions are measured.
+
+---
+
+## `gen_base_box.py` — the base box, and the two-part enclosure
+
+The enclosure is **two half boxes sharing one split plane**, not a new design:
+
+```
+  +19.786  ---- top face = OPTICAL DATUM ---------.
+                                                  |  camera_lens_box.step
+   -1.600  ==== MATING PLANE ===================== :  (unchanged)
+                                                  |
+                [ camera PCB ]  above the split    |  camera_base_box.step
+                [ Pt V2 ]                          |
+                [ Ft+ ]                            |
+  -19.000  ---- Hd+ bottom face                    |
+  -21.000  ---- floor top, four support bosses     |
+  -24.000  ---- floor bottom, four nut pockets ----'
+```
+
+`gen_lens_box.py` already stopped its walls at **z = −1.60**, the camera PCB's bottom face, so
+the lens box *is* the upper half with no change at all. The base box picks up exactly there.
+
+```
+python gen_base_box.py --open-face E          # buildable today, no measurements needed
+```
+
+### It refuses to emit a box no cable can leave
+
+Every external connector in the design — HDMI, USB 3, power, JTAG — is on one of the three
+boards **this** half encloses. So a sealed base box is not a conservative default, it is a
+useless part, and the generator will not produce one silently. Pass `--open-face N|S|E|W` to
+leave a whole wall off (needs no measurements at all), `--window edge:along:width:zbot:ztop`
+with a `--window-source` for a measured cutout, or `--closed-box` if you really do want it
+sealed. Window `zbot`/`ztop` are measured **up from the Hd+ bottom face** — a surface you can
+rest calipers on — not as signed offsets from a datum buried inside the sensor.
+
+`--window-source` is stamped into the STEP description, for the same reason
+`gen_stack_shroud.py` requires `--notch-source`: a shop, or you in six weeks, cannot tell a
+measured cutout from an invented one by looking at the file.
+
+### The mating surface is checked against the part it mates to
+
+The base box does not assume the lens box's dimensions. It **reads `camera_lens_box.step` on
+every run**, pulls the `walls` solid, and asserts its own outer profile and top face match —
+outer x0/x1/y0/y1 and the mating plane, to 1 µm. Regenerate the lens box with a different
+`--wall` or `--pcb-clear` and this part fails loudly instead of printing a base that overhangs
+by 1.5 mm. Two halves that do not meet is exactly the failure a STEP file hides until it has
+been printed.
+
+### The stack is captured, never hung
+
+Four **M2 × 25** socket caps go in from the **top**, through the lens box's driver pockets,
+down the whole board stack, into nuts captured under this floor:
+
+```
+screw head → lens box washer → camera PCB → (stack in compression, connector
+bodies bearing) → Hd+ → support boss → floor → nut
+```
+
+That matters. Lengthening the lens box's walls alone would leave the camera board as the only
+clamped board, with the Pt V2, Ft+ and Hd+ hanging beneath it **on the DF40s alone** — 19 mm of
+board stack carried by three 0.4 mm-pitch connector pairs, in tension, the moment the assembly
+is picked up. `gen_stack_shroud.py` was written to avoid precisely that; this arrives at it
+from the other direction. Captured between the washers above and the four bosses below, neither
+connector pair ever sees tension.
+
+`--floor-clear` (default 2.0 mm) is the gap under the Hd+ for its bottom-side parts; the four
+Ø7.0 bosses bridge it at the corner holes and are the only thing the stack rests on.
+
+### The stack height is measured, not derived
+
+**19.00 mm, camera PCB top surface → Hd+ bottom surface**, measured on the assembled stack and
+passed in directly. It is *not* rebuilt from board thickness × gap, because that product is
+what was wrong before:
+
+| | |
+|---|---|
+| `gen_stack_shroud.py` computes | 17.44 mm — 4 × 1.60 mm boards + 3 × **3.68** mm gaps |
+| measured | **19.00 mm** → implies a **4.20** mm gap |
+| Br.step fits `DF40HC(4.0)` sockets | 4.0 mm nominal stacking height |
+
+4.20 is close to the connector's own 4.0 nominal; 3.68 is not. **Treat the 3.68 mm in
+`gen_stack_shroud.py` as suspect** — it is not used here, and the shroud's ring heights and its
+"rings are 1.00 mm short" safety margin are both derived from it.
+
+### What is still unverified
+
+The four screws must pass the corner holes of the **Hd+, Ft+ and Pt V2**. The Ø2.2 pattern at
+(2.5, 2.5) / (2.5, 42.5) / (52.5, 2.5) / (52.5, 42.5) is confirmed on the camera board (its own
+KiCad) and on the Br (`Br.step`, four r=1.1 cylinders at exactly those centres) — but there is
+no CAD for those three anywhere in this repo. An M2 in a Ø2.2 hole has 0.2 mm to spare. If a
+board differs the screw simply will not pass, which you discover at assembly with nothing
+damaged, so the generator warns rather than refuses.
+
+---
+
+## A measured fault on this machine: silently corrupted STEP writes
+
+While generating the base box, the same command run 20 times produced a file that differed
+from the other runs **4 times**. Every instance had the same shape:
+
+```
+good  #4256=CARTESIAN_POINT('',(-32.6514719,-19.6514719,-22.));
+bad   #4256=CARTESIAN_POINT('',(-32.6511719,-19.6514719,-22.));
+                                       ^ one ASCII digit
+```
+
+One digit substituted inside the X coordinate of one point, **file length unchanged**, every
+other byte identical. It is not a random bit flip: two independent runs produced the *same*
+defect at the *same* line, and every instance landed in a `CARTESIAN_POINT` X value at byte
+32–33 of its line. Reads are stable — the corrupt file stays corrupt when re-read — so the
+damage is on disk, not in the reader.
+
+**Why nothing in this repo caught it.** Displacing one vertex by 0.3 µm leaves a solid that is
+still watertight, still has every edge used exactly twice, still has the right genus, and whose
+integrated volume moves far less than `check_step.validate`'s tolerance. It passes every test
+here. That is the same failure mode as the FT601 build that streamed at full rate while
+corrupting half the bus: correct by every measurement being taken, and wrong.
+
+**What was done about it.** `step_writer.write_verified()` writes, `fsync`s, reads the file back
+and rewrites until the bytes match, failing loudly if it cannot. That took the rate from 4/20 to
+1/25 — but note the in-process read-back **never fired** on the survivor, so that last case is
+corruption occurring after the writing process has already verified and exited. This is a
+system-level fault (storage, memory, or something else touching files in this tree), not a
+Python one, and it is worth running Windows Memory Diagnostic and checking for an antivirus or
+sync client with its hands on `Developer/`.
+
+**The real backstop is byte-reproducibility.** Every generator here emits a byte-identical file
+for identical inputs, which is what turned an invisible one-digit defect into a one-line
+`git diff`. That is why "regenerate; do not hand-edit a STEP" at the top of this file is
+load-bearing and not merely tidiness — and why it is worth running `git status` after
+regenerating and re-running the generator if anything you did not change has moved.
+
+> `gen_base_box.py` uses `write_verified()`. The older generators still use a plain `open().write()`
+> and should be migrated.
