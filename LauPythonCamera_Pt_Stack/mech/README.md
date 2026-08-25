@@ -87,6 +87,48 @@ wall is stiffer than one standing alone.
 > board's hole, and this README described that for a while after the code had moved on. It is
 > now a washer-and-through-screw. If you are reading a Ø5 pin anywhere else, that text is stale.
 
+### The light lip — stray light from the boards below
+
+**Symptom: the LED array on the Pt board was lighting the sensor.** The path was not the
+lens. The cavity is the board plus `--pcb-clear` on every side, which leaves a **0.75 mm slot
+running the full height of the wall, all the way around the board** — a direct opening from
+the space below the camera PCB, where the Pt's LEDs are, into the optical cavity.
+
+The lip is a ledge standing inboard off the wall, overhanging the board edge, so a ray has to
+climb the slot, run inward under the lip, and turn back up:
+
+```
+lip       overhangs the board 1.40 mm all round, aperture 52.2 x 42.2
+          z 0.30 -> 1.50, standing 0.30 mm off the board (never touching it)
+          2.15 mm inboard through a 0.30 mm channel  ->  7.2:1
+          nothing within 8 deg of horizontal gets through
+```
+
+**The overhang is derived, not chosen.** How far the lip may reach is set by the nearest
+top-side component — **C31, an 0805, 1.80 mm in from the edge** — less `--wall-clear`, giving
+1.40 mm. That is the same discipline as the socket tile's `--expose`. Staying under 1.80 mm is
+what matters: with nothing beneath the lip, it can sit **0.30 mm** off the board instead of
+having to clear a 1.05 mm capacitor, and a tighter channel is a better trap. Pass
+`--lip-overlap` to reach further and every part it would then cover is checked against the
+relief, by name and height, rather than assumed to fit.
+
+**It must not touch the board.** The four washers are the seating datum; a lip that came down
+proud would fight them and could rock or stress the PCB. Hence the relief, and hence the lip
+being cut short deliberately — the same reasoning as the shroud's `--relief`.
+
+**It is continuous all the way round**, including across the side where the base box's wall is
+left off for LED visibility. The lip is in the *upper* half and the LED opening is in the
+*lower* one, so they are independent: the opening can be as generous as you like without
+reopening the path to the sensor.
+
+Its outer profile *is* the wall's inner profile, so the two merge into one wall on print rather
+than meeting at a seam a ray could find. The aperture is a plain rectangle — rounding it would
+give back overlap at the corners, which are the hardest place to seal.
+
+**Geometry stops the direct path; absorption deals with the rest.** Print this part in a
+**matte black** material. A light-coloured or translucent print will scatter round the
+labyrinth no matter how good the numbers are. `--no-lip` returns the old open cavity.
+
 ### `gen_lens_holder.py` — M12 / S-mount
 
 Kept as the alternative. A plate on four corner posts with a tapped barrel; bore 11.5 mm is

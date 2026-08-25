@@ -170,6 +170,58 @@ def build(args):
         sys.exit("SEAT TOO NARROW: %.2f mm of face outside the bore, need %.2f "
                  "for a %.1f mm shoulder" % (seat - bore_r, args.seat_min, C_SHOULDER_OD))
 
+    # 5. THE LIGHT LIP. The cavity is the board plus --pcb-clear on every side,
+    #    which leaves a 0.75 mm slot running the FULL height of the wall, all the
+    #    way around the board. That slot connects the space below the camera PCB
+    #    -- where the Pt's LED array is -- straight into the optical cavity, and
+    #    it is how LED light was reaching the sensor. The lip is a ledge standing
+    #    off the wall inboard, overhanging the board edge, so a ray must climb the
+    #    slot, run inward under the lip, and turn back up to get in.
+    #
+    #    HOW FAR IT MAY REACH IS NOT A FREE CHOICE. It is set by the nearest
+    #    top-side component, so it is derived from the board and then checked,
+    #    the same way --expose derives the socket tile's outer size.
+    lip_ov = lip_open_w = lip_open_h = None
+    if args.lip:
+        def inset_of(c):
+            mx, my = to_model(c["x"], c["y"])
+            hw, hh = c["w"] / 2.0, c["h"] / 2.0
+            return min(mx - hw - x0, x1 - (mx + hw), my - hh - y0, y1 - (my + hh))
+
+        top_side = [c for c in comps if c["layer"] == "F.Cu"]
+        nearest = min(top_side, key=inset_of)
+        headroom = inset_of(nearest) - args.wall_clear
+        lip_ov = args.lip_overlap if args.lip_overlap is not None else headroom
+        if lip_ov <= 0:
+            sys.exit("NO ROOM FOR A LIP: %s (%s) is %.2f mm from the board edge and "
+                     "--wall-clear is %.2f." % (nearest["ref"],
+                     nearest["lib"].split(":")[-1], inset_of(nearest), args.wall_clear))
+        if lip_ov >= min(bw, bh) / 2.0:
+            sys.exit("LIP OVERLAP %.2f closes the aperture (board %.1f x %.1f)"
+                     % (lip_ov, bw, bh))
+        # Anything the lip reaches over must fit in the relief beneath it. With
+        # the derived overlap nothing does, which is the point -- it lets the lip
+        # sit 0.3 mm off the board instead of clearing a 1.05 mm capacitor, and a
+        # tighter relief is a better light trap.
+        for c in top_side:
+            if inset_of(c) >= lip_ov:
+                continue
+            hz = glass_z if c["ref"] == "U1" else body_height(c["lib"])
+            if hz >= args.lip_relief:
+                sys.exit(
+                    "LIP FOULS %s (%s): it lies %.2f mm from the board edge, inside a "
+                    "%.2f mm overhang,\nand stands %.2f mm tall against a %.2f mm relief.\n"
+                    "Either --lip-overlap below %.2f, or --lip-relief above %.2f."
+                    % (c["ref"], c["lib"].split(":")[-1], inset_of(c), lip_ov,
+                       hz, args.lip_relief, inset_of(c), hz))
+        lip_open_w, lip_open_h = bw - 2 * lip_ov, bh - 2 * lip_ov
+        # It must not intrude on the light cone. The bore is the widest the cone
+        # ever is, so clearing the bore's footprint clears everything below it.
+        if (abs(ox - cx) + bore_r > lip_open_w / 2.0 or
+                abs(oy - cy) + bore_r > lip_open_h / 2.0):
+            sys.exit("LIP VIGNETTES: aperture %.1f x %.1f does not clear the %.1f mm "
+                     "bore at (%.2f, %.2f)" % (lip_open_w, lip_open_h, 2 * bore_r, ox, oy))
+
     # ---- geometry ------------------------------------------------------------
     step = sw.StepFile("camera_lens_box",
                        "C-mount lens box, open bottom, gravity-seated",
@@ -197,6 +249,19 @@ def build(args):
     step.prism(outer, top_under, top_surf, n, COLORS["box"], holes=tholes)
     expected[n] = (abs(sw.signed_area(outer))
                    - sum(abs(sw.signed_area(h)) for h in tholes)) * args.top_t
+
+    # The light lip: a ledge from the cavity wall inboard, standing off the board.
+    # Its outer profile IS the wall's inner profile, so the two merge into one
+    # wall on print rather than meeting at a seam a ray could find. The aperture
+    # is a plain rectangle -- rounding it would give back overlap at the corners,
+    # which are the hardest place to seal and the furthest from the sensor.
+    if args.lip:
+        n = "lip"
+        aperture = sw.reverse(sw.rect(cx, cy, lip_open_w, lip_open_h))
+        step.prism(inner, args.lip_relief, args.lip_relief + args.lip_t, n,
+                   COLORS["box"], holes=[aperture])
+        expected[n] = ((abs(sw.signed_area(inner)) - abs(sw.signed_area(aperture)))
+                       * args.lip_t)
 
     # Optional locating bosses on the PCB's own corner holes.
     #
@@ -267,6 +332,26 @@ def build(args):
       % (top_surf, image_z, C_FLANGE_FOCAL))
     w("clearance  tallest part under the top: %s at %.2f, top underside %.2f (%.2f gap)\n"
       % (worst[0], worst[1], top_under, top_under - worst[1]))
+    if args.lip:
+        run = args.pcb_clear + lip_ov
+        w("lip        overhangs the board %.2f mm all round, aperture %.1f x %.1f,\n"
+          "           z %.2f -> %.2f, standing %.2f mm off the board (never touching it)\n"
+          % (lip_ov, lip_open_w, lip_open_h, args.lip_relief,
+             args.lip_relief + args.lip_t, args.lip_relief))
+        w("           %s the %.2f mm slot round the board: a ray must climb it, run\n"
+          "           %.2f mm inboard through a %.2f mm channel, then turn back up --\n"
+          "           %.1f:1, so nothing within %.0f deg of horizontal gets through\n"
+          % ("CLOSES" if lip_ov > 0 else "", args.pcb_clear, run, args.lip_relief,
+             run / args.lip_relief, math.degrees(math.atan2(args.lip_relief, run))))
+        if args.lip_overlap is None:
+            w("           overlap DERIVED: %s (%s) sits %.2f mm in, less %.2f clearance\n"
+              % (nearest["ref"], nearest["lib"].split(":")[-1],
+                 inset_of(nearest), args.wall_clear))
+        w("           print this part in a MATTE BLACK material -- the geometry stops\n"
+          "           the direct path, absorption is what deals with the scattered rest\n")
+    else:
+        w("lip        NONE -- the cavity is open to the boards below through a %.2f mm\n"
+          "           slot all round. This is the path the Pt's LEDs used.\n" % args.pcb_clear)
     ok = check_step.validate(OUT, expected, out=open(os.devnull, "w"))
     w("volumes    %s\n" % ("OK" if ok else "MISMATCH"))
     return 0 if ok else 1
@@ -306,6 +391,20 @@ def main():
                    help="pocket the box arches over the screw head with, mm "
                         "(M2 socket head is 3.8, pan head 4.0)")
     p.add_argument("--screw-dia", type=float, default=2.40)
+    p.add_argument("--no-lip", dest="lip", action="store_false",
+                   help="omit the light lip. The cavity is then open to the boards "
+                        "below through a %s mm slot all round, which is how the Pt's "
+                        "LEDs reached the sensor.")
+    p.add_argument("--lip-overlap", type=float, default=None,
+                   help="how far the lip reaches over the board, mm. DERIVED from the "
+                        "nearest top-side component when not given; passing a larger "
+                        "value is checked against every part it would then cover.")
+    p.add_argument("--lip-relief", type=float, default=0.30,
+                   help="gap between the board's top face and the lip's underside, mm. "
+                        "The lip must NOT touch the board -- the four washers are the "
+                        "seating datum and a proud lip would fight them (default 0.30)")
+    p.add_argument("--lip-t", type=float, default=1.20,
+                   help="lip thickness in Z, mm")
     p.add_argument("--corner-r", type=float, default=2.0)
     p.add_argument("--segments", type=int, default=64)
     p.add_argument("--timestamp", default="2026-08-13T00:00:00")
