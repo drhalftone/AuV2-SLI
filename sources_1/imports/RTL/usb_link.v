@@ -34,6 +34,14 @@ module usb_link #(
     // projector -- and measuring the wrong one would give a plausible number
     // for a signal nothing is locked to.
     input  wire        vs_meas,
+    // Incoming HDMI timing from video_meas at the top level. Measured in the
+    // PIXEL domain, so it cannot be produced here -- this module only forwards
+    // it to uart_ctrl, the same way it forwards its own vs_per_w.
+    input  wire [55:0] rx_meas,
+    input  wire [17:0] rx_pixkhz,
+    input  wire [7:0]  rx_diag,
+    input  wire [7:0]  vfifo_rep,
+    input  wire [31:0] ctl_diag,
 
     // ---- pin-state readback (reg 0x10): physical switches + post-override value ----
     input  wire [3:0]  phys_sw,          // raw newSW pins {R,G,B,orient} (async)
@@ -416,6 +424,11 @@ module usb_link #(
         .cam_spi_wdata(cam_spi_wdata), .cam_spi_start(cam_spi_start),
         .cam_stat_i(cam_stat_i),
         .vs_per_i(vs_per_w),
+        .rx_meas_i(rx_meas),
+        .rx_pixkhz_i(rx_pixkhz),
+        .rx_diag_i(rx_diag),
+        .vfifo_rep_i(vfifo_rep),
+        .ctl_diag_i(ctl_diag),
         .maxexp_i(maxexp_w),
         .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
         .cam_spi_done(cam_spi_done),

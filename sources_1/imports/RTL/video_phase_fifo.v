@@ -23,7 +23,15 @@ module video_phase_fifo #(
     input  wire           wclk,
     input  wire [DW-1:0]  wdata,
     input  wire           rclk,
-    output reg  [DW-1:0]  rdata
+    output reg  [DW-1:0]  rdata,
+    // Diagnostics. This buffer rests on one assumption, stated above: that in
+    // passthrough wclk and rclk are the SAME frequency. If that does not hold,
+    // the safe-band guard below re-primes forever, rdata FREEZES, and the sync
+    // it carries stops being a valid raster -- which presents to a display as
+    // "no signal" rather than a bad picture. Nothing observable distinguished
+    // that from a dead decoder, so it is published.
+    output wire           primed_o,     // 1 = reading; 0 = re-priming
+    output reg  [7:0]     reprimes      // wraps; STATIC = healthy, climbing = thrashing
 );
     localparam integer DEPTH = (1 << AW);
 
@@ -55,13 +63,16 @@ module video_phase_fifo #(
     // ---------- read side (rclk) ----------
     reg [AW-1:0] rbin   = {AW{1'b0}};
     reg          primed = 1'b0;
+    initial reprimes = 8'd0;
+    assign primed_o = primed;
     wire [AW-1:0] fill = wbin_r - rbin;        // approx occupancy (mod DEPTH)
     always @(posedge rclk) begin
         if (!primed) begin
             rbin <= {AW{1'b0}};
             if (fill >= (DEPTH/2)) primed <= 1'b1;          // wait ~half full, then read
         end else if (fill == 0 || fill >= (DEPTH-1)) begin
-            primed <= 1'b0;                                  // drifted (e.g. offline): re-prime
+            primed   <= 1'b0;                                // drifted (e.g. offline): re-prime
+            reprimes <= reprimes + 8'd1;                     // count it -- see header
         end else begin
             rdata <= mem[rbin];
             rbin  <= rbin + 1'b1;

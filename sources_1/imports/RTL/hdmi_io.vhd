@@ -23,7 +23,15 @@ entity hdmi_io is
         -------------------------------
         clock_locked   : out std_logic;
         data_synced    : out std_logic;
-        debug          : out std_logic_vector(7 downto 0);        
+        debug          : out std_logic_vector(7 downto 0);
+        -- RX diagnostics hdmi_input already computes and this module discarded:
+        --   [6] idelay_rdy [5] ch2_invalid [4] ch1_invalid [3] ch0_invalid
+        --   [2] dvid_mode  [1] pll_locked  [0] symbol_sync
+        rx_diag        : out std_logic_vector(7 downto 0);
+        -- video_phase_fifo health: re-prime count (STATIC = healthy)
+        vfifo_reprimes : out std_logic_vector(7 downto 0);
+        -- [15:0] ch0 ctl cycles / window, [31:16] all-three-coincident
+        ctl_diag       : out std_logic_vector(31 downto 0);        
         sel : out std_logic; -- orginal clock source select, now used to demo the ghost RX clock
         -------------------------------
         --HDMI input signals
@@ -116,7 +124,9 @@ architecture Behavioral of hdmi_io is
         wclk  : in  std_logic;
         wdata : in  std_logic_vector(26 downto 0);
         rclk  : in  std_logic;
-        rdata : out std_logic_vector(26 downto 0)
+        rdata : out std_logic_vector(26 downto 0);
+        primed_o : out std_logic;
+        reprimes : out std_logic_vector(7 downto 0)
     );
     end component;
 
@@ -128,6 +138,11 @@ architecture Behavioral of hdmi_io is
    signal data_synced_i  : std_logic;   -- hdmi_input symbol_sync (internal tap)
    signal clock_locked_i : std_logic;   -- hdmi_input pll_locked  (internal tap)
    signal sel_i          : std_logic;   -- internal sel (also used for debug)
+   signal rx_dbg_i       : std_logic_vector(5 downto 0);
+   signal idelay_rdy_i   : std_logic;
+   signal vfifo_primed_i   : std_logic;
+   signal vfifo_reprimes_i : std_logic_vector(7 downto 0);
+   signal ctl_diag_i       : std_logic_vector(31 downto 0);
    
     -- edid_rom removed: the host EDID is now served by edid_merge in the top
     -- (dynamic merge of the display's modes), wired to hdmi_rx_scl/sda/hpa there.
@@ -136,7 +151,9 @@ architecture Behavioral of hdmi_io is
     port (
         system_clk      : in  std_logic;
         clk200      : in  std_logic;
-        debug           : out std_logic_vector(5 downto 0);        
+        debug           : out std_logic_vector(5 downto 0);
+        idelay_rdy      : out std_logic;
+        ctl_diag        : out std_logic_vector(31 downto 0);        
         hdmi_detected : out std_logic;
         
         pixel_clk       : out std_logic;  -- Driven by BUFG
@@ -349,6 +366,9 @@ begin
     debug(2) <= clock_locked_i;  -- pll_locked: RX MMCM locked to tmds_clk
     debug(1) <= sel_i;           -- clock-source select (1=HDMI passthrough, 0=offline)
     debug(0)          <= counter(31);
+    rx_diag <= vfifo_primed_i & idelay_rdy_i & rx_dbg_i;
+    vfifo_reprimes <= vfifo_reprimes_i;
+    ctl_diag <= ctl_diag_i;
     -- expose internal taps on the (otherwise open) status outputs
     data_synced  <= data_synced_i;
     clock_locked <= clock_locked_i;
@@ -393,7 +413,9 @@ in_rx2_buf: IBUFDS generic map ( IOSTANDARD => "TMDS_33")
 i_hdmi_input : hdmi_input port map (
         system_clk      => clk100,
          clk200      => clk200,
-        debug           => open,
+        debug           => rx_dbg_i,
+        idelay_rdy      => idelay_rdy_i,
+        ctl_diag        => ctl_diag_i,
         -- Pixel and serializer clocks 
         pixel_clk       => pixel_clk_i,
         pixel_io_clk_x1 => pixel_io_clk_x1,
@@ -505,7 +527,8 @@ i_hdmi_input : hdmi_input port map (
     -- red,green,blue} = 27b; red=raw_ch2, green=raw_ch1, blue=raw_ch0 (unchanged mapping).
     vbuf_w <= raw_blank & raw_hsync & raw_vsync & raw_ch2 & raw_ch1 & raw_ch0;
     i_vphase : video_phase_fifo port map (
-        wclk => pixel_clk_i, wdata => vbuf_w, rclk => oclk, rdata => vbuf_r );
+        wclk => pixel_clk_i, wdata => vbuf_w, rclk => oclk, rdata => vbuf_r,
+        primed_o => vfifo_primed_i, reprimes => vfifo_reprimes_i );
     in_blank <= vbuf_r(26);
     in_hsync <= vbuf_r(25);
     in_vsync <= vbuf_r(24);

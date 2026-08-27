@@ -35,6 +35,24 @@ entity hdmi_input is
         -- Status
         pll_locked   : out std_logic;
         symbol_sync  : out std_logic;
+        -- IDELAYCTRL ready. It was RDY => open, so nothing ever checked whether
+        -- the IDELAYE2 taps in deserialiser_1_to_10 were calibrated at all. On the
+        -- Au this was the design's ONLY controller; the merged Pt build has three,
+        -- and an uncalibrated tap puts the sample point off-centre in the eye --
+        -- which decodes at one pixel rate and misaligns at others.
+        idelay_rdy   : out std_logic;
+        -- INTER-CHANNEL ALIGNMENT DIAGNOSTIC.
+        -- Sync is only captured when all three channels present a valid control
+        -- symbol in the SAME cycle (see hdmi_section_decode below). Every existing
+        -- metric is PER-CHANNEL -- symbol lock, invalid-symbol flags -- and all of
+        -- them read healthy while the combined raster is garbage. Nothing reported
+        -- whether the three lanes are aligned TO EACH OTHER, which is precisely
+        -- what a from-scratch re-pin can change without touching any per-channel
+        -- number.
+        --   [15:0]  cycles with ch0 ctl_valid, per 65536-pixel window
+        --   [31:16] cycles with ALL THREE ctl_valid, same window
+        -- Healthy: the two are nearly equal. Skewed: the second collapses.
+        ctl_diag     : out std_logic_vector(31 downto 0);
     
         -- Raw data signals
         raw_blank : out std_logic;
@@ -217,6 +235,11 @@ architecture Behavioral of hdmi_input is
     
     signal in_dvid              : std_logic := '0';
     signal symbol_sync_i        : std_logic := '0';
+    signal ctl_win    : std_logic_vector(15 downto 0) := (others => '0');
+    signal ctl_c0     : std_logic_vector(15 downto 0) := (others => '0');
+    signal ctl_call   : std_logic_vector(15 downto 0) := (others => '0');
+    signal ctl_c0_l   : std_logic_vector(15 downto 0) := (others => '0');
+    signal ctl_call_l : std_logic_vector(15 downto 0) := (others => '0');
 
     -- THE COMMENT AT IDELAYCTRL_inst WAS ASPIRATIONAL UNTIL NOW.
     --
@@ -258,7 +281,7 @@ begin
    --------------------------------------------    
 IDELAYCTRL_inst : IDELAYCTRL
     port map (
-        RDY    => open,    -- 1-bit output: Ready output
+        RDY    => idelay_rdy,    -- 1-bit output: Ready output
         REFCLK => clk200, -- 1-bit input:  Reference clock input
         RST    => '0'      -- 1-bit input:  Active high reset input
     );
@@ -432,6 +455,29 @@ ch2: input_channel Port map (
     symbol_sync_i <= ch0_symbol_sync and ch1_symbol_sync and ch2_symbol_sync;
     
     hdmi_detected <= not dvid_mode;
+-- Inter-channel control-period coincidence, counted over a fixed window.
+ctl_align_count: process(clk_pixel)
+begin
+    if rising_edge(clk_pixel) then
+        if ctl_win = x"FFFF" then
+            ctl_c0_l   <= ctl_c0;
+            ctl_call_l <= ctl_call;
+            ctl_c0     <= (others => '0');
+            ctl_call   <= (others => '0');
+            ctl_win    <= (others => '0');
+        else
+            ctl_win <= std_logic_vector(unsigned(ctl_win) + 1);
+            if ch0_ctl_valid = '1' then
+                ctl_c0 <= std_logic_vector(unsigned(ctl_c0) + 1);
+            end if;
+            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch2_ctl_valid = '1' then
+                ctl_call <= std_logic_vector(unsigned(ctl_call) + 1);
+            end if;
+        end if;
+    end if;
+end process;
+ctl_diag <= ctl_call_l & ctl_c0_l;
+
 hdmi_section_decode: process(clk_pixel)
     begin
         if rising_edge(clk_pixel) then

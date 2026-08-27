@@ -163,7 +163,10 @@ architecture Behavioral of Au2_SLI is
         -------------------------------
         clock_locked  : out std_logic;
         data_synced   : out std_logic;
-        debug         : out std_logic_vector(7 downto 0);  
+        debug         : out std_logic_vector(7 downto 0);
+        rx_diag       : out std_logic_vector(7 downto 0);
+        vfifo_reprimes : out std_logic_vector(7 downto 0);
+        ctl_diag       : out std_logic_vector(31 downto 0);  
         sel : out std_logic; 
         -------------------------------
         --HDMI input signals
@@ -366,6 +369,24 @@ architecture Behavioral of Au2_SLI is
     signal debug : std_logic_vector(7 downto 0);
     signal led_i : std_logic_vector(7 downto 0);  -- mirror of the LED status byte for telemetry
     signal vid_valid : std_logic;  -- HDMI input validly decoding (symbol_sync & pll_locked)
+    -- Measured INCOMING HDMI timing (regs 0x60..0x67). Distinct from the
+    -- EDID-chosen offline mode on 0x22..0x25: this is what the source sends.
+    signal rx_meas_w : std_logic_vector(55 downto 0) := (others => '0');
+    signal rx_pixkhz_w : std_logic_vector(17 downto 0) := (others => '0');
+    signal rx_diag_w   : std_logic_vector(7 downto 0) := (others => '0');
+    signal vfifo_rep_w : std_logic_vector(7 downto 0) := (others => '0');
+    signal ctl_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
+
+    component video_meas is
+        port ( pixel_clk : in  STD_LOGIC;
+               in_hsync  : in  STD_LOGIC;
+               in_vsync  : in  STD_LOGIC;
+               in_blank  : in  STD_LOGIC;
+               clk100    : in  STD_LOGIC;
+               vid_valid : in  STD_LOGIC;
+               meas      : out STD_LOGIC_VECTOR(55 downto 0);
+               pix_khz   : out STD_LOGIC_VECTOR(17 downto 0) );
+    end component;
     signal tlp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe INPUT (diagnostic)
     signal olp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe OUTPUT (diagnostic)
     signal trig_cnt  : std_logic_vector(7 downto 0);  -- trigger pulse count (diagnostic)
@@ -438,6 +459,11 @@ architecture Behavioral of Au2_SLI is
                cam_trigger : out STD_LOGIC_VECTOR(2 downto 0);
                cam_monitor : in  STD_LOGIC_VECTOR(1 downto 0) := (others => '0');
                vs_meas     : in  STD_LOGIC := '0';
+               rx_meas     : in  STD_LOGIC_VECTOR(55 downto 0) := (others => '0');
+               rx_pixkhz   : in  STD_LOGIC_VECTOR(17 downto 0) := (others => '0');
+               rx_diag     : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               vfifo_rep   : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               ctl_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
                cam_stat_i  : in  STD_LOGIC_VECTOR(143 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                rx2_valid   : in  STD_LOGIC := '0';
@@ -713,6 +739,21 @@ begin
     -- led_i bit layout: 7=vsync 6=hsync 5=VPolarity 4=sel 3=mode 2=rdy 1=f_frm 0=trig
     led_i <= vsync & hsync & VPolarity & sel & C1_in(1) & C1_in(0) & f_frm & trig;
     vid_valid <= debug(3) and debug(2);  -- symbol_sync AND pll_locked (passthrough decode valid)
+    -- Measure the INCOMING HDMI timing (regs 0x60..0x67). in_hsync/in_vsync/in_blank
+    -- are the recovered pass-through timing, so this answers "what is the PC sending"
+    -- -- which nothing else here does. 0x22..0x25 answer the different question of
+    -- what mode_select picked out of the display's EDID, and the two disagree
+    -- whenever the source chooses a mode other than that one.
+    i_video_meas: video_meas port map (
+        pixel_clk => pixel_clk,
+        in_hsync  => in_hsync,
+        in_vsync  => in_vsync,
+        in_blank  => in_blank,
+        clk100    => clk100_g,
+        vid_valid => vid_valid,
+        meas      => rx_meas_w,
+        pix_khz   => rx_pixkhz_w );
+
     -- usb_link replaces edid_reader: identical status telemetry on usb_tx, plus the
     -- 0xA5 host control protocol on usb_rx. Stage-2 control/table taps left open for now.
     i_usb_link: usb_link port map (
@@ -773,6 +814,11 @@ begin
         cam_monitor => cam_monitor,
         cam_sim     => cam_sim_w,
         vs_meas     => out_vsync,
+        rx_meas     => rx_meas_w,
+        rx_pixkhz   => rx_pixkhz_w,
+        rx_diag     => rx_diag_w,
+        vfifo_rep   => vfifo_rep_w,
+        ctl_diag    => ctl_diag_w,
         cam_stat_i  => cam_stat_q,
         rx2_data    => ctl_byte_w,
         rx2_valid   => ctl_valid_w,
@@ -838,6 +884,9 @@ i_hdmi_io: hdmi_io port map (
         clock_locked     => open,
         data_synced      => open,
         debug            => debug,
+        rx_diag          => rx_diag_w,
+        vfifo_reprimes   => vfifo_rep_w,
+        ctl_diag         => ctl_diag_w,
         sel => sel, 
         ---------------------
         -- HDMI input signals

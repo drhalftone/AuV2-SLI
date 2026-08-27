@@ -184,6 +184,25 @@ module uart_ctrl #(
     // The master clock genlock would lock to; its stability bounds the
     // achievable lock quality. Regs 0x4A..0x52.
     input  wire [71:0]  vs_per_i,
+
+    // ---- INCOMING (pass-through) HDMI timing, measured (regs 0x60..0x67) ----
+    // From video_meas. Distinct from 0x22..0x25, which report the OFFLINE mode
+    // chosen out of the display's EDID -- those answer "what can I send", these
+    // answer "what am I being sent". They disagree whenever the PC picks a mode
+    // other than the one mode_select would have, which is the normal case.
+    //   [11:0] h_active   [23:12] v_active   [47:24] frame period (10 ns)
+    //   [48] meas_ok      [49] vid_valid
+    input  wire [55:0]  rx_meas_i,
+    // Recovered pixel clock in kHz (regs 0x68..0x6A). Reported because the
+    // pass-through failure on the Pt cannot be diagnosed without it.
+    input  wire [17:0]  rx_pixkhz_i,
+    // RX diagnostics (reg 0x6B): IDELAYCTRL ready plus the per-channel
+    // invalid-symbol flags hdmi_input computes and hdmi_io used to drop.
+    input  wire [7:0]   rx_diag_i,
+    // video_phase_fifo re-prime count (reg 0x6C). Static = healthy.
+    input  wire [7:0]   vfifo_rep_i,
+    // Inter-channel control-period coincidence (regs 0x6D..0x70).
+    input  wire [31:0]  ctl_diag_i,
     // G0: max usable exposure for the CURRENT frame rate, computed in
     // usb_link from the measured vsync period and the measured sensor gap.
     // {reserve_ticks[15:0], valid, reg_limited, 6'b0, max_expo[15:0]}
@@ -459,6 +478,32 @@ case (addr)
             // that the projector's vsync actually reaches cam_frame_ft.
             8'h58:   rd_data  = cam_stat_i[135:128];
             8'h59:   rd_data  = cam_stat_i[143:136];
+            // ---- 0x60..0x67: INCOMING HDMI TIMING, measured ---------------
+            // What the SOURCE is sending, from video_meas. Read 0x67 FIRST: if
+            // meas_ok is 0 the other six read 0 on purpose, because a stale
+            // resolution that looks live is worse than no answer.
+            //   frame rate Hz = 1e8 / period(0x64..0x66)
+            8'h60:   rd_data  = rx_meas_i[7:0];             // h_active lo
+            8'h61:   rd_data  = {4'b0, rx_meas_i[11:8]};    // h_active hi
+            8'h62:   rd_data  = rx_meas_i[19:12];           // v_active lo
+            8'h63:   rd_data  = {4'b0, rx_meas_i[23:20]};   // v_active hi
+            8'h64:   rd_data  = rx_meas_i[31:24];           // period lo  (10 ns)
+            8'h65:   rd_data  = rx_meas_i[39:32];           // period mid
+            8'h66:   rd_data  = rx_meas_i[47:40];           // period hi
+            8'h67:   rd_data  = {6'b0, rx_meas_i[49], rx_meas_i[48]};  // {vid_valid, meas_ok}
+            8'h68:   rd_data  = rx_pixkhz_i[7:0];            // recovered pclk kHz lo
+            8'h69:   rd_data  = rx_pixkhz_i[15:8];           // ...mid
+            8'h6A:   rd_data  = {6'b0, rx_pixkhz_i[17:16]};  // ...hi
+            // 0x6B RX DIAG: [6]idelay_rdy [5]ch2_inv [4]ch1_inv [3]ch0_inv
+            //               [2]dvid_mode  [1]pll_locked [0]symbol_sync
+            8'h6B:   rd_data  = rx_diag_i;
+            8'h6C:   rd_data  = vfifo_rep_i;   // phase-FIFO re-primes
+            // 0x6D/0x6E ch0 ctl cycles per 65536-pixel window
+            // 0x6F/0x70 cycles where ALL THREE channels are in ctl together
+            8'h6D:   rd_data  = ctl_diag_i[7:0];
+            8'h6E:   rd_data  = ctl_diag_i[15:8];
+            8'h6F:   rd_data  = ctl_diag_i[23:16];
+            8'h70:   rd_data  = ctl_diag_i[31:24];
             default: rd_data  = 8'h00;
         endcase
     end
