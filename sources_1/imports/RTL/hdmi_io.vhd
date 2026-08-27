@@ -31,7 +31,10 @@ entity hdmi_io is
         -- video_phase_fifo health: re-prime count (STATIC = healthy)
         vfifo_reprimes : out std_logic_vector(7 downto 0);
         -- [15:0] ch0 ctl cycles / window, [31:16] all-three-coincident
-        ctl_diag       : out std_logic_vector(31 downto 0);        
+        ctl_diag       : out std_logic_vector(31 downto 0);
+        vdp_diag       : out std_logic_vector(31 downto 0);
+        pre_diag       : out std_logic_vector(31 downto 0);
+        gb_diag        : out std_logic_vector(31 downto 0);
         sel : out std_logic; -- orginal clock source select, now used to demo the ghost RX clock
         -------------------------------
         --HDMI input signals
@@ -143,6 +146,9 @@ architecture Behavioral of hdmi_io is
    signal vfifo_primed_i   : std_logic;
    signal vfifo_reprimes_i : std_logic_vector(7 downto 0);
    signal ctl_diag_i       : std_logic_vector(31 downto 0);
+   signal vdp_diag_i       : std_logic_vector(31 downto 0);
+   signal pre_diag_i       : std_logic_vector(31 downto 0);
+   signal gb_diag_i        : std_logic_vector(31 downto 0);
    
     -- edid_rom removed: the host EDID is now served by edid_merge in the top
     -- (dynamic merge of the display's modes), wired to hdmi_rx_scl/sda/hpa there.
@@ -153,7 +159,10 @@ architecture Behavioral of hdmi_io is
         clk200      : in  std_logic;
         debug           : out std_logic_vector(5 downto 0);
         idelay_rdy      : out std_logic;
-        ctl_diag        : out std_logic_vector(31 downto 0);        
+        ctl_diag        : out std_logic_vector(31 downto 0);
+        vdp_diag        : out std_logic_vector(31 downto 0);
+        pre_diag        : out std_logic_vector(31 downto 0);
+        gb_diag         : out std_logic_vector(31 downto 0);
         hdmi_detected : out std_logic;
         
         pixel_clk       : out std_logic;  -- Driven by BUFG
@@ -369,6 +378,9 @@ begin
     rx_diag <= vfifo_primed_i & idelay_rdy_i & rx_dbg_i;
     vfifo_reprimes <= vfifo_reprimes_i;
     ctl_diag <= ctl_diag_i;
+    vdp_diag <= vdp_diag_i;
+    pre_diag <= pre_diag_i;
+    gb_diag  <= gb_diag_i;
     -- expose internal taps on the (otherwise open) status outputs
     data_synced  <= data_synced_i;
     clock_locked <= clock_locked_i;
@@ -416,6 +428,9 @@ i_hdmi_input : hdmi_input port map (
         debug           => rx_dbg_i,
         idelay_rdy      => idelay_rdy_i,
         ctl_diag        => ctl_diag_i,
+        vdp_diag        => vdp_diag_i,
+        pre_diag        => pre_diag_i,
+        gb_diag         => gb_diag_i,
         -- Pixel and serializer clocks 
         pixel_clk       => pixel_clk_i,
         pixel_io_clk_x1 => pixel_io_clk_x1,

@@ -53,6 +53,13 @@ entity hdmi_input is
         --   [31:16] cycles with ALL THREE ctl_valid, same window
         -- Healthy: the two are nearly equal. Skewed: the second collapses.
         ctl_diag     : out std_logic_vector(31 downto 0);
+        -- [15:0] cycles with in_vdp high, [31:16] with in_dvid high, same window
+        vdp_diag     : out std_logic_vector(31 downto 0);
+        -- [15:0] video preamble AS CODED (ch1=01,ch2=00); [31:16] the same
+        -- pattern with ch1/ch2 SWAPPED. Exactly one of these can be right.
+        pre_diag     : out std_logic_vector(31 downto 0);
+        -- [15:0] VDP guard band as coded; [31:16] vdp_prefix_seen assertions
+        gb_diag      : out std_logic_vector(31 downto 0);
     
         -- Raw data signals
         raw_blank : out std_logic;
@@ -240,6 +247,21 @@ architecture Behavioral of hdmi_input is
     signal ctl_call   : std_logic_vector(15 downto 0) := (others => '0');
     signal ctl_c0_l   : std_logic_vector(15 downto 0) := (others => '0');
     signal ctl_call_l : std_logic_vector(15 downto 0) := (others => '0');
+    signal vdp_cnt    : std_logic_vector(15 downto 0) := (others => '0');
+    signal vdp_cnt_l  : std_logic_vector(15 downto 0) := (others => '0');
+    signal dvid_cnt   : std_logic_vector(15 downto 0) := (others => '0');
+    signal dvid_cnt_l : std_logic_vector(15 downto 0) := (others => '0');
+    -- Keeps vdp_prefix_seen alive across the guard band (see below).
+    signal pfx_hold   : unsigned(2 downto 0) := (others => '0');
+    signal pre_ok    : std_logic_vector(15 downto 0) := (others => '0');
+    signal pre_ok_l  : std_logic_vector(15 downto 0) := (others => '0');
+    signal pre_sw    : std_logic_vector(15 downto 0) := (others => '0');
+    signal pre_sw_l  : std_logic_vector(15 downto 0) := (others => '0');
+    signal gb_ok     : std_logic_vector(15 downto 0) := (others => '0');
+    signal gb_ok_l   : std_logic_vector(15 downto 0) := (others => '0');
+    signal pfx       : std_logic_vector(15 downto 0) := (others => '0');
+    signal pfx_l     : std_logic_vector(15 downto 0) := (others => '0');
+
 
     -- THE COMMENT AT IDELAYCTRL_inst WAS ASPIRATIONAL UNTIL NOW.
     --
@@ -462,8 +484,16 @@ begin
         if ctl_win = x"FFFF" then
             ctl_c0_l   <= ctl_c0;
             ctl_call_l <= ctl_call;
+            vdp_cnt_l  <= vdp_cnt;
+            dvid_cnt_l <= dvid_cnt;
+            pre_ok_l   <= pre_ok;   pre_sw_l <= pre_sw;
+            gb_ok_l    <= gb_ok;    pfx_l    <= pfx;
             ctl_c0     <= (others => '0');
             ctl_call   <= (others => '0');
+            vdp_cnt    <= (others => '0');
+            dvid_cnt   <= (others => '0');
+            pre_ok     <= (others => '0'); pre_sw <= (others => '0');
+            gb_ok      <= (others => '0'); pfx    <= (others => '0');
             ctl_win    <= (others => '0');
         else
             ctl_win <= std_logic_vector(unsigned(ctl_win) + 1);
@@ -473,10 +503,35 @@ begin
             if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch2_ctl_valid = '1' then
                 ctl_call <= std_logic_vector(unsigned(ctl_call) + 1);
             end if;
+            if in_vdp = '1' then
+                vdp_cnt <= std_logic_vector(unsigned(vdp_cnt) + 1);
+            end if;
+            if in_adp = '1' then      -- was in_dvid (settled at 0); in_adp gates in_vdp
+                dvid_cnt <= std_logic_vector(unsigned(dvid_cnt) + 1);
+            end if;
+            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch2_ctl_valid = '1' then
+                if ch1_ctl = "01" and ch2_ctl = "00" then
+                    pre_ok <= std_logic_vector(unsigned(pre_ok) + 1);
+                end if;
+                if ch1_ctl = "00" and ch2_ctl = "01" then
+                    pre_sw <= std_logic_vector(unsigned(pre_sw) + 1);
+                end if;
+            end if;
+            if ch0_guardband_valid = '1' and ch1_guardband_valid = '1' and ch2_guardband_valid = '1' then
+                if ch0_guardband = "1" and ch1_guardband = "0" and ch2_guardband = "1" then
+                    gb_ok <= std_logic_vector(unsigned(gb_ok) + 1);
+                end if;
+            end if;
+            if vdp_guardband_detect = '1' then   -- was vdp_prefix_seen (settled high)
+                pfx <= std_logic_vector(unsigned(pfx) + 1);
+            end if;
         end if;
     end if;
 end process;
 ctl_diag <= ctl_call_l & ctl_c0_l;
+vdp_diag <= dvid_cnt_l & vdp_cnt_l;
+pre_diag <= pre_sw_l & pre_ok_l;
+gb_diag  <= pfx_l & gb_ok_l;
 
 hdmi_section_decode: process(clk_pixel)
     begin
@@ -510,7 +565,7 @@ hdmi_section_decode: process(clk_pixel)
                     raw_ch2   <= ch2_data;
                     raw_ch1   <= ch1_data;
                     raw_ch0   <= ch0_data;
-                    if ch2_invalid_symbol = '1' or ch2_invalid_symbol = '1' or ch2_invalid_symbol = '1' then
+                    if ch2_invalid_symbol = '1' or ch1_invalid_symbol = '1' or ch0_invalid_symbol = '1' then
                         raw_ch2   <= x"EF";
                         raw_ch1   <= x"16";
                         raw_ch0   <= x"16";
@@ -547,8 +602,20 @@ hdmi_section_decode: process(clk_pixel)
             -- We need to detect 8 ADP or VDP prefix characters in a row
             ------------------------------------------------------------
             vdp_prefix_detect <= vdp_prefix_detect(6 downto 0) & '0';
+            -- HOLD THE PREAMBLE FLAG ACROSS THE GUARD BAND.
+            -- vdp_prefix_seen used to fall the instant control symbols stopped --
+            -- i.e. at the first guard-band character. Measured on hardware only the
+            -- SECOND of the two guard characters is ever detected (40 per window =
+            -- one per line at 720p), so the flag had already expired when it was
+            -- sampled and vdp_guardband_detect never latched: gb=40, detect=0.
+            if pfx_hold /= 0 then
+                pfx_hold <= pfx_hold - 1;
+            end if;
             vdp_prefix_seen <= '0';
-            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch1_ctl_valid = '1' then
+            if pfx_hold /= 0 then
+                vdp_prefix_seen <= '1';
+            end if;
+            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch2_ctl_valid = '1' then
                 if ch1_ctl = "01" and ch2_ctl = "00" then
                     vdp_prefix_detect(0) <=  '1';
                     -- Keep vdp_prefix_seen asserted for EVERY preamble char from the 8th
@@ -558,6 +625,7 @@ hdmi_section_decode: process(clk_pixel)
                     -- expired before the guard band -> in_vdp never entered -> black.)
                     if vdp_prefix_detect(6 downto 0) = "1111111" then
                         vdp_prefix_seen <= '1';
+                        pfx_hold <= "100";   -- survive both guard characters
                     end if;
                 end if;
             end if;
@@ -570,7 +638,7 @@ hdmi_section_decode: process(clk_pixel)
             ---------------------------------------------
             adp_prefix_detect <= adp_prefix_detect(6 downto 0) & '0';
             adp_prefix_seen <= '0';
-            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch1_ctl_valid = '1' then
+            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch2_ctl_valid = '1' then
                 if ch1_ctl = "01" and ch2_ctl = "01" then
                     adp_prefix_detect(0) <= '1';
                     if adp_prefix_detect = "01111111" then
@@ -585,7 +653,7 @@ hdmi_section_decode: process(clk_pixel)
             -- encoded in TERC4 coded in Ch0 - annoying!
             ---------------------------------------------
             adp_guardband_detect <= '0';
-            if in_vdp = '0' and ch0_terc4_valid = '1' and ch1_guardband_valid = '1' and ch1_guardband_valid = '1' then
+            if in_vdp = '0' and ch0_terc4_valid = '1' and ch1_guardband_valid = '1' and ch2_guardband_valid = '1' then
                 if ch0_terc4(3 downto 2) = "11" and ch1_guardband = "0" and ch2_guardband = "0" then
                     raw_vsync <= ch0_terc4(1);
                     raw_hsync <= ch0_terc4(0);
@@ -602,9 +670,28 @@ hdmi_section_decode: process(clk_pixel)
                 -- TERC Coded for the VDP guard band.
                 if ch0_guardband = "1" and ch1_guardband = "0" and ch2_guardband = "1" then
                    vdp_guardband_detect <= vdp_prefix_seen;
-                   in_vdp <= vdp_guardband_detect AND (not in_adp) and (not in_vdp);
                    dvid_mode <= '0';
+                   if vdp_prefix_seen = '1' and in_adp = '0' and in_vdp = '0' then
+                       in_vdp <= '1';
+                   end if;
                 end if;
+            end if;
+            -- ENTER THE VIDEO DATA PERIOD ONE CYCLE AFTER THE GUARD BAND IS SEEN.
+            --
+            -- This assignment used to sit INSIDE the branch above, which meant the
+            -- guard-band pattern had to be detected on TWO CONSECUTIVE cycles: the
+            -- first to set vdp_guardband_detect, the second to read it back. Measured
+            -- on hardware, only ONE of the two guard-band characters per line is ever
+            -- detected -- gb count = 40 per 65536-pixel window, and 65536/1650 = 39.7
+            -- lines at 720p, i.e. exactly one per line. The second cycle never came,
+            -- in_vdp never entered, and the link decoded sync perfectly while passing
+            -- zero pixels (in_vdp duty measured 0.0%).
+            --
+            -- Hoisting it out keeps the one-cycle delay -- in_vdp still rises the cycle
+            -- after the guard band, which is the first active pixel -- but no longer
+            -- demands a second detection that this receiver does not produce.
+            if vdp_guardband_detect = '1' and in_adp = '0' and in_vdp = '0' then
+                in_vdp <= '1';
             end if;
             --------------------------------
             -- Is this some DVID video data?

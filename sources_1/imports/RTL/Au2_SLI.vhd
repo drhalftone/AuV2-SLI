@@ -24,7 +24,16 @@ entity Au2_SLI is
     -- calib / aligned / streaming / cap / cfifo_ovf -- the exact signals that
     -- diagnosed every camera fault in this design. M4 unifies both onto one
     -- stream properly; this is the stopgap that makes M2 debuggable.
-    generic ( CAM_DIAG : integer := 0 );
+    generic ( CAM_DIAG : integer := 0;
+              -- WITH_CAM = 0 builds the HDMI/SLI half ALONE. The camera, the MIG and
+              -- the Ft+ all live inside cam_frame_ft, so dropping that one instance
+              -- drops all three -- which is the point: the merged design carries THREE
+              -- IDELAYCTRLs (HDMI, camera, MIG) sharing one clk200, where the Au that
+              -- pass-through was verified on had exactly ONE. If pass-through works
+              -- here and not in the merged build, the merge is implicated directly.
+              -- It also builds far faster, which matters when half the runs on this
+              -- host die for unrelated reasons.
+              WITH_CAM : integer := 1 );
     Port ( 
         clk100    : in STD_LOGIC;
         usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
@@ -166,7 +175,10 @@ architecture Behavioral of Au2_SLI is
         debug         : out std_logic_vector(7 downto 0);
         rx_diag       : out std_logic_vector(7 downto 0);
         vfifo_reprimes : out std_logic_vector(7 downto 0);
-        ctl_diag       : out std_logic_vector(31 downto 0);  
+        ctl_diag       : out std_logic_vector(31 downto 0);
+        vdp_diag       : out std_logic_vector(31 downto 0);
+        pre_diag       : out std_logic_vector(31 downto 0);
+        gb_diag        : out std_logic_vector(31 downto 0);
         sel : out std_logic; 
         -------------------------------
         --HDMI input signals
@@ -376,6 +388,9 @@ architecture Behavioral of Au2_SLI is
     signal rx_diag_w   : std_logic_vector(7 downto 0) := (others => '0');
     signal vfifo_rep_w : std_logic_vector(7 downto 0) := (others => '0');
     signal ctl_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
+    signal vdp_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
+    signal pre_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
+    signal gb_diag_w   : std_logic_vector(31 downto 0) := (others => '0');
 
     component video_meas is
         port ( pixel_clk : in  STD_LOGIC;
@@ -464,6 +479,9 @@ architecture Behavioral of Au2_SLI is
                rx_diag     : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                vfifo_rep   : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                ctl_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+               vdp_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+               pre_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+               gb_diag     : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
                cam_stat_i  : in  STD_LOGIC_VECTOR(143 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                rx2_valid   : in  STD_LOGIC := '0';
@@ -819,6 +837,9 @@ begin
         rx_diag     => rx_diag_w,
         vfifo_rep   => vfifo_rep_w,
         ctl_diag    => ctl_diag_w,
+        vdp_diag    => vdp_diag_w,
+        pre_diag    => pre_diag_w,
+        gb_diag     => gb_diag_w,
         cam_stat_i  => cam_stat_q,
         rx2_data    => ctl_byte_w,
         rx2_valid   => ctl_valid_w,
@@ -887,6 +908,9 @@ i_hdmi_io: hdmi_io port map (
         rx_diag          => rx_diag_w,
         vfifo_reprimes   => vfifo_rep_w,
         ctl_diag         => ctl_diag_w,
+        vdp_diag         => vdp_diag_w,
+        pre_diag         => pre_diag_w,
+        gb_diag          => gb_diag_w,
         sel => sel, 
         ---------------------
         -- HDMI input signals
@@ -1202,6 +1226,7 @@ usb_tx <= cam_usb_tx when CAM_DIAG /= 0 else sli_usb_tx;
  --
  -- usb_tx and led are left OPEN. Port A belongs to the SLI control plane at M2;
  -- unifying diagnostics onto one status line is M4.
+gen_cam: if WITH_CAM = 1 generate
 i_cam_frame_ft : cam_frame_ft
     generic map (
         LIVE       => 1,          -- continuous ring, not one burst
@@ -1244,6 +1269,18 @@ i_cam_frame_ft : cam_frame_ft
         ddr3_ck_p  => ddr3_ck_p,  ddr3_ck_n  => ddr3_ck_n,
         ddr3_cke   => ddr3_cke,   ddr3_cs_n  => ddr3_cs_n,
         ddr3_dm    => ddr3_dm,    ddr3_odt   => ddr3_odt );
+end generate gen_cam;
+
+-- HDMI-only: tie off just the signals the rest of the design READS. The camera's
+-- other connections are top-level pins with no consumer here, so they are simply
+-- left undriven rather than enumerated.
+gen_nocam: if WITH_CAM = 0 generate
+    cam_usb_tx   <= '1';                 -- idle level for a UART line
+    cam_stat_raw <= (others => '0');
+    cam_stat_tog <= '0';
+    -- rpl_byte_w / rpl_we_w are OUTPUTS of the control block above; driving them
+    -- here too created a second driver. The Ft+ readback path is never gated out.
+end generate gen_nocam;
 
  -- cam_line_buf is gone with the old chain, so the readback target reads zeros --
  -- the same thing the Au build does, for the same reason (no receiver behind it).

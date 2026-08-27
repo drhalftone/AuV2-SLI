@@ -203,6 +203,9 @@ module uart_ctrl #(
     input  wire [7:0]   vfifo_rep_i,
     // Inter-channel control-period coincidence (regs 0x6D..0x70).
     input  wire [31:0]  ctl_diag_i,
+    input  wire [31:0]  vdp_diag_i,
+    input  wire [31:0]  pre_diag_i,
+    input  wire [31:0]  gb_diag_i,
     // G0: max usable exposure for the CURRENT frame rate, computed in
     // usb_link from the measured vsync period and the measured sensor gap.
     // {reserve_ticks[15:0], valid, reg_limited, 6'b0, max_expo[15:0]}
@@ -504,6 +507,18 @@ case (addr)
             8'h6E:   rd_data  = ctl_diag_i[15:8];
             8'h6F:   rd_data  = ctl_diag_i[23:16];
             8'h70:   rd_data  = ctl_diag_i[31:24];
+            8'h71:   rd_data  = vdp_diag_i[7:0];
+            8'h72:   rd_data  = vdp_diag_i[15:8];
+            8'h73:   rd_data  = vdp_diag_i[23:16];
+            8'h74:   rd_data  = vdp_diag_i[31:24];
+            8'h75:   rd_data  = pre_diag_i[7:0];
+            8'h76:   rd_data  = pre_diag_i[15:8];
+            8'h77:   rd_data  = pre_diag_i[23:16];
+            8'h78:   rd_data  = pre_diag_i[31:24];
+            8'h79:   rd_data  = gb_diag_i[7:0];
+            8'h7A:   rd_data  = gb_diag_i[15:8];
+            8'h7B:   rd_data  = gb_diag_i[23:16];
+            8'h7C:   rd_data  = gb_diag_i[31:24];
             default: rd_data  = 8'h00;
         endcase
     end
