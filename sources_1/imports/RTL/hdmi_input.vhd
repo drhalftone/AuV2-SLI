@@ -253,6 +253,7 @@ architecture Behavioral of hdmi_input is
     signal dvid_cnt_l : std_logic_vector(15 downto 0) := (others => '0');
     -- Keeps vdp_prefix_seen alive across the guard band (see below).
     signal pfx_hold   : unsigned(2 downto 0) := (others => '0');
+    signal c0_d       : std_logic_vector(1 downto 0) := "00";
     signal pre_ok    : std_logic_vector(15 downto 0) := (others => '0');
     signal pre_ok_l  : std_logic_vector(15 downto 0) := (others => '0');
     signal pre_sw    : std_logic_vector(15 downto 0) := (others => '0');
@@ -323,6 +324,38 @@ hdmi_MMCME2_BASE_inst : MMCME2_BASE
       -- while symbol_sync stayed up = classic marginally-locked PLL. x10 used OPTIMIZED and was stable.
       BANDWIDTH => "HIGH",
       DIVCLK_DIVIDE   => 1,          -- Master division value (1-106)
+      -- ==== PASS-THROUGH PIXEL-CLOCK FLOOR IS 40 MHz, AND IT IS THIS LINE ====
+      -- VCO = pixel x 15, and the Artix-7 -2 MMCM VCO minimum is 600 MHz, so
+      --     600 / 15 = 40.0 MHz  is the lowest pixel clock that can lock IN SPEC.
+      -- Measured on the Pt (2026-08-27), matching that arithmetic exactly:
+      --     1280x720@60  74.25 MHz -> VCO 1114  solid
+      --     1280x800@60  71.00     -> VCO 1065  solid
+      --     1024x768@60  65.00     -> VCO  975  solid
+      --     800x600@75   49.50     -> VCO  743  TWITCHY (unexplained -- in range)
+      --     800x600@60   40.00     -> VCO  600  black seqs (EXACTLY at the minimum)
+      --     640x480@75   31.50     -> VCO  473  broken (below minimum)
+      --     640x480@60   25.175    -> VCO  378  broken (below minimum)
+      -- This is why edid_builder.v excludes 640x480 as "<40, below floor". But it
+      -- still ADVERTISES 800x600@60/72/75 (CAND[0..2], 40.0/50.0/49.5), i.e. the
+      -- design promises a mode that sits on the VCO minimum with zero margin.
+      --
+      -- NOT A PART PROBLEM, AND NOT FIXABLE BY MOVING BOARDS. Au V2 is
+      -- xc7a35tftg256-2 and Pt V2 is xc7a100tfgg484-2 -- the SAME speed grade and
+      -- the same 600 MHz VCO floor. A previous attempt at this on the Au V2 was
+      -- abandoned; the Pt offers no advantage.
+      --
+      -- Supporting lower modes means RAISING the multiplier (x30 at 25.175 MHz
+      -- gives 755 MHz, in range), which means DRP-reconfiguring CLKFBOUT_MULT, all
+      -- three CLKOUT dividers AND the filter/lock registers per XAPP888, re-locking
+      -- cleanly on every mode change. Deliberately not done: the modes that matter
+      -- (1024x768, 1280x720, 1280x800) are all comfortably inside the window.
+      -- The cheap honest fix is to raise the EDID floor so 800x600 is not offered.
+      --
+      -- NOTE ALSO: CLKIN1_PERIOD below is hard-coded at 13.000 ns (76.9 MHz) while
+      -- the real input varies per mode. That programs the lock filter and is a
+      -- SECOND, weaker effect on top of the VCO floor. A 20.000 ns diagnostic build
+      -- was started to separate the two and was abandoned before it finished, so
+      -- this remains unmeasured -- do not assume it is or is not a contributor.
       CLKFBOUT_MULT_F => 15.0,        -- VCO = pixel x 15
       CLKFBOUT_PHASE => 0.0,         -- Phase offset in degrees of CLKFB (-360.000-360.000).
       CLKIN1_PERIOD => 13.000,  -- Input clock period in ns to ps resolution (i.e. 33.333 is 30 MHz).
@@ -509,12 +542,20 @@ begin
             if in_adp = '1' then      -- was in_dvid (settled at 0); in_adp gates in_vdp
                 dvid_cnt <= std_logic_vector(unsigned(dvid_cnt) + 1);
             end if;
-            if ch0_ctl_valid = '1' and ch1_ctl_valid = '1' and ch2_ctl_valid = '1' then
-                if ch1_ctl = "01" and ch2_ctl = "00" then
-                    pre_ok <= std_logic_vector(unsigned(pre_ok) + 1);
+            -- ch0_ctl carries hsync (bit 0) and vsync (bit 1) during control
+            -- periods, and raw_vsync/raw_hsync are taken straight from them.
+            -- Count RISING EDGES of each per window. At 800x600@75 a 65536-pixel
+            -- window is 62 lines, so hsync should read ~62 and vsync 0 or 1.
+            -- The display twitches with black bars at random vertical positions
+            -- while every lane reports ZERO invalid symbols, so the bits arrive
+            -- clean and the sync is being manufactured wrong here.
+            if ch0_ctl_valid = '1' then
+                c0_d <= ch0_ctl;
+                if ch0_ctl(1) = '1' and c0_d(1) = '0' then
+                    pre_ok <= std_logic_vector(unsigned(pre_ok) + 1);   -- vsync rises
                 end if;
-                if ch1_ctl = "00" and ch2_ctl = "01" then
-                    pre_sw <= std_logic_vector(unsigned(pre_sw) + 1);
+                if ch0_ctl(0) = '1' and c0_d(0) = '0' then
+                    pre_sw <= std_logic_vector(unsigned(pre_sw) + 1);   -- hsync rises
                 end if;
             end if;
             if ch0_guardband_valid = '1' and ch1_guardband_valid = '1' and ch2_guardband_valid = '1' then
@@ -562,13 +603,24 @@ hdmi_section_decode: process(clk_pixel)
                     raw_vsync <= '0';
                     raw_hsync <= '0';
                     raw_blank <= '0';            
-                    raw_ch2   <= ch2_data;
-                    raw_ch1   <= ch1_data;
-                    raw_ch0   <= ch0_data;
+                    -- ERROR CONCEALMENT: HOLD THE LAST GOOD PIXEL.
+                    -- This used to substitute x"EF"/x"16"/x"16" -- bright RED -- and
+                    -- the test that reached it named ch2_invalid_symbol three times,
+                    -- so ch0 and ch1 errors were silently ignored. Fixing the test to
+                    -- check all three lanes then made every ch0 error paint a red dot,
+                    -- and ch0 does take occasional hits at 1280x720 (measured: inv
+                    -- ch0=1 on 2 of 10 samples) -- the display filled with sprinkled
+                    -- red pixels. The errors were always there; substituting a garish
+                    -- colour just made them look like a new fault.
+                    -- Holding the previous pixel conceals a single-symbol error on ANY
+                    -- lane without inventing a colour. Not assigning inside a clocked
+                    -- process is the hold.
                     if ch2_invalid_symbol = '1' or ch1_invalid_symbol = '1' or ch0_invalid_symbol = '1' then
-                        raw_ch2   <= x"EF";
-                        raw_ch1   <= x"16";
-                        raw_ch0   <= x"16";
+                        null;                      -- hold previous raw_ch*
+                    else
+                        raw_ch2   <= ch2_data;
+                        raw_ch1   <= ch1_data;
+                        raw_ch0   <= ch0_data;
                     end if;
             
                 elsif in_dvid = '1' then
@@ -671,9 +723,10 @@ hdmi_section_decode: process(clk_pixel)
                 if ch0_guardband = "1" and ch1_guardband = "0" and ch2_guardband = "1" then
                    vdp_guardband_detect <= vdp_prefix_seen;
                    dvid_mode <= '0';
-                   if vdp_prefix_seen = '1' and in_adp = '0' and in_vdp = '0' then
-                       in_vdp <= '1';
-                   end if;
+                   -- NOTE: entry is NOT done here. Entering on the guard character
+                   -- itself put in_vdp up one cycle early and the raster measured
+                   -- 1281x720 -- the trailing guard character counted as a pixel.
+                   -- Entry happens one cycle later, off vdp_guardband_detect, below.
                 end if;
             end if;
             -- ENTER THE VIDEO DATA PERIOD ONE CYCLE AFTER THE GUARD BAND IS SEEN.
