@@ -92,8 +92,8 @@ Measured behaviour matches that arithmetic exactly:
 | 1280x720@60 | 74.25 | 1114 | solid |
 | 1280x800@60 | 71.00 | 1065 | solid |
 | 1024x768@60 | 65.00 | 975 | solid |
-| 800x600@75 | 49.50 | 743 | **PASSES** (was twitchy — cause was the red-pixel bug, not the clock) |
-| 800x600@60 | 40.00 | 600 | **PASSES** (was black sequences — same cause) |
+| 800x600@75 | 49.50 | 743 | **TWITCHY — never worked, see below** |
+| 800x600@60 | 40.00 | 600 | **TWITCHY — never worked, see below** |
 | 640x480@75 | 31.50 | 473 | broken (below minimum) |
 | 640x480@60 | 25.175 | 378 | broken (below minimum) |
 
@@ -104,13 +104,33 @@ floor. A previous attempt on the Au V2 was abandoned; the Pt offers no advantage
 `edid_builder.v` already excludes 640x480 as `"<40, below floor"` — that floor came
 from this same calculation.
 
-> **CORRECTED 2026-08-28.** An earlier version of this file blamed the VCO floor for
-> 800x600's black sequences and recommended dropping it from the EDID. **That was
-> wrong.** 800x600 now PASSES at both 60 and 75 Hz; the symptoms were caused by the
-> error-concealment bug fixed in `c1b00c6` (a bad symbol painted a bright red pixel,
-> and the injected `EF/16/16` stream disturbed the sink's lock, not just its
-> appearance). The floor is real arithmetic, but it only actually excludes 640x480 --
-> its reach was overstated. Do not drop 800x600 from the EDID.
+> **CORRECTED TWICE. Read this before trusting any 800x600 claim.**
+>
+> First correction (wrong): this file blamed the VCO floor for 800x600's black
+> sequences. The floor is real arithmetic but only excludes 640x480, so that was an
+> overstatement.
+>
+> Second correction (the one that matters): the replacement text claimed 800x600
+> "PASSES at both 60 and 75 Hz". **It does not.** That claim came from
+> `test_modecycle.py`, which only checks the FPGA's measurement of the INCOMING
+> raster -- it says nothing about the picture. The user reported 800x600 twitchy with
+> black screens at both rates, before AND after every fix attempted on 2026-08-28.
+>
+> **800x600 PASS-THROUGH HAS NEVER WORKED, ON EITHER BOARD.** Before `8790569`,
+> `edid_builder.v` read `Excluded: all 640x480/720x400/800x600 (<60, below floor)` --
+> the x10 recovery MMCM could not reach it. `8790569` changed x10 to x15, widening the
+> window to 40-90 MHz, and ADDED 800x600@60/72/75 **because the arithmetic now
+> admitted it**. That commit's hardware verification was `1024x768@60 and @75 rock
+> solid` -- 1024x768 only. 800x600 went from excluded-by-calculation to
+> advertised-by-calculation without ever being looked at.
+>
+> On the Pt it was never exercised at all: M1's hardware record is
+> `mode_idx 2 (1024x768@75), edid_ok False -- correct failsafe, no display`, i.e.
+> verified with NO DISPLAY ATTACHED.
+>
+> The thing that IS solid at 800x600 is the OFFLINE path -- all 14 table modes were
+> eyes-on verified on 2026-08-28. Offline generates its own clean clock and emits no
+> data islands. That contrast is the evidence, not a contradiction.
 
 **There is also nothing to fix in the EDID.** Verified against Windows' own cached
 copy of the EDID we serve: byte35 = `0x01`, so bit5 (640x480@60) and bit2

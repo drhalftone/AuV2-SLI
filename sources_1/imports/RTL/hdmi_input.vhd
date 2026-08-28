@@ -331,18 +331,20 @@ hdmi_MMCME2_BASE_inst : MMCME2_BASE
       --     1280x720@60  74.25 MHz -> VCO 1114  solid
       --     1280x800@60  71.00     -> VCO 1065  solid
       --     1024x768@60  65.00     -> VCO  975  solid
-      --     800x600@75   49.50     -> VCO  743  PASSES
-      --     800x600@60   40.00     -> VCO  600  PASSES (sits ON the minimum, still fine)
+      --     800x600@75   49.50     -> VCO  743  TWITCHY (never worked -- see below)
+      --     800x600@60   40.00     -> VCO  600  TWITCHY (never worked -- see below)
       --     640x480@75   31.50     -> VCO  473  broken (below minimum)
       --     640x480@60   25.175    -> VCO  378  broken (below minimum)
       -- This is why edid_builder.v excludes 640x480 as "<40, below floor".
       --
-      -- CORRECTED 2026-08-28: an earlier version of this comment also blamed the
-      -- floor for 800x600 being unstable. WRONG -- 800x600 passes at both 60 and
-      -- 75 Hz. Those symptoms came from the error-concealment bug fixed in c1b00c6
-      -- (an invalid symbol painted a bright red pixel; the injected EF/16/16 stream
-      -- disturbed the sink's LOCK, not just the picture). The floor is real, but it
-      -- only actually excludes 640x480. Do not drop 800x600 on account of it.
+      -- 800x600 PASS-THROUGH HAS NEVER WORKED, and the floor is not why.
+      -- Before 8790569 edid_builder.v read "Excluded: all 640x480/720x400/800x600
+      -- (<60, below floor)" -- the x10 recovery MMCM could not reach it. 8790569
+      -- changed x10 to x15 and ADDED 800x600 because the arithmetic now admitted
+      -- it; that commit's hardware proof was "1024x768@60 and @75 rock solid",
+      -- 1024x768 only. It has been advertised-by-calculation ever since.
+      -- On the Pt it was never exercised at all (M1: "no display").
+      -- The floor itself is real but excludes only 640x480.
       --
       -- NOT A PART PROBLEM, AND NOT FIXABLE BY MOVING BOARDS. Au V2 is
       -- xc7a35tftg256-2 and Pt V2 is xc7a100tfgg484-2 -- the SAME speed grade and
@@ -751,6 +753,7 @@ hdmi_section_decode: process(clk_pixel)
             if vdp_guardband_detect = '1' and in_adp = '0' and in_vdp = '0' then
                 in_vdp <= '1';
             end if;
+
             --------------------------------
             -- Is this some DVID video data?
             --------------------------------
