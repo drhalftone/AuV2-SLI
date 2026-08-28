@@ -714,8 +714,30 @@ hdmi_section_decode: process(clk_pixel)
             adp_guardband_detect <= '0';
             if in_vdp = '0' and ch0_terc4_valid = '1' and ch1_guardband_valid = '1' and ch2_guardband_valid = '1' then
                 if ch0_terc4(3 downto 2) = "11" and ch1_guardband = "0" and ch2_guardband = "0" then
-                    raw_vsync <= ch0_terc4(1);
-                    raw_hsync <= ch0_terc4(0);
+                    -- ONLY TRUST TERC4-DECODED SYNC INSIDE A REAL DATA ISLAND.
+                    --
+                    -- These two lines used to be unconditional, so ANY symbol trio
+                    -- that happened to look like an ADP guard band overwrote hsync
+                    -- and vsync with TERC4 bits -- corrupting the sync outright,
+                    -- with no preamble ever having said a data island was coming.
+                    --
+                    -- And there are no real data islands to find: edid_builder
+                    -- rebuilds block 0 and forwards NO CEA extension, so the served
+                    -- EDID has extension count 0. That is a DVI sink -- no HDMI
+                    -- VSDB, no Basic Audio bit -- so the source has no reason to
+                    -- send data islands at all. Every ADP detection here is
+                    -- therefore spurious by construction.
+                    --
+                    -- Measured, and mode-dependent, which is what makes this the
+                    -- candidate: in_adp reads 0 per window at 1280x720 but 33 per
+                    -- window at 800x600 -- the mode that twitches with black lines.
+                    -- 800x600 has the tightest h-blanking of any tested mode
+                    -- (256 px vs 288/320/370), so blanking symbols there are the
+                    -- most likely to land on a false guard-band match.
+                    if adp_prefix_seen = '1' then
+                        raw_vsync <= ch0_terc4(1);
+                        raw_hsync <= ch0_terc4(0);
+                    end if;
                     adp_guardband_detect <= adp_prefix_seen;
                     in_adp <= adp_guardband_detect AND (not in_adp) and (not in_vdp);
                 end if;
@@ -751,6 +773,41 @@ hdmi_section_decode: process(clk_pixel)
             -- after the guard band, which is the first active pixel -- but no longer
             -- demands a second detection that this receiver does not produce.
             if vdp_guardband_detect = '1' and in_adp = '0' and in_vdp = '0' then
+                in_vdp <= '1';
+            end if;
+
+            -- FALLBACK ENTRY: PREAMBLE SEEN, THEN REAL DATA. NO GUARD BAND NEEDED.
+            --
+            -- The video guard band is TWO characters and this receiver was measured
+            -- detecting only ONE per line (40 per 65536-pixel window at 720p =
+            -- exactly one per line; sometimes 80). Entry depended solely on that, so
+            -- a line missing BOTH characters never entered the video data period and
+            -- was blanked entirely. Measured here: in_vdp collapses from ~49700
+            -- (72% duty) to ~27200 (41%) for seconds at a time, which is about 19 of
+            -- the 62 lines in a window losing video -- with the clock locked, zero
+            -- invalid symbols on every lane, and no re-negotiation.
+            --
+            -- HISTORY, SO THIS IS NOT REVERTED AGAIN BY MISTAKE. This was tried once
+            -- and backed out because the picture did not improve. That judgement was
+            -- made against a CONFOUNDED test: clk_selector was also dropping sel at
+            -- the time, flipping the output clock and blacking the display outright,
+            -- which would mask any line-level gain. With the sel fall-debounce in
+            -- place (sel_drops now reads 0) the comparison is clean.
+            --
+            -- The guard-band characters are EXCLUDED below. tmds_decoder sets
+            -- data_valid for any lookup(8)='1' symbol, and guard-band characters are
+            -- exactly that -- guardband_valid and data_valid assert together. Without
+            -- the exclusion this fired on the first guard character and in_vdp rose on
+            -- the second, counting it as a pixel: the raster measured 801x600.
+            --
+            -- Control periods carry no valid data symbols, so this cannot fire during
+            -- blanking, and it is gated on not already being in a data period.
+            if in_vdp = '0' and in_adp = '0' and dvid_mode = '0'
+               and vdp_prefix_seen = '1'
+               and ch0_data_valid = '1' and ch1_data_valid = '1'
+               and ch2_data_valid = '1'
+               and ch0_guardband_valid = '0' and ch1_guardband_valid = '0'
+               and ch2_guardband_valid = '0' then
                 in_vdp <= '1';
             end if;
 

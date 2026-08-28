@@ -37,18 +37,46 @@ module clk_selector (
     reg [21:0] cnt   = 0;   // free-running counter on tmds_clk
     always@(posedge tmds_clk) cnt <= cnt + 1'b1;
 
-    // data_valid: 2-FF sync into clk10, then debounce (must hold high to count as valid)
+    // data_valid: 2-FF sync into clk10, then debounce BOTH EDGES.
+    //
+    // FIX 3 (2026-08-28): THE FALL USED TO BE INSTANT, AND THAT WAS THE BUG.
+    // dv_db dropped the moment data_valid went low, and `if (~dv_db) sel <= 0`
+    // then flipped the output clock to the local oscillator immediately. A glitch
+    // of a few MICROSECONDS was therefore enough to hand the display a completely
+    // different timebase; the sink lost lock, blanked, and took a second or two to
+    // re-acquire -- the "black screens on and off" reported at 800x600. Every
+    // polled register read perfectly clean throughout, because the event is far
+    // shorter than the host's ~12 reads/second could ever catch.
+    //
+    // Reacting instantly bought responsiveness to an unplug. The user does not
+    // want that: plug/unplug is rare and several seconds of latency is fine "in
+    // human terms". So the fall is now debounced like the rise -- data_valid must
+    // be absent for FALL_HOLD (~0.5 s at 10 MHz) before sel is allowed to drop.
+    // Brief glitches are ridden through and the display never sees a discontinuity;
+    // a genuine unplug shows garbage for that half second before the offline
+    // pattern appears, which is the trade that was explicitly asked for.
+    //
+    // This makes the receiver TOLERANT of the glitch rather than removing it. At
+    // 800x600@60 the underlying cause is the recovery MMCM running at 40 MHz x 15
+    // = 600 MHz VCO, exactly its rated minimum; fixing that needs DRP retuning.
+    // evt_diag (regs 0x7D..0x80) counts pll_locked/symbol_sync drops separately
+    // from sel drops, so the glitch rate stays visible even once it is absorbed.
+    localparam [22:0] FALL_HOLD = 23'd5_000_000;   // ~0.5 s at 10 MHz
     reg dv0 = 1'b0, dv1 = 1'b0, dv_db = 1'b0;
     reg [15:0] dvcnt = 16'd0;
+    reg [22:0] dvlo  = 23'd0;
 
     reg rec; reg flag = 1'b0;
     always@(posedge clk10) begin
         // ---- data_valid sync + debounce (fast drop, ~6.5ms rise) ----
         dv0 <= data_valid; dv1 <= dv0;
         if (dv1) begin
+            dvlo <= 23'd0;                                  // signal back: restart fall timer
             if (dvcnt == 16'hFFFF) dv_db <= 1'b1; else dvcnt <= dvcnt + 16'd1;
         end else begin
-            dvcnt <= 16'd0; dv_db <= 1'b0;
+            dvcnt <= 16'd0;                                 // restart the rise timer
+            if (dvlo == FALL_HOLD) dv_db <= 1'b0;           // gone long enough: really gone
+            else                   dvlo  <= dvlo + 23'd1;
         end
 
         // ---- clock-present detector (original) ----
@@ -60,7 +88,7 @@ module clk_selector (
         end else begin                        // decision stage
             sel <= flag & dv_db;              // require a clock AND a valid decode
         end
-        if (~dv_db) sel <= 1'b0;              // no valid decode -> force offline now
+        if (~dv_db) sel <= 1'b0;              // decode gone for FALL_HOLD -> offline
     end
 
     // The output serializer's TMDS symbol is ENCODED on oclk (=pixel_clk) but PARALLEL-LOADED

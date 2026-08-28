@@ -45,6 +45,10 @@ module usb_link #(
     input  wire [31:0] vdp_diag,
     input  wire [31:0] pre_diag,
     input  wire [31:0] gb_diag,
+    input  wire [31:0] evt_diag,
+    input  wire [31:0] hpd_diag,
+    input  wire [55:0] out_meas,
+    input  wire [17:0] out_pixkhz,
 
     // ---- pin-state readback (reg 0x10): physical switches + post-override value ----
     input  wire [3:0]  phys_sw,          // raw newSW pins {R,G,B,orient} (async)
@@ -438,6 +442,10 @@ module usb_link #(
         .vdp_diag_i(vdp_diag),
         .pre_diag_i(pre_diag),
         .gb_diag_i(gb_diag),
+        .evt_diag_i(evt_diag),
+        .hpd_diag_i(hpd_diag),
+        .out_meas_i(out_meas),
+        .out_pixkhz_i(out_pixkhz),
         .maxexp_i(maxexp_w),
         .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
         .cam_spi_done(cam_spi_done),

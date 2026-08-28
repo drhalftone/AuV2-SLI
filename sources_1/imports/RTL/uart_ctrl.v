@@ -215,6 +215,10 @@ module uart_ctrl #(
     input  wire [31:0]  vdp_diag_i,
     input  wire [31:0]  pre_diag_i,
     input  wire [31:0]  gb_diag_i,
+    input  wire [31:0]  evt_diag_i,
+    input  wire [31:0]  hpd_diag_i,
+    input  wire [55:0]  out_meas_i,
+    input  wire [17:0]  out_pixkhz_i,
     // G0: max usable exposure for the CURRENT frame rate, computed in
     // usb_link from the measured vsync period and the measured sensor gap.
     // {reserve_ticks[15:0], valid, reg_limited, 6'b0, max_expo[15:0]}
@@ -531,6 +535,27 @@ case (addr)
             8'h7A:   rd_data  = gb_diag_i[15:8];
             8'h7B:   rd_data  = gb_diag_i[23:16];
             8'h7C:   rd_data  = gb_diag_i[31:24];
+            8'h7D:   rd_data  = evt_diag_i[7:0];
+            8'h7E:   rd_data  = evt_diag_i[15:8];
+            8'h7F:   rd_data  = evt_diag_i[23:16];
+            8'h80:   rd_data  = evt_diag_i[31:24];
+            8'h81:   rd_data  = hpd_diag_i[7:0];    // HPD-to-PC falling edges
+            8'h82:   rd_data  = hpd_diag_i[15:8];   // edid_ok falling edges
+            // ---- OUTGOING raster: UNPACKED exactly like 0x60..0x67 above. ----
+            // video_meas packs 12-bit h, 12-bit v and a 24-bit period, so a raw
+            // byte-for-byte copy straddles the field boundaries and reports
+            // nonsense (33568x15653 was the first attempt). Mirror the input map.
+            8'h83:   rd_data  = out_meas_i[7:0];              // h_active lo
+            8'h84:   rd_data  = {4'b0, out_meas_i[11:8]};     // h_active hi
+            8'h85:   rd_data  = out_meas_i[19:12];            // v_active lo
+            8'h86:   rd_data  = {4'b0, out_meas_i[23:20]};    // v_active hi
+            8'h87:   rd_data  = out_meas_i[31:24];            // period lo (10 ns)
+            8'h88:   rd_data  = out_meas_i[39:32];            // period mid
+            8'h89:   rd_data  = out_meas_i[47:40];            // period hi
+            8'h8A:   rd_data  = {6'b0, out_meas_i[49], out_meas_i[48]}; // {valid, ok}
+            8'h8B:   rd_data  = out_pixkhz_i[7:0];            // transmitted pclk kHz
+            8'h8C:   rd_data  = out_pixkhz_i[15:8];
+            8'h8D:   rd_data  = {6'b0, out_pixkhz_i[17:16]};
             default: rd_data  = 8'h00;
         endcase
     end

@@ -179,6 +179,7 @@ architecture Behavioral of Au2_SLI is
         vdp_diag       : out std_logic_vector(31 downto 0);
         pre_diag       : out std_logic_vector(31 downto 0);
         gb_diag        : out std_logic_vector(31 downto 0);
+        evt_diag       : out std_logic_vector(31 downto 0);
         sel : out std_logic; 
         -------------------------------
         --HDMI input signals
@@ -396,6 +397,26 @@ architecture Behavioral of Au2_SLI is
     signal vdp_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
     signal pre_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
     signal gb_diag_w   : std_logic_vector(31 downto 0) := (others => '0');
+    signal evt_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
+    -- OUTPUT-SIDE event counters. Everything in evt_diag is RECEIVE side, and
+    -- a 90 s watch showed none of it moving while the display kept blacking out.
+    -- edid_merge yanks hdmi_rx_hpa low for ~500 ms whenever the sink's presence
+    -- or EDID content appears to change; the PC then re-negotiates and the screen
+    -- goes black -- with the whole RX path perfectly healthy, which is exactly
+    -- what was measured. Nothing counted this.
+    signal hpd_diag_w  : std_logic_vector(31 downto 0) := (others => '0');
+    -- OUTGOING raster, measured the same way video_meas measures the incoming
+    -- one. This is what makes offline and pass-through DIRECTLY COMPARABLE:
+    -- 800x600 is rock solid offline and blacks out in pass-through, same mode
+    -- and same display, so a side-by-side table of the OUTPUT parameters isolates
+    -- what actually differs instead of guessing at mechanisms one at a time.
+    -- out_* sit on pixel_clk, which is hdmi_io's oclk -- the BUFGMUX output --
+    -- so this instance measures the real transmitted timing in EITHER mode.
+    signal out_meas_w   : std_logic_vector(55 downto 0) := (others => '0');
+    signal out_pixkhz_w : std_logic_vector(17 downto 0) := (others => '0');
+    signal hpd_fall, edid_fall : std_logic_vector(7 downto 0) := (others => '0');
+    signal hpd_q, eok_q        : std_logic := '0';
+    signal hpd_s, eok_s        : std_logic_vector(2 downto 0) := "000";
 
     component video_meas is
         port ( pixel_clk : in  STD_LOGIC;
@@ -489,6 +510,10 @@ architecture Behavioral of Au2_SLI is
                vdp_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
                pre_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
                gb_diag     : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+               evt_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+               hpd_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
+               out_meas    : in  STD_LOGIC_VECTOR(55 downto 0) := (others => '0');
+               out_pixkhz  : in  STD_LOGIC_VECTOR(17 downto 0) := (others => '0');
                cam_stat_i  : in  STD_LOGIC_VECTOR(143 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                rx2_valid   : in  STD_LOGIC := '0';
@@ -796,6 +821,33 @@ begin
     -- sampling those on pixel_clk was an unconstrained domain crossing. It happened
     -- to work until extra logic in this path shifted timing enough to expose it
     -- (1280x720 measured as 13x0 while the RX itself stayed perfectly healthy).
+    -- Sticky output-side counters, on clk100 (always running).
+    hpd_evt: process(clk100_g)
+    begin
+        if rising_edge(clk100_g) then
+            hpd_s <= hpd_s(1 downto 0) & hdmi_rx_hpa_i;
+            eok_s <= eok_s(1 downto 0) & edid_ok;
+            hpd_q <= hpd_s(2);  eok_q <= eok_s(2);
+            if hpd_q = '1' and hpd_s(2) = '0' and hpd_fall /= x"FF" then
+                hpd_fall <= hpd_fall + 1;          -- HPD yanked low -> PC re-negotiates
+            end if;
+            if eok_q = '1' and eok_s(2) = '0' and edid_fall /= x"FF" then
+                edid_fall <= edid_fall + 1;        -- EDID/DDC read stopped being valid
+            end if;
+        end if;
+    end process;
+    hpd_diag_w <= x"0000" & edid_fall & hpd_fall;
+
+    i_video_meas_out: video_meas port map (
+        pixel_clk => pixel_clk,          -- = oclk, the transmitted pixel clock
+        in_hsync  => out_hsync,
+        in_vsync  => out_vsync,
+        in_blank  => out_blank,
+        clk100    => clk100_g,
+        vid_valid => '1',                -- offline has no RX validity; counters decide
+        meas      => out_meas_w,
+        pix_khz   => out_pixkhz_w );
+
     i_video_meas: video_meas port map (
         pixel_clk => meas_clk_w,
         in_hsync  => meas_hsync_w,
@@ -875,6 +927,10 @@ begin
         vdp_diag    => vdp_diag_w,
         pre_diag    => pre_diag_w,
         gb_diag     => gb_diag_w,
+        evt_diag    => evt_diag_w,
+        hpd_diag    => hpd_diag_w,
+        out_meas    => out_meas_w,
+        out_pixkhz  => out_pixkhz_w,
         cam_stat_i  => cam_stat_q,
         rx2_data    => ctl_byte_w,
         rx2_valid   => ctl_valid_w,
@@ -948,6 +1004,7 @@ i_hdmi_io: hdmi_io port map (
         vdp_diag         => vdp_diag_w,
         pre_diag         => pre_diag_w,
         gb_diag          => gb_diag_w,
+        evt_diag         => evt_diag_w,
         sel => sel, 
         ---------------------
         -- HDMI input signals

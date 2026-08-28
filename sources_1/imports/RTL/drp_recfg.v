@@ -26,7 +26,8 @@
 //      8  1280x720@60   52  7  10   2   74.29
 //      9  1280x800@60   32  3  15   3   71.11
 //     10  1024x768@60   13  2  10   2   65.00
-//     11  800x600@60     6  1  15   3   40.00
+//     11  800x600@60    12  1  30   6   40.00   <- was 6/1/15/3 (VCO 600 = the
+//                                                  rated MINIMUM; display rejected it)
 //     12  640x480@60    34  3  45   9   25.19  (failsafe)
 //     13  1280x1024@60  54  5  10   2  108.00   <- FASTEST (x5=540MHz; MMCM power-up = this)
 //
@@ -128,9 +129,31 @@ module drp_recfg (
         4'd10: begin selCLKFB=mmcm_count_calc(8'd13,0,50000); selDIVCLK=mmcm_count_calc(8'd2,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd10,0,50000); selCLKOUT2=mmcm_count_calc(8'd2,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd13); selFILT=mmcm_filter_lookup(8'd13,"OPTIMIZED"); end
-        4'd11: begin selCLKFB=mmcm_count_calc(8'd6,0,50000);  selDIVCLK=mmcm_count_calc(8'd1,0,50000);
-                     selCLKOUT0=mmcm_count_calc(8'd15,0,50000); selCLKOUT2=mmcm_count_calc(8'd3,0,50000);
-                     selLOCK=mmcm_lock_lookup(8'd6);  selFILT=mmcm_filter_lookup(8'd6,"OPTIMIZED"); end
+        // idx11: 800x600@60, 40.000 MHz EXACT. M=12 D=1 O0=30 O2=6 -> VCO 1200.
+        //
+        // WAS M=6 D=1 O0=15 O2=3 -> VCO 600 MHz, which is EXACTLY the Artix-7 -2
+        // rated minimum: the lowest VCO in this whole table, with zero margin, and
+        // in direct violation of the policy stated at the top of this file ("pick
+        // the HIGHEST VCO among near-exact candidates; MMCM jitter falls as VCO
+        // rises"). Every other entry sits at 650 MHz or above.
+        //
+        // Measured on hardware 2026-08-28: offline 800x600@60 was REJECTED by the
+        // display ("input timing not supported") while offline 800x600@75 (VCO 743)
+        // and 1024x768@75 (VCO 1180) were both fine on the same display, cable and
+        // session. The transmitted raster measured CORRECT throughout -- 800x600 @
+        // 60.32 Hz at exactly 40000 kHz -- so the geometry was never wrong; the
+        // clock quality was.
+        //
+        // With the serializer's O0 = 5*O2 constraint, an exact 40.000 MHz gives
+        // VCO = 200 * O2, so O2=6 doubles the VCO to 1200 MHz for the SAME exact
+        // pixel clock. No trade-off: strictly more margin and lower jitter.
+        //
+        // NOTE the same mode also sits at the floor in PASS-THROUGH, where the RX
+        // recovery MMCM is a fixed x15 (40 x 15 = 600). That is a separate MMCM and
+        // is NOT fixed here -- see hdmi_input.vhd.
+        4'd11: begin selCLKFB=mmcm_count_calc(8'd12,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
+                     selCLKOUT0=mmcm_count_calc(8'd30,0,50000); selCLKOUT2=mmcm_count_calc(8'd6,0,50000);
+                     selLOCK=mmcm_lock_lookup(8'd12); selFILT=mmcm_filter_lookup(8'd12,"OPTIMIZED"); end
         // idx13: 1280x1024@60, 108.000 MHz EXACT (M=54 D=5 O0=10 O2=2 -> VCO 1080).
         // x5 = 540 MHz: the FASTEST clock this design generates. drp_clkgen13's MMCM
         // power-up parameters are set to this mode so Vivado's STA analyses the

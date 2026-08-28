@@ -35,6 +35,15 @@ entity hdmi_io is
         vdp_diag       : out std_logic_vector(31 downto 0);
         pre_diag       : out std_logic_vector(31 downto 0);
         gb_diag        : out std_logic_vector(31 downto 0);
+        -- STICKY EVENT COUNTS. Everything else here is a per-window duty or
+        -- a level, and the host polls ~12 times a second -- which cannot see
+        -- a 10 ms dropout. The display blanks and re-acquires while every
+        -- polled register reads clean, so these events have to be LATCHED in
+        -- fabric and accumulated rather than sampled.
+        --   [7:0]   sel falling edges (output clock mux flipped to offline)
+        --   [15:8]  pll_locked falling edges
+        --   [23:16] symbol_sync falling edges
+        evt_diag       : out std_logic_vector(31 downto 0);
         sel : out std_logic; -- orginal clock source select, now used to demo the ghost RX clock
         -------------------------------
         --HDMI input signals
@@ -157,6 +166,12 @@ architecture Behavioral of hdmi_io is
    signal vdp_diag_i       : std_logic_vector(31 downto 0);
    signal pre_diag_i       : std_logic_vector(31 downto 0);
    signal gb_diag_i        : std_logic_vector(31 downto 0);
+   -- std_logic_vector, NOT unsigned: this file uses STD_LOGIC_ARITH and
+   -- NUMERIC_STD together, so `unsigned` is multiply-declared and ambiguous.
+   -- STD_LOGIC_UNSIGNED supplies "+" on std_logic_vector directly.
+   signal evt_sel, evt_pll, evt_sym : std_logic_vector(7 downto 0) := (others => '0');
+   signal sel_q, pll_q, sym_q       : std_logic := '0';
+   signal sel_s, pll_s, sym_s       : std_logic_vector(2 downto 0) := "000";
    
     -- edid_rom removed: the host EDID is now served by edid_merge in the top
     -- (dynamic merge of the display's modes), wired to hdmi_rx_scl/sda/hpa there.
@@ -385,6 +400,29 @@ begin
     debug(0)          <= counter(31);
     rx_diag <= vfifo_primed_i & idelay_rdy_i & rx_dbg_i;
     vfifo_reprimes <= vfifo_reprimes_i;
+    -- Sticky drop-event counters, all sampled into clk10 (a clock that keeps
+    -- running whatever the recovered clock does -- counting these in the pixel
+    -- domain would stop counting exactly when the fault occurs).
+    evt_count: process(clk10)
+    begin
+        if rising_edge(clk10) then
+            sel_s <= sel_s(1 downto 0) & sel_i;
+            pll_s <= pll_s(1 downto 0) & clock_locked_i;
+            sym_s <= sym_s(1 downto 0) & data_synced_i;
+            sel_q <= sel_s(2); pll_q <= pll_s(2); sym_q <= sym_s(2);
+            if sel_q = '1' and sel_s(2) = '0' and evt_sel /= x"FF" then
+                evt_sel <= evt_sel + 1;
+            end if;
+            if pll_q = '1' and pll_s(2) = '0' and evt_pll /= x"FF" then
+                evt_pll <= evt_pll + 1;
+            end if;
+            if sym_q = '1' and sym_s(2) = '0' and evt_sym /= x"FF" then
+                evt_sym <= evt_sym + 1;
+            end if;
+        end if;
+    end process;
+    evt_diag <= x"00" & evt_sym & evt_pll & evt_sel;
+
     ctl_diag <= ctl_diag_i;
     vdp_diag <= vdp_diag_i;
     pre_diag <= pre_diag_i;
