@@ -43,6 +43,17 @@ set_false_path -from [get_clocks sys_clk_pin] -to [get_clocks -of_objects [get_p
 set_false_path -through [get_ports led[*]]
 set_false_path -through [get_ports newSW[*]]
 set_false_path -from [get_clocks hdmi_clk] -to [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]]
+
+# ---- rx_freq_band: sys_clk_pin <-> hdmi_clk, both directions ASYNCHRONOUS ----
+# rx_freq_band measures the recovery MMCM's INPUT by counting hdmi_clk edges inside
+# a 1 ms gate generated on clk100, so two signals cross between unrelated domains:
+#   clk100 -> hdmi_clk : gate_tog, resynchronised by the 3-flop gt_t shift register
+#   hdmi_clk -> clk100 : freq_t, held stable for a whole 1 ms window before sampling
+# Nothing had ever crossed into hdmi_clk before -- the existing false paths cover
+# sys_clk_pin -> CLKOUT0 (the RECOVERED pixel clock), not the MMCM's input -- so
+# these were timed as if synchronous and reported -2.438 ns.
+set_false_path -from [get_clocks sys_clk_pin] -to [get_clocks hdmi_clk]
+set_false_path -from [get_clocks hdmi_clk]    -to [get_clocks sys_clk_pin]
 set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]] -to [get_clocks -of_objects [get_pins i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT0]]
 set_false_path -from [get_clocks -of_objects [get_pins i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT0]] -to [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]]
 set_false_path -from [get_clocks -of_objects [get_pins ref_clk_pll/inst/mmcm_adv_inst/CLKOUT2]] -to [get_clocks -of_objects [get_pins i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT1]]

@@ -60,14 +60,32 @@ module edid_builder #(
     // 800x600@120 (73.27 MHz -> VCO 1099) would be a HEALTHY pass-through mode: at
     // one resolution the HIGHER refresh is the safer one, because the low pixel
     // clock is what pushes the VCO into its floor.
-    parameter [15:0] F_MIN_10K = 16'd6000,    // 60.00 MHz -> VCO >= 900, measured-solid territory
+    // FLOOR LOWERED 60.00 -> 25.00 MHz because the recovery MMCM is no longer a
+    // fixed x15. rx_freq_band measures the MMCM's input and rx_drp_recfg retunes the
+    // multiplier per band, so every advertised mode now lands at a HEALTHY VCO
+    // instead of scraping the 600 MHz floor:
+    //
+    //     640x480@60   25.175 MHz  band 0  M=40  VCO 1007
+    //     640x480@75   31.50       band 1  M=30  VCO  945
+    //     800x600@60   40.00       band 2  M=25  VCO 1000   (was VCO 600 -- black screens)
+    //     800x600@75   49.50       band 2  M=25  VCO 1237   (was VCO 743 -- twitchy)
+    //     800x600@72   50.00       band 2  M=25  VCO 1250
+    //     1024x768@60  65.00       band 4  M=15  VCO  975   (unchanged)
+    //     1280x720@60  74.25       band 4  M=15  VCO 1114   (unchanged)
+    //     1024x768@75  78.75       band 4  M=15  VCO 1181   (unchanged)
+    //
+    // Band 4 reprograms the MMCM to EXACTLY the old hard-coded words, so the modes
+    // that already worked are untouched; only the new low bands are new behaviour.
+    parameter [15:0] F_MIN_10K = 16'd2500,    // 25.00 MHz -- lowest band-0 mode is 25.175
     parameter [15:0] F_MAX_10K = 16'd9000,    // 90.00 MHz (x15 on the -2 part: VCO<=1440 -> pixel<=96; 90=margin)
-    // In-window established positions (pixel clocks) after the floor change:
-    //        B36 bit3 = 1024x768@60 (65.0) bit2 = 1024x768@70 (75.0) bit1 = 1024x768@75 (78.75)
-    //   Excluded: 640x480/720x400 (<40); 800x600@60/72/75 (40.0/50.0/49.5, VCO too low
-    //   -- MEASURED bad, see above); 1280x1024@75 (135, over).
-    parameter [7:0]  EST_MASK35 = 8'h00,      // nothing in byte 35 survives the 60 MHz floor
-    parameter [7:0]  EST_MASK36 = 8'h0E,      // 1024x768@60/70/75 only (b3,b2,b1)
+    // In-window established positions (pixel clocks):
+    //   B35 bit5 = 640x480@60 (25.175)  bit2 = 640x480@75 (31.5)  bit0 = 800x600@60 (40.0)
+    //   B36 bit7 = 800x600@72 (50.0)    bit6 = 800x600@75 (49.5)
+    //        bit3 = 1024x768@60 (65.0)  bit2 = 1024x768@70 (75.0)  bit1 = 1024x768@75 (78.75)
+    //   Still excluded: 720x400@70 (28.3, not in the candidate set); 640x480@67/72
+    //   (not offered by this sink); 1280x1024@75 (135 MHz, over F_MAX).
+    parameter [7:0]  EST_MASK35 = 8'h25,      // 640x480@60 (b5), @75 (b2), 800x600@60 (b0)
+    parameter [7:0]  EST_MASK36 = 8'hCE,      // 800x600@72/75 (b7,b6) + 1024x768@60/70/75
     parameter [7:0]  EST_MASK37 = 8'h00
 )(
     input  wire        clk,
@@ -89,7 +107,7 @@ module edid_builder #(
     // (pixel clocks are all in [60,120] MHz by construction, so membership in the
     // display's slots is the only runtime test needed.)
     //--------------------------------------------------------------------------
-    localparam integer NCAND = 5;
+    localparam integer NCAND = 8;
     // packed {hi,lo} per candidate - in-window (60-90 MHz) standard timings.
     //
     // F_MIN_10K does NOT filter this list -- it is only used for the max-clock byte
@@ -101,11 +119,14 @@ module edid_builder #(
     reg [15:0] CAND [0:NCAND-1];
     // higher index = higher pixel clock (used to pick the "best" survivor)
     initial begin
-        CAND[0]  = 16'h6140; // 1024x768@60   65.00   VCO  975
-        CAND[1]  = 16'h8100; // 1280x800@60   71.00   VCO 1067  (RB)
-        CAND[2]  = 16'h81C0; // 1280x720@60   74.25   VCO 1114
-        CAND[3]  = 16'h614A; // 1024x768@70   75.00   VCO 1125
-        CAND[4]  = 16'h614F; // 1024x768@75   78.75   VCO 1181
+        CAND[0]  = 16'h4540; // 800x600@60    40.00   VCO 1000  (band 2)
+        CAND[1]  = 16'h454F; // 800x600@75    49.50   VCO 1237  (band 2)
+        CAND[2]  = 16'h454C; // 800x600@72    50.00   VCO 1250  (band 2)
+        CAND[3]  = 16'h6140; // 1024x768@60   65.00   VCO  975  (band 4)
+        CAND[4]  = 16'h8100; // 1280x800@60   71.00   VCO 1067  (band 4, RB)
+        CAND[5]  = 16'h81C0; // 1280x720@60   74.25   VCO 1114  (band 4)
+        CAND[6]  = 16'h614A; // 1024x768@70   75.00   VCO 1125  (band 4)
+        CAND[7]  = 16'h614F; // 1024x768@75   78.75   VCO 1181  (band 4)
     end
 
     //--------------------------------------------------------------------------

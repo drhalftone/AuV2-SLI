@@ -242,6 +242,39 @@ architecture Behavioral of hdmi_input is
     
     signal in_dvid              : std_logic := '0';
     signal symbol_sync_i        : std_logic := '0';
+    -- ---- adaptive recovery-clock retune (rx_freq_band + rx_drp_recfg) ----
+    component rx_freq_band is
+        port ( clk100       : in  std_logic;
+               tmds_clk     : in  std_logic;
+               valid        : in  std_logic;
+               band         : out std_logic_vector(3 downto 0);
+               band_changed : out std_logic;
+               khz          : out std_logic_vector(17 downto 0) );
+    end component;
+    component rx_drp_recfg is
+        port ( SCLK     : in  std_logic;
+               RST      : in  std_logic;
+               MODE_IDX : in  std_logic_vector(3 downto 0);
+               SEN      : in  std_logic;
+               SRDY     : out std_logic;
+               DO       : in  std_logic_vector(15 downto 0);
+               DRDY     : in  std_logic;
+               LOCKED   : in  std_logic;
+               DWE      : out std_logic;
+               DEN      : out std_logic;
+               DADDR    : out std_logic_vector(6 downto 0);
+               DI       : out std_logic_vector(15 downto 0);
+               DCLK     : out std_logic;
+               RST_MMCM : out std_logic );
+    end component;
+    signal rx_band      : std_logic_vector(3 downto 0);
+    signal rx_band_sen  : std_logic;
+    signal rx_band_khz  : std_logic_vector(17 downto 0);
+    signal drp_daddr    : std_logic_vector(6 downto 0);
+    signal drp_di, drp_do : std_logic_vector(15 downto 0);
+    signal drp_den, drp_dwe, drp_drdy, drp_dclk : std_logic;
+    signal drp_srdy, drp_rst_mmcm : std_logic;
+
     signal ctl_win    : std_logic_vector(15 downto 0) := (others => '0');
     signal ctl_c0     : std_logic_vector(15 downto 0) := (others => '0');
     signal ctl_call   : std_logic_vector(15 downto 0) := (others => '0');
@@ -312,7 +345,24 @@ IDELAYCTRL_inst : IDELAYCTRL
    --------------------------------
    -- MMCM driven by the HDMI clock
    --------------------------------
-hdmi_MMCME2_BASE_inst : MMCME2_BASE
+-- ADAPTIVE RECOVERY CLOCK. This was MMCME2_BASE with a hard-coded x15, which
+-- put a 40 MHz input at VCO 600 -- the -2 part's rated MINIMUM -- and 800x600
+-- pass-through blinked and blacked out there while its raster measured perfect.
+-- MMCME2_ADV is the same primitive plus the DRP port, so rx_drp_recfg can move
+-- the multiplier with the input and keep the VCO in the 1000-1300 range at every
+-- mode. Band 4 (>=65 MHz) reprograms it to EXACTLY the old x15 words, so every
+-- mode that works today is bit-identical; the new bands only do something below
+-- 65 MHz, where nothing worked at all.
+-- INSTANCE LABEL DELIBERATELY UNCHANGED. It says BASE and the primitive is now
+-- ADV, which reads wrong -- but BOTH Au2.xdc and Au2_pt.xdc reference
+-- i_hdmi_io/i_hdmi_input/hdmi_MMCME2_BASE_inst/CLKOUT0..2 by exact name for
+-- their set_false_path and set_clock_groups. Renaming the label silently made
+-- every one of those match nothing ("No clocks found"), so the asynchronous
+-- domains were suddenly timed against each other: WNS went to -20.275 ns with
+-- TNS -16921 and the router spent 30 minutes in one phase before the build
+-- died without a bitstream. Keeping the label is the low-risk choice; renaming
+-- it means editing two constraint files that also serve the Au V2 build.
+hdmi_MMCME2_BASE_inst : MMCME2_ADV
    generic map (
       -- x15 recovery (ported from MimasA7-SLI): VCO = pixel x 15. The Au V2 is a -2 part
       -- (Fvco max 1440 MHz vs the Mimas -1's 1200), so the input lock band is ~40-96 MHz
@@ -394,6 +444,8 @@ hdmi_MMCME2_BASE_inst : MMCME2_BASE
       CLKOUT6_PHASE => 0.0,
       CLKOUT4_CASCADE => FALSE,  -- Cascade CLKOUT4 counter with CLKOUT6 (FALSE, TRUE)
       REF_JITTER1 => 0.0,        -- Reference input jitter in UI (0.000-0.999).
+      CLKIN2_PERIOD => 13.000,   -- ADV only; CLKIN2 unused, tied off below
+      COMPENSATION => "ZHOLD",
       STARTUP_WAIT => FALSE      -- Delays DONE until MMCM is locked (FALSE, TRUE)
    )
    port map (
@@ -418,10 +470,43 @@ hdmi_MMCME2_BASE_inst : MMCME2_BASE
       CLKIN1    => hdmi_in_clk, -- 1-bit input: Clock
       -- Control Ports: 1-bit (each) input: MMCM control ports
       PWRDWN    => '0',           -- 1-bit input: Power-down
-      RST       => '0',           -- 1-bit input: Reset
+      RST       => drp_rst_mmcm,  -- driven by rx_drp_recfg during a retune
+      -- ADV-only clock select / secondary input (unused: CLKIN1 only)
+      CLKIN2    => '0',
+      CLKINSEL  => '1',           -- 1 = CLKIN1
+      CLKINSTOPPED => open,
+      CLKFBSTOPPED => open,
+      -- Dynamic reconfiguration port
+      DADDR     => drp_daddr,
+      DCLK      => drp_dclk,
+      DEN       => drp_den,
+      DI        => drp_di,
+      DO        => drp_do,
+      DRDY      => drp_drdy,
+      DWE       => drp_dwe,
+      PSCLK     => '0', PSEN => '0', PSINCDEC => '0', PSDONE => open,
       -- Feedback Clocks: 1-bit (each) input: Clock feedback ports
       CLKFBIN   => clkfb_2        -- 1-bit input: Feedback clock
    );
+
+   ----------------------------------------------------------------------------
+   -- Adaptive band selection + DRP retune of the recovery MMCM.
+   -- rx_freq_band measures the MMCM's INPUT (hdmi_in_clk) -- not its output,
+   -- which would be a feedback loop once the multiplier varies -- and only acts
+   -- after the same band has been seen for several consecutive 1 ms windows,
+   -- because a retune drops lock and blanks the output briefly.
+   ----------------------------------------------------------------------------
+   i_rx_band : rx_freq_band
+      port map ( clk100 => system_clk, tmds_clk => hdmi_in_clk,
+                 valid  => locked,
+                 band => rx_band, band_changed => rx_band_sen, khz => rx_band_khz );
+
+   i_rx_drp : rx_drp_recfg
+      port map ( SCLK => system_clk, RST => '0',
+                 MODE_IDX => rx_band, SEN => rx_band_sen, SRDY => drp_srdy,
+                 DO => drp_do, DRDY => drp_drdy, LOCKED => locked,
+                 DWE => drp_dwe, DEN => drp_den, DADDR => drp_daddr,
+                 DI => drp_di, DCLK => drp_dclk, RST_MMCM => drp_rst_mmcm );
 
    ----------------------------------
    -- Force the highest speed clock 
