@@ -448,6 +448,8 @@ architecture Behavioral of Au2_SLI is
                -- captured-EDID read port -> edid_merge's 3rd port (rdtbl TGT_EDID)
                edid_rd_addr : out STD_LOGIC_VECTOR(7 downto 0);
                edid_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
+               esrv_rd_addr : out STD_LOGIC_VECTOR(7 downto 0);
+               esrv_rd_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                -- captured camera-line read port (rdtbl TGT_CAM_LINE). No receiver on the
                -- Au, so the top ties cam_line_data to 0 -- the target reads back zeros.
                cam_line_addr : out STD_LOGIC_VECTOR(10 downto 0);
@@ -514,6 +516,8 @@ architecture Behavioral of Au2_SLI is
                mode_rd_data : out   STD_LOGIC_VECTOR(7 downto 0);
                host_rd_addr : in    STD_LOGIC_VECTOR(7 downto 0);
                host_rd_data : out   STD_LOGIC_VECTOR(7 downto 0);
+               srv_rd_addr  : in    STD_LOGIC_VECTOR(7 downto 0);
+               srv_rd_data  : out   STD_LOGIC_VECTOR(7 downto 0);
                edid_ok      : out   STD_LOGIC );
     end component;
 
@@ -599,6 +603,7 @@ architecture Behavioral of Au2_SLI is
     signal mode_rd_addr  : std_logic_vector(7 downto 0);
     signal mode_rd_data  : std_logic_vector(7 downto 0);
     signal edid_ok_s0, edid_ok_s1 : std_logic := '0';
+    signal esrv_addr_w, esrv_data_w : std_logic_vector(7 downto 0) := (others => '0');
     signal applied_idx : std_logic_vector(3 downto 0) := "0010";  -- default idx 2 (MMCM power-up)
     signal apply_arm   : std_logic := '0';
     signal sen_tgl     : std_logic := '0';
@@ -625,7 +630,26 @@ architecture Behavioral of Au2_SLI is
     -- MODEFORCE (reg 0x14): {7:force_en, 3..0:idx}. Pins the offline mode, overriding the
     -- EDID pick -- the only way to reach a mode the EDID would never steer to.
     signal mode_force_bus : std_logic_vector(7 downto 0);
-    signal mode_idx_f, mode_idx_f_q : std_logic_vector(3 downto 0) := "0010";
+    -- mode_idx_f_q means "the index the MMCM is CURRENTLY PROGRAMMED TO", and
+    -- drp_clkgen13's MMCM powers up with idx 13's parameters (1280x1024@60,
+    -- 108 MHz -- chosen as the fastest mode so timing closes). It must therefore
+    -- initialise to 13, NOT to the same value as mode_idx_f.
+    --
+    -- Both used to initialise to "0010" = 2. The SEN pulse below fires only when
+    -- the index CHANGES, so whenever the selected index was also 2 the two matched
+    -- from reset, no edge ever occurred, and the DRP reconfiguration NEVER RAN --
+    -- leaving the MMCM at 108 MHz while the timing ROM used idx 2's geometry.
+    -- That is precisely the EDID-failsafe path (edid_ok=0 pins idx 2), so a boot
+    -- whose EDID read failed produced 1024x768 geometry clocked at 108 MHz =
+    -- 102.90 Hz, and the display refused it as "input timing not supported".
+    -- Measured on hardware: forcing idx 3 then back to 2 via MODEFORCE (reg 0x14)
+    -- created the missing edge and the output snapped 102.90 Hz -> 74.95 Hz.
+    --
+    -- Seeding it with the real power-up index makes the first comparison honest:
+    -- any selected index other than 13 now produces an edge and reprograms, and a
+    -- selection of 13 correctly needs no reprogram because that is already loaded.
+    signal mode_idx_f   : std_logic_vector(3 downto 0) := "0010";
+    signal mode_idx_f_q : std_logic_vector(3 downto 0) := "1101";  -- = 13, MMCM power-up
     signal vg_hStart, vg_hEnd, vg_hMax : std_logic_vector(11 downto 0);
     signal vg_vStart, vg_vEnd, vg_vMax : std_logic_vector(11 downto 0);
 
@@ -800,6 +824,7 @@ begin
         lutv_addr => "00000000000", lutv_dout => open,
         corr_pat_addr => pat_lut_din, corr_pat_dout => pat_lut_dout,
         edid_rd_addr => edid_host_addr, edid_rd_data => edid_host_data,
+        esrv_rd_addr => esrv_addr_w,    esrv_rd_data => esrv_data_w,
         -- camera line readback: on the Pt this reaches cam_line_buf's read port (task #12).
         cam_line_addr => cam_line_addr_w, cam_line_data => cam_line_data_w,
         -- offline mode decision. clkgen_mode_idx is the APPLIED index (already the
@@ -875,6 +900,8 @@ begin
         mode_rd_data => mode_rd_data,
         host_rd_addr => edid_host_addr,
         host_rd_data => edid_host_data,
+        srv_rd_addr  => esrv_addr_w,
+        srv_rd_data  => esrv_data_w,
         edid_ok      => edid_ok );
     -- LINKCTL host disconnect: force HPD low while link_drop_host is asserted, so the
     -- source sees an unplug (>100 ms) and fully re-reads EDID / re-negotiates on release.

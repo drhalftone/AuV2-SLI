@@ -111,6 +111,15 @@ module uart_ctrl #(
     output wire [7:0]  edid_rd_addr,
     input  wire [7:0]  edid_rd_data,
 
+    // ---- SERVED-EDID read port (TGT_EDID_SRV, rdtbl 0x05) ----
+    // TGT_EDID above is what the DISPLAY sent us. This is the merged block we
+    // SERVE to the PC -- the two differ by the pass-through window filter, and
+    // being unable to see the served copy meant the merge could only be checked
+    // against Windows' registry cache, which is the host's stale copy rather
+    // than what the fabric is actually presenting on the DDC.
+    output wire [7:0]  esrv_rd_addr,
+    input  wire [7:0]  esrv_rd_data,
+
     // ---- captured camera-line read port (TGT_CAM_LINE, rdtbl 0x04) ----
     // Same external-RAM pattern as TGT_EDID: the line buffer lives in cam_line_buf.
     output wire [CAM_LINE_AW-1:0] cam_line_addr,
@@ -238,6 +247,7 @@ module uart_ctrl #(
     localparam [7:0] TGT_LUT = 8'h00, TGT_LUTV = 8'h01, TGT_CORR = 8'h02;
     localparam [7:0] TGT_EDID = 8'h03;       // read-only: the display's captured EDID
     localparam [7:0] TGT_CAM_LINE = 8'h04;   // read-only: one captured camera line (task #11)
+    localparam [7:0] TGT_EDID_SRV = 8'h05;   // read-only: the MERGED EDID we serve to the PC
 
     // ---- table RAMs (write-through during upload; read ports for Stage 2) ----
     reg [7:0] corr [0:255];
@@ -313,7 +323,8 @@ module uart_ctrl #(
     reg [2:0]  tgt;                  // 0=lut 1=lutv 2=corr 3=edid 4=cam_line
 
     // readback byte source (selected by target)
-    wire [7:0] rb_dout = (tgt == 3'd4) ? cam_line_data :
+    wire [7:0] rb_dout = (tgt == 3'd5) ? esrv_rd_data  :
+                         (tgt == 3'd4) ? cam_line_data :
                          (tgt == 3'd3) ? edid_rd_data  :
                          (tgt == 3'd2) ? corr_dout     :
                          (tgt == 3'd1) ? lutv_dout     : lut_dout;
@@ -321,6 +332,7 @@ module uart_ctrl #(
     // EDID RAM address (external, in edid_merge). Only sampled while we are
     // streaming TGT_EDID; harmless otherwise -- it is a pure read port.
     assign edid_rd_addr = rd_idx[7:0];
+    assign esrv_rd_addr = rd_idx[7:0];
 
     // Camera line-buffer read port (external, in cam_line_buf). Same TGT_EDID pattern:
     // drive the address out, take registered data back one clock later.
@@ -721,6 +733,7 @@ case (addr)
                         TGT_CORR:     begin tgt <= 3'd2; len <= 12'd256;  end
                         TGT_EDID:     begin tgt <= 3'd3; len <= 12'd256;  end   // read-only
                         TGT_CAM_LINE: begin tgt <= 3'd4; len <= CAM_LINE_LEN[11:0]; end  // read-only
+                        TGT_EDID_SRV: begin tgt <= 3'd5; len <= 12'd256;  end   // read-only
                         default:      begin tgt <= 3'd0; len <= 12'd0;    end   // unknown -> rejected
                     endcase
                     state <= S_RTCK;

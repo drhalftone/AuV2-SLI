@@ -36,6 +36,11 @@ module edid_merge (
     // 3rd read port into the captured display EDID (host dump over USB)
     input  wire [7:0] host_rd_addr,
     output wire [7:0] host_rd_data,
+    // Read port onto the MERGED block we serve to the PC (rdtbl 0x05). Was tied
+    // off, so the served EDID could only be inspected via Windows' registry
+    // cache -- the host's copy, not what the fabric presents on the DDC.
+    input  wire [7:0] srv_rd_addr,
+    output wire [7:0] srv_rd_data,
     output wire       edid_ok        // display EDID block-0 checksum good
 );
     //--------------------------------------------------------------------------
@@ -97,7 +102,7 @@ module edid_merge (
         .clk(clk100),
         .wr_en(bld_wr_en), .wr_addr(bld_wr_addr), .wr_data(bld_wr_data),
         .commit(bld_commit),
-        .rdbg_addr(8'd0), .rdbg_data(),
+        .rdbg_addr(srv_rd_addr), .rdbg_data(srv_rd_data),
         .sclk_raw(hdmi_rx_scl), .sdat_raw(hdmi_rx_sda), .edid_debug());
 
     //--------------------------------------------------------------------------
