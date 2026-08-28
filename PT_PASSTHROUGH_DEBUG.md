@@ -92,8 +92,8 @@ Measured behaviour matches that arithmetic exactly:
 | 1280x720@60 | 74.25 | 1114 | solid |
 | 1280x800@60 | 71.00 | 1065 | solid |
 | 1024x768@60 | 65.00 | 975 | solid |
-| 800x600@75 | 49.50 | 743 | **twitchy — unexplained, in range** |
-| 800x600@60 | 40.00 | 600 | black sequences (exactly at the minimum) |
+| 800x600@75 | 49.50 | 743 | **PASSES** (was twitchy — cause was the red-pixel bug, not the clock) |
+| 800x600@60 | 40.00 | 600 | **PASSES** (was black sequences — same cause) |
 | 640x480@75 | 31.50 | 473 | broken (below minimum) |
 | 640x480@60 | 25.175 | 378 | broken (below minimum) |
 
@@ -102,10 +102,24 @@ Measured behaviour matches that arithmetic exactly:
 floor. A previous attempt on the Au V2 was abandoned; the Pt offers no advantage.
 
 `edid_builder.v` already excludes 640x480 as `"<40, below floor"` — that floor came
-from this same calculation. But it still advertises 800x600@60/72/75 (`CAND[0..2]`),
-so the design promises a mode that sits on the VCO minimum with zero margin.
+from this same calculation.
 
-**Recommended fix (cheap, honest):** raise the EDID floor so 800x600 is not offered.
+> **CORRECTED 2026-08-28.** An earlier version of this file blamed the VCO floor for
+> 800x600's black sequences and recommended dropping it from the EDID. **That was
+> wrong.** 800x600 now PASSES at both 60 and 75 Hz; the symptoms were caused by the
+> error-concealment bug fixed in `c1b00c6` (a bad symbol painted a bright red pixel,
+> and the injected `EF/16/16` stream disturbed the sink's lock, not just its
+> appearance). The floor is real arithmetic, but it only actually excludes 640x480 --
+> its reach was overstated. Do not drop 800x600 from the EDID.
+
+**There is also nothing to fix in the EDID.** Verified against Windows' own cached
+copy of the EDID we serve: byte35 = `0x01`, so bit5 (640x480@60) and bit2
+(640x480@75) are both **zero** -- we already do not advertise them. The merge is
+provably correct: the attached Dell offers `0xA5`, our mask is `0x01`, Windows
+received `0xA5 & 0x01 = 0x01`; byte36 likewise `0x4B & 0xCE = 0x4A`. 640x480 shows
+up in Windows' mode list because the OS exposes it as a legacy fallback regardless
+of EDID (CEA-861 requires VIC 1 of HDMI sinks generally), and Windows substitutes a
+different mode when asked to actually set it.
 **Alternative (expensive, deliberately not done):** DRP-reconfigure `CLKFBOUT_MULT`,
 all three `CLKOUT` dividers and the filter/lock registers per XAPP888 to raise the
 multiplier at low pixel clocks (x30 at 25.175 MHz = 755 MHz, in range), re-locking
@@ -115,7 +129,8 @@ cleanly on every mode change.
 real input varies per mode; it programs the lock filter and is a second, weaker
 effect on top of the VCO floor. A 20.000 ns diagnostic build was started to separate
 the two and abandoned before finishing. Do not assume it is or is not a contributor.
-It is the obvious first probe if 800x600@75 is ever chased.
+It is the obvious first probe if a low-clock mode is ever chased again -- though
+800x600@75 no longer needs chasing.
 
 ## Known defects still open
 

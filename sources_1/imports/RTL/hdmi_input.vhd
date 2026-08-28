@@ -331,13 +331,18 @@ hdmi_MMCME2_BASE_inst : MMCME2_BASE
       --     1280x720@60  74.25 MHz -> VCO 1114  solid
       --     1280x800@60  71.00     -> VCO 1065  solid
       --     1024x768@60  65.00     -> VCO  975  solid
-      --     800x600@75   49.50     -> VCO  743  TWITCHY (unexplained -- in range)
-      --     800x600@60   40.00     -> VCO  600  black seqs (EXACTLY at the minimum)
+      --     800x600@75   49.50     -> VCO  743  PASSES
+      --     800x600@60   40.00     -> VCO  600  PASSES (sits ON the minimum, still fine)
       --     640x480@75   31.50     -> VCO  473  broken (below minimum)
       --     640x480@60   25.175    -> VCO  378  broken (below minimum)
-      -- This is why edid_builder.v excludes 640x480 as "<40, below floor". But it
-      -- still ADVERTISES 800x600@60/72/75 (CAND[0..2], 40.0/50.0/49.5), i.e. the
-      -- design promises a mode that sits on the VCO minimum with zero margin.
+      -- This is why edid_builder.v excludes 640x480 as "<40, below floor".
+      --
+      -- CORRECTED 2026-08-28: an earlier version of this comment also blamed the
+      -- floor for 800x600 being unstable. WRONG -- 800x600 passes at both 60 and
+      -- 75 Hz. Those symptoms came from the error-concealment bug fixed in c1b00c6
+      -- (an invalid symbol painted a bright red pixel; the injected EF/16/16 stream
+      -- disturbed the sink's LOCK, not just the picture). The floor is real, but it
+      -- only actually excludes 640x480. Do not drop 800x600 on account of it.
       --
       -- NOT A PART PROBLEM, AND NOT FIXABLE BY MOVING BOARDS. Au V2 is
       -- xc7a35tftg256-2 and Pt V2 is xc7a100tfgg484-2 -- the SAME speed grade and
