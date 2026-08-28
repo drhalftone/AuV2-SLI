@@ -95,49 +95,54 @@ module rx_drp_recfg (
 
     // ---- per-BAND DRP word bundles, keyed by the MEASURED input frequency ----
     //
-    // This is the RX variant of drp_recfg. The offline one is indexed by mode and
-    // driven from a FIXED 100 MHz reference; here the MMCM's input is the recovered
-    // TMDS clock, so the same M/D/O words would mean something entirely different.
-    // Hence a separate table rather than a shared one -- and the offline path stays
-    // untouched.
+    // RX variant of drp_recfg. The offline one is indexed by mode from a FIXED
+    // 100 MHz reference; here the MMCM's input is the recovered TMDS clock, so the
+    // same M/D/O words would mean something entirely different. Separate table, and
+    // the offline path stays untouched.
     //
-    // The recovery MMCM must reproduce its own input: pixel_out = pixel_in. With
-    // DIVCLK D=1 that means M = O0, and the serialiser's exactly-5x requirement
-    // means O0 = 5*O2. So VCO = pixel_in * O0, and choosing O0 IS choosing the VCO.
+    // The recovery MMCM reproduces its own input: pixel_out = pixel_in. With D=1
+    // that means M = O0, and the serialiser's exactly-5x requirement means
+    // O0 = 5*O2. So VCO = pixel_in * O0 -- choosing O0 IS choosing the VCO.
     //
-    //   band  pixel in      M=O0  O2    VCO span      modes
-    //     0   20-30 MHz      40    8    800-1200      640x480@60  (25.175)
-    //     1   30-40          30    6    900-1200      640x480@75  (31.5)
-    //     2   40-50          25    5   1000-1250      800x600@60/75 (40 / 49.5)
-    //     3   50-65          20    4   1000-1300      800x600@72  (50)
-    //     4   65-96          15    3    975-1440      1024x768, 1280x720/800
+    // TARGET ~1200-1300 MHz, NOT MERELY "IN RANGE". The first cut aimed for
+    // 1000-1300 and 800x600@60 (40 MHz) landed on VCO 1000: the clock locked, the
+    // raster measured perfect end to end, and the display still blinked on and off
+    // -- "perfect when there is an image", i.e. marginal LOCK, not bad data. The
+    // offline path had already shown what this mode needs: at 40 MHz, VCO 600 failed
+    // and VCO 1200 worked (drp_recfg idx11). A recovered clock carries the source's
+    // jitter on top, so it has LESS margin than the crystal-derived offline one, not
+    // more. Bands are therefore finer and biased high.
     //
-    // BAND 4 IS BYTE-IDENTICAL TO THE OLD HARD-CODED CONFIGURATION (M=15, O0=15,
-    // O2=3). Every mode that works today keeps exactly the settings it has now, so
-    // this change is strictly additive: it only does something new below 65 MHz,
-    // where nothing worked at all.
+    //   band  pixel in    M=O0  O2    VCO span     key mode        was
+    //     0   20-28 MHz    50   10   1000-1400     640x480@60 1259  (1007)
+    //     1   28-36        40    8   1120-1440     640x480@75 1260  ( 945)
+    //     2   36-45        30    6   1080-1350     800x600@60 1200  (1000)
+    //     3   45-57        25    5   1125-1425     800x600@75 1237  (same)
+    //     4   57-65        20    4   1140-1300
+    //     5   65-96        15    3    975-1440     1024x768, 1280x720/800
     //
-    // WHY THIS EXISTS. The fixed x15 put 40 MHz at VCO 600 -- the -2 part's rated
-    // minimum -- and 800x600 pass-through blinked and blacked out there while its
-    // raster measured perfectly. The identical failure offline was cured by moving
-    // that mode off the floor (drp_recfg idx11, VCO 600 -> 1200). No static
-    // multiplier can fix the RX: x15 is the only one spanning 40..79 MHz under
-    // O0 = 5*O2, so the multiplier has to follow the input.
+    // BAND 5 IS BYTE-IDENTICAL TO THE ORIGINAL HARD-CODED WORDS (M=15, O0=15, O2=3)
+    // and is the reset state and the fallback, so every mode that already works
+    // keeps exactly its previous configuration. M=50 is the largest value used and
+    // is within CLKFBOUT_MULT_F's range.
     always @* begin
         case (sel)
-        4'd0:  begin selCLKFB=mmcm_count_calc(8'd40,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
+        4'd0:  begin selCLKFB=mmcm_count_calc(8'd50,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
+                     selCLKOUT0=mmcm_count_calc(8'd50,0,50000); selCLKOUT2=mmcm_count_calc(8'd10,0,50000);
+                     selLOCK=mmcm_lock_lookup(8'd50); selFILT=mmcm_filter_lookup(8'd50,"OPTIMIZED"); end
+        4'd1:  begin selCLKFB=mmcm_count_calc(8'd40,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd40,0,50000); selCLKOUT2=mmcm_count_calc(8'd8,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd40); selFILT=mmcm_filter_lookup(8'd40,"OPTIMIZED"); end
-        4'd1:  begin selCLKFB=mmcm_count_calc(8'd30,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
+        4'd2:  begin selCLKFB=mmcm_count_calc(8'd30,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd30,0,50000); selCLKOUT2=mmcm_count_calc(8'd6,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd30); selFILT=mmcm_filter_lookup(8'd30,"OPTIMIZED"); end
-        4'd2:  begin selCLKFB=mmcm_count_calc(8'd25,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
+        4'd3:  begin selCLKFB=mmcm_count_calc(8'd25,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd25,0,50000); selCLKOUT2=mmcm_count_calc(8'd5,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd25); selFILT=mmcm_filter_lookup(8'd25,"OPTIMIZED"); end
-        4'd3:  begin selCLKFB=mmcm_count_calc(8'd20,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
+        4'd4:  begin selCLKFB=mmcm_count_calc(8'd20,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd20,0,50000); selCLKOUT2=mmcm_count_calc(8'd4,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd20); selFILT=mmcm_filter_lookup(8'd20,"OPTIMIZED"); end
-        default: begin // band 4 -- and the safe fallback: this is today's proven config
+        default: begin // band 5 -- and the safe fallback: the original proven config
                      selCLKFB=mmcm_count_calc(8'd15,0,50000); selDIVCLK=mmcm_count_calc(8'd1,0,50000);
                      selCLKOUT0=mmcm_count_calc(8'd15,0,50000); selCLKOUT2=mmcm_count_calc(8'd3,0,50000);
                      selLOCK=mmcm_lock_lookup(8'd15); selFILT=mmcm_filter_lookup(8'd15,"OPTIMIZED"); end

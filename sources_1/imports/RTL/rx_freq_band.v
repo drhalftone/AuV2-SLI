@@ -15,16 +15,29 @@
 // A new band therefore has to be measured CONSECUTIVELY for SETTLE windows before
 // it is acted on, and the band edges are placed away from any real pixel clock:
 //
-//     edges at 30 / 40 / 50 / 65 MHz
-//     real clocks: 25.175, 31.5, 40.0, 49.5, 50.0, 65.0, 71.1, 74.25, 78.75
+//     edges      :      28    36    45       57       68        MHz
+//     real clocks: 25.175  31.5  40.0  49.5 50.0  65.0  71.1  74.25  78.75
 //
-// 40.0, 50.0 and 65.0 sit exactly ON edges, so each is given a 1 MHz guard: the
-// comparison is >= edge + 500 kHz going up and < edge - 500 kHz coming down. A
-// mode sitting on a boundary then lands in ONE band and stays there.
+// EVERY EDGE MUST SIT IN A GAP, and getting this wrong is not subtle. The first
+// cut put an edge at exactly 65 MHz -- which IS 1024x768@60's pixel clock -- while
+// the comment claimed the edges avoided real clocks. Measurement noise around
+// 65000 then flipped the detector between two bands, the MMCM retuned
+// continuously and NEVER LOCKED: pll_locked stayed 0 and the recovered clock
+// wandered around 36 MHz. That mode had worked perfectly before the adaptive
+// clock existed. The edge moved to 68 MHz, which sits in the 65.0 -> 71.1 gap.
+// Smallest remaining margin is 2.8 MHz (25.175 -> 28); every other edge has 3+.
 //
-// BAND 4 IS THE RESET STATE AND THE FALLBACK. It is the configuration the MMCM
-// is built with and the one every currently-working mode uses, so if measurement
-// is unavailable or nonsense, the design behaves exactly as it did before.
+// BAND 5 IS THE RESET STATE AND THE FALLBACK. It is the configuration the MMCM is
+// built with and the one every currently-working mode uses, so if measurement is
+// unavailable or nonsense, the design behaves exactly as it did before.
+//
+// BANDS ARE BIASED HIGH (VCO ~1200-1300), not merely "in range". An earlier cut
+// aimed for 1000-1300 and 800x600@60 landed on VCO 1000: the clock locked, the
+// raster measured perfect end to end, and the display still blinked -- perfect
+// picture whenever it held, i.e. marginal LOCK. The offline path had already
+// shown this mode needs 1200 (600 failed, 1200 worked), and a RECOVERED clock
+// carries the source's jitter on top, so it has less margin than the offline one,
+// not more.
 //==============================================================================
 module rx_freq_band #(
     parameter integer CLK100_HZ = 100_000_000,
@@ -33,7 +46,7 @@ module rx_freq_band #(
     input  wire       clk100,
     input  wire       tmds_clk,      // the recovery MMCM's INPUT (async here)
     input  wire       valid,         // pll_locked & symbol_sync: measurement is meaningful
-    output reg  [3:0] band = 4'd4,   // 4 = today's proven M=15 config
+    output reg  [3:0] band = 4'd5,   // 5 = the original proven M=15 config
     output reg        band_changed = 1'b0,  // 1-cycle strobe on clk100
     output wire [17:0] khz           // measured input clock, kHz (diagnostics)
 );
@@ -64,17 +77,20 @@ module rx_freq_band #(
     // ---- band decision, with guards around the on-edge clocks -----------------
     reg [3:0] want;
     always @* begin
-        if      (freq_c <  18'd20_000) want = 4'd4;   // nothing / nonsense -> proven config
-        else if (freq_c <  18'd29_500) want = 4'd0;   // 20-30   (25.175)
-        else if (freq_c <  18'd39_500) want = 4'd1;   // 30-40   (31.5)
-        else if (freq_c <  18'd49_500) want = 4'd2;   // 40-50   (40.0)
-        else if (freq_c <  18'd50_500) want = 4'd2;   // 49.5 and 50.0 share band 2
-        else if (freq_c <  18'd64_500) want = 4'd3;   // 50-65
-        else                           want = 4'd4;   // 65+     (65.0, 71.1, 74.25, 78.75)
+        // Edges sit AWAY from every real pixel clock so no mode lands on a boundary:
+        //   real clocks: 25.175  31.5  40.0  49.5  50.0  65.0  71.1  74.25  78.75
+        //   edges      :      28    36    45          57    65
+        if      (freq_c <  18'd20_000) want = 4'd5;   // nothing / nonsense -> proven config
+        else if (freq_c <  18'd28_000) want = 4'd0;   // 20-28   (25.175 -> VCO 1259)
+        else if (freq_c <  18'd36_000) want = 4'd1;   // 28-36   (31.5   -> VCO 1260)
+        else if (freq_c <  18'd45_000) want = 4'd2;   // 36-45   (40.0   -> VCO 1200)
+        else if (freq_c <  18'd57_000) want = 4'd3;   // 45-57   (49.5/50 -> 1237/1250)
+        else if (freq_c <  18'd68_000) want = 4'd4;   // 57-68   (65.0    -> VCO 1300)
+        else                           want = 4'd5;   // 68+     (71.1, 74.25, 78.75)
     end
 
     // ---- settle before acting -------------------------------------------------
-    reg [3:0] cand = 4'd4;
+    reg [3:0] cand = 4'd5;
     reg [7:0] agree = 8'd0;
     reg       gate_q = 1'b0;
     wire      window_done = (gate_cnt == 17'd0);
