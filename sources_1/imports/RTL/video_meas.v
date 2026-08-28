@@ -55,12 +55,62 @@ module video_meas (
     reg [23:0] snap = 24'd0;           // {vact, hact} held for a whole frame
     reg        snap_tog = 1'b0;
 
-    wire hs_rise = in_hsync & ~hs_d;
-    wire vs_rise = in_vsync & ~vs_d;
+    // ---------------------------------------------------------------------
+    // VSYNC RECONSTRUCTION.  (hsync needs none -- see the note at the end.)
+    //
+    // raw_vsync is FORCED TO 0 during the video data period, so it carries the
+    // source's vsync level only during BLANKING. For a positive-polarity source
+    // that is harmless -- vsync idles low anyway, so the gated signal still rises
+    // once per frame. For a NEGATIVE-polarity source (1024x768@60 is -hsync
+    // -vsync) the idle level is HIGH, so the gated signal rises at the start of
+    // EVERY horizontal blanking: once per LINE. video_meas then reported the LINE
+    // rate as the frame rate -- 48379 Hz against a 48.363 kHz line rate -- and
+    // v_active read 0 because va_cnt was cleared every line.
+    //
+    // INVERTING IT DOES NOT HELP. That only moves the once-per-line rise onto the
+    // active-video edge; the first attempt at this fix did exactly that and
+    // changed nothing. The signal has to be sampled where it is MEANINGFUL (during
+    // blanking) and HELD through active video. Polarity then follows from the duty
+    // of the held signal, which separates enormously: at 1024x768@60 an idle-low
+    // vsync is high ~2.7% of the frame and an idle-high one ~97.3%, so a simple
+    // half-window threshold decides it with margin to spare. Two consecutive
+    // agreeing windows must vote before the polarity flips, so one anomalous
+    // window cannot invert the meter.
+    reg vs_held = 1'b0;
+    always @(posedge pixel_clk)
+        if (in_blank) vs_held <= in_vsync;      // hold through active video
+
+    localparam POLW = 21;                       // 2^21 px ~ 28 ms at 74.25 MHz
+    reg [POLW-1:0] pol_cnt = {POLW{1'b0}};
+    reg [POLW:0]   vs_hi   = {(POLW+1){1'b0}};
+    reg            vs_pol  = 1'b0;              // 1 = source idles high (active low)
+    reg            vs_vote = 1'b0;
 
     always @(posedge pixel_clk) begin
-        hs_d <= in_hsync;
-        vs_d <= in_vsync;
+        pol_cnt <= pol_cnt + 1'b1;
+        if (vs_held) vs_hi <= vs_hi + 1'b1;
+        if (pol_cnt == {POLW{1'b1}}) begin      // window closed
+            vs_vote <= vs_hi[POLW-1];                       // >= half the window
+            if (vs_hi[POLW-1] == vs_vote) vs_pol <= vs_hi[POLW-1];
+            vs_hi <= {(POLW+1){1'b0}};
+        end
+    end
+
+    // HSYNC IS USED RAW, DELIBERATELY. It is only needed to delimit lines, and
+    // BOTH polarities give exactly one rise per line through the same VDP gating:
+    // idle-low rises at the sync pulse, idle-high at the start of blanking. Either
+    // way it lands after that line's active pixels, so h_active is correct -- 1024,
+    // 800 and 1280 all measured right at their modes, including the -hsync one.
+    // Reconstructing it would add risk for no gain.
+    wire hsync_c = in_hsync;
+    wire vsync_c = vs_held ^ vs_pol;
+
+    wire hs_rise = hsync_c & ~hs_d;
+    wire vs_rise = vsync_c & ~vs_d;
+
+    always @(posedge pixel_clk) begin
+        hs_d <= hsync_c;
+        vs_d <= vsync_c;
 
         if (~in_blank) begin
             if (ha_cnt != 12'hFFF) ha_cnt <= ha_cnt + 1'b1;
@@ -100,7 +150,7 @@ module video_meas (
 
     always @(posedge clk100) begin
         tog_s <= {tog_s[1:0], snap_tog};
-        vsq   <= {vsq[1:0], in_vsync};
+        vsq   <= {vsq[1:0], vsync_c};   // normalised, not the raw pin
         vvq   <= {vvq[0], vid_valid};
 
         if (tog_edge)
@@ -196,6 +246,7 @@ module video_meas (
     // The refusal is not lost, it moves: meas_ok is still authoritative and
     // host/rx_timing.py reads 0x67 first and declines to interpret the rest
     // when it is 0. Safety stays at the consumer; the fabric stays readable.
-    assign meas    = {6'b0, vv_ok, meas_ok, per_last, vact_c, hact_c};
+    // 0x67: [0]meas_ok [1]vid_valid [2]vs_pol  (1 = source vsync idles high)
+    assign meas    = {5'b0, vs_pol, vv_ok, meas_ok, per_last, vact_c, hact_c};
     assign pix_khz = pix_freq_c;
 endmodule

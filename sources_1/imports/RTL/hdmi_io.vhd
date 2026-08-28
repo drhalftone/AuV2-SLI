@@ -65,6 +65,14 @@ entity hdmi_io is
         -- VGA data recovered from HDMI
         -------------------------------
         in_hdmi_detected : out std_logic;
+        -- MEASUREMENT TAPS, pixel_clk_i domain. in_hsync/in_vsync/in_blank below
+        -- come off the phase FIFO's READ side and are on oclk, NOT the decode
+        -- clock, so sampling them on pixel_clk is an unconstrained crossing that
+        -- only worked by luck (same frequency, fixed phase). video_meas uses these.
+        meas_hsync : out std_logic;
+        meas_vsync : out std_logic;
+        meas_blank : out std_logic;
+        meas_clk   : out std_logic;
         in_blank  : out std_logic;
         in_hsync  : out std_logic;
         in_vsync  : out std_logic;
@@ -544,6 +552,12 @@ i_hdmi_input : hdmi_input port map (
     i_vphase : video_phase_fifo port map (
         wclk => pixel_clk_i, wdata => vbuf_w, rclk => oclk, rdata => vbuf_r,
         primed_o => vfifo_primed_i, reprimes => vfifo_reprimes_i );
+    -- Pre-FIFO taps: the same signals, in the domain that generates them.
+    meas_hsync <= raw_hsync;
+    meas_vsync <= raw_vsync;
+    meas_blank <= raw_blank;
+    meas_clk   <= pixel_clk_i;
+
     in_blank <= vbuf_r(26);
     in_hsync <= vbuf_r(25);
     in_vsync <= vbuf_r(24);

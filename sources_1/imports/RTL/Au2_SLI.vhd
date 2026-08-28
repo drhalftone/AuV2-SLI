@@ -207,6 +207,10 @@ architecture Behavioral of Au2_SLI is
         -- VGA data recovered from HDMI
         -------------------------------
         in_hdmi_detected : out std_logic;
+        meas_hsync      : out std_logic;
+        meas_vsync      : out std_logic;
+        meas_blank      : out std_logic;
+        meas_clk        : out std_logic;
         in_blank        : out std_logic;
         in_hsync        : out std_logic;
         in_vsync        : out std_logic;
@@ -341,6 +345,7 @@ architecture Behavioral of Au2_SLI is
     signal pixel_clk : std_logic;
     signal sel_buf  : std_logic;
     signal in_blank  : std_logic;
+    signal meas_hsync_w, meas_vsync_w, meas_blank_w, meas_clk_w : std_logic;
     signal in_blank_reg  : std_logic;
     signal in_hsync  : std_logic;
     signal in_vsync  : std_logic;
@@ -762,11 +767,16 @@ begin
     -- -- which nothing else here does. 0x22..0x25 answer the different question of
     -- what mode_select picked out of the display's EDID, and the two disagree
     -- whenever the source chooses a mode other than that one.
+    -- Measured on the PRE-FIFO taps, in the clock domain that generates them.
+    -- in_hsync/in_vsync/in_blank are the phase FIFO's oclk-domain READ side, so
+    -- sampling those on pixel_clk was an unconstrained domain crossing. It happened
+    -- to work until extra logic in this path shifted timing enough to expose it
+    -- (1280x720 measured as 13x0 while the RX itself stayed perfectly healthy).
     i_video_meas: video_meas port map (
-        pixel_clk => pixel_clk,
-        in_hsync  => in_hsync,
-        in_vsync  => in_vsync,
-        in_blank  => in_blank,
+        pixel_clk => meas_clk_w,
+        in_hsync  => meas_hsync_w,
+        in_vsync  => meas_vsync_w,
+        in_blank  => meas_blank_w,
         clk100    => clk100_g,
         vid_valid => vid_valid,
         meas      => rx_meas_w,
@@ -939,6 +949,10 @@ i_hdmi_io: hdmi_io port map (
         -------------------------------
         -- VGA data recovered from HDMI
         -------------------------------
+        meas_hsync      => meas_hsync_w,
+        meas_vsync      => meas_vsync_w,
+        meas_blank      => meas_blank_w,
+        meas_clk        => meas_clk_w,
         in_blank        => in_blank,
         in_hsync        => in_hsync,
         in_vsync        => in_vsync,
