@@ -82,4 +82,8 @@ build_pt/
 
 # Merged HDMI + camera build (M1+) -- regenerate with build_merged.tcl
 build_merged/
+# HDMI-only isolation rig (dead end: cam_frame_ft owns every ft_* pin and
+# usb_tx, so WITH_CAM=0 deletes the register readback path along with the
+# camera). Build output only -- regenerate with build_pt_hdmi.tcl if needed.
+build_pt_hdmi/
 build_*_run.txt
