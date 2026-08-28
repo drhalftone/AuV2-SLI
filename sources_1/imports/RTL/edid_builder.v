@@ -26,16 +26,48 @@
 //  DRAFT - unsimulated. See test plan in the design note.
 //==============================================================================
 module edid_builder #(
-    parameter [15:0] F_MIN_10K = 16'd4000,    // 40.00 MHz (hdmi_input MMCM now x15: VCO=pixel*15>=600)
+    // ADVERTISE ONLY WHAT PASS-THROUGH CAN ACTUALLY HOLD.
+    //
+    // The floor is set by MMCM JITTER, not by the lock range. hdmi_input's recovery
+    // MMCM is a fixed x15, so VCO = pixel * 15, and jitter rises as the VCO falls.
+    // Measured on hardware 2026-08-28, same display and cable, eyes-on:
+    //
+    //     800x600@60   40.00 MHz -> VCO  600 (the -2 part's RATED MINIMUM)  BLACK SCREENS
+    //     800x600@75   49.50     -> VCO  743                                TWITCHY, black lines
+    //     1024x768@60  65.00     -> VCO  975                                solid
+    //     1280x800@60  71.11     -> VCO 1067                                solid
+    //     1280x720@60  74.25     -> VCO 1114                                solid
+    //
+    // It is a gradient, not a cliff -- 600 is worse than 743, which matches the two
+    // different symptoms. Everything at VCO 975+ is solid, so the floor goes at
+    // 60 MHz (VCO 900) with margin. NOTE 40 MHz alone is not the right cut: it
+    // would leave 800x600@75 advertised and still twitchy.
+    //
+    // This RESTORES the pre-8790569 floor. That commit widened it 60 -> 40 MHz when
+    // the recovery MMCM went x10 -> x15, on the arithmetic that VCO >= 600 was now
+    // reachable, and added 800x600@60/72/75 on that basis. Its hardware evidence was
+    // "1024x768@60 and @75 rock solid" -- 1024x768 only. 800x600 pass-through was
+    // advertised by calculation and never verified, on either board.
+    //
+    // Proof that the CLOCK is the cause and not the mode: offline 800x600@60 failed
+    // identically until drp_recfg idx11 was moved off the same 600 MHz floor
+    // (VCO 600 -> 1200, same exact 40.000 MHz pixel clock), after which it is solid.
+    // The recovery MMCM cannot be fixed the same way -- with the serialiser needing
+    // an exactly-5x clock (O0 = 5*O2), x15 is the ONLY static multiplier spanning
+    // 40..79 MHz, so its floor is unavoidable without per-mode DRP retuning.
+    //
+    // 800x600 REMAINS FULLY AVAILABLE OFFLINE, where it is now solid. And note
+    // 800x600@120 (73.27 MHz -> VCO 1099) would be a HEALTHY pass-through mode: at
+    // one resolution the HIGHER refresh is the safer one, because the low pixel
+    // clock is what pushes the VCO into its floor.
+    parameter [15:0] F_MIN_10K = 16'd6000,    // 60.00 MHz -> VCO >= 900, measured-solid territory
     parameter [15:0] F_MAX_10K = 16'd9000,    // 90.00 MHz (x15 on the -2 part: VCO<=1440 -> pixel<=96; 90=margin)
-    // x15 lock band = 40-90 MHz -> the 75 Hz modes now fit. Keep every established mode BOTH
-    // in-band AND on the display. In-window established positions (pixel clocks):
-    //   B35 bit0 = 800x600@60 (40.0)
-    //   B36 bit7 = 800x600@72 (50.0)  bit6 = 800x600@75 (49.5)
-    //        bit3 = 1024x768@60 (65.0) bit2 = 1024x768@70 (75.0) bit1 = 1024x768@75 (78.75)
-    //   Excluded: 640x480/720x400 (<40, below floor); 1280x1024@75 (135, over).
-    parameter [7:0]  EST_MASK35 = 8'h01,      // 800x600@60 (bit0)
-    parameter [7:0]  EST_MASK36 = 8'hCE,      // 800x600@72/75 (b7,b6) + 1024x768@60/70/75 (b3,b2,b1)
+    // In-window established positions (pixel clocks) after the floor change:
+    //        B36 bit3 = 1024x768@60 (65.0) bit2 = 1024x768@70 (75.0) bit1 = 1024x768@75 (78.75)
+    //   Excluded: 640x480/720x400 (<40); 800x600@60/72/75 (40.0/50.0/49.5, VCO too low
+    //   -- MEASURED bad, see above); 1280x1024@75 (135, over).
+    parameter [7:0]  EST_MASK35 = 8'h00,      // nothing in byte 35 survives the 60 MHz floor
+    parameter [7:0]  EST_MASK36 = 8'h0E,      // 1024x768@60/70/75 only (b3,b2,b1)
     parameter [7:0]  EST_MASK37 = 8'h00
 )(
     input  wire        clk,
@@ -57,19 +89,23 @@ module edid_builder #(
     // (pixel clocks are all in [60,120] MHz by construction, so membership in the
     // display's slots is the only runtime test needed.)
     //--------------------------------------------------------------------------
-    localparam integer NCAND = 8;
-    // packed {hi,lo} per candidate - in-window (40-90 MHz) standard timings, incl. 75 Hz.
+    localparam integer NCAND = 5;
+    // packed {hi,lo} per candidate - in-window (60-90 MHz) standard timings.
+    //
+    // F_MIN_10K does NOT filter this list -- it is only used for the max-clock byte
+    // at maxclk_byte below. The list is hand-curated, so it has to be pruned to
+    // match the floor by hand too. The three 800x600 entries (40.00 / 49.50 / 50.00
+    // MHz) were dropped on 2026-08-28: their VCOs are 600 / 743 / 750 through the
+    // fixed x15 recovery MMCM, and 800x600 was MEASURED bad in pass-through at both
+    // 60 and 75 Hz on hardware. See the F_MIN_10K note above for the full table.
     reg [15:0] CAND [0:NCAND-1];
     // higher index = higher pixel clock (used to pick the "best" survivor)
     initial begin
-        CAND[0]  = 16'h4540; // 800x600@60    40.00
-        CAND[1]  = 16'h454F; // 800x600@75    49.50
-        CAND[2]  = 16'h454C; // 800x600@72    50.00
-        CAND[3]  = 16'h6140; // 1024x768@60   65.00
-        CAND[4]  = 16'h8100; // 1280x800@60   71.00 (RB)
-        CAND[5]  = 16'h81C0; // 1280x720@60   74.25
-        CAND[6]  = 16'h614A; // 1024x768@70   75.00
-        CAND[7]  = 16'h614F; // 1024x768@75   78.75
+        CAND[0]  = 16'h6140; // 1024x768@60   65.00   VCO  975
+        CAND[1]  = 16'h8100; // 1280x800@60   71.00   VCO 1067  (RB)
+        CAND[2]  = 16'h81C0; // 1280x720@60   74.25   VCO 1114
+        CAND[3]  = 16'h614A; // 1024x768@70   75.00   VCO 1125
+        CAND[4]  = 16'h614F; // 1024x768@75   78.75   VCO 1181
     end
 
     //--------------------------------------------------------------------------
