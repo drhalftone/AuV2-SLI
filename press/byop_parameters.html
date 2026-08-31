@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BYOP Parameters</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --paper:#f7f8fa; --surface:#ffffff; --sunk:#eef1f5;
+  --ink:#10161f; --ink-2:#48525f; --ink-3:#77828f;
+  --rule:#d8dde5; --rule-soft:#e7ebf0;
+  --write:#b45309; --write-bg:#fdf3e7;
+  --read:#0e7490;  --read-bg:#e8f4f7;
+  --both:#15803d;  --both-bg:#e9f5ed;
+  --warn:#b91c1c;  --warn-bg:#fdf0ef;
+  --shadow:0 1px 2px rgba(16,22,31,.06),0 8px 24px rgba(16,22,31,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0d1117; --surface:#151b24; --sunk:#1b222d;
+    --ink:#e6ecf3; --ink-2:#a3aeba; --ink-3:#78838f;
+    --rule:#2a323d; --rule-soft:#212934;
+    --write:#f0a860; --write-bg:#2a1e10;
+    --read:#5cc8dd;  --read-bg:#0e2830;
+    --both:#6ed398;  --both-bg:#11291b;
+    --warn:#f08a80;  --warn-bg:#2c1614;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0d1117; --surface:#151b24; --sunk:#1b222d;
+  --ink:#e6ecf3; --ink-2:#a3aeba; --ink-3:#78838f;
+  --rule:#2a323d; --rule-soft:#212934;
+  --write:#f0a860; --write-bg:#2a1e10;
+  --read:#5cc8dd;  --read-bg:#0e2830;
+  --both:#6ed398;  --both-bg:#11291b;
+  --warn:#f08a80;  --warn-bg:#2c1614;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+code,.mono,td.addr,td.dec{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+main{max-width:1080px;margin:0 auto;padding:40px 26px 90px}
+header{margin:0 0 26px;padding:0 0 20px;border-bottom:1px solid var(--rule)}
+h1{font-size:clamp(26px,3.4vw,34px);margin:0 0 9px;font-weight:700;
+   letter-spacing:-.02em;text-wrap:balance}
+.sub{color:var(--ink-2);margin:0;max-width:64ch}
+
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin:18px 0 0;
+  font-size:12.5px;color:var(--ink-2);align-items:center}
+.chip{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;
+  font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}
+.chip.w{background:var(--write-bg);color:var(--write)}
+.chip.r{background:var(--read-bg);color:var(--read)}
+.chip.rw{background:var(--both-bg);color:var(--both)}
+
+.filter{position:sticky;top:0;z-index:5;background:var(--paper);
+  padding:14px 0 12px;margin:0 0 4px;border-bottom:1px solid var(--rule-soft)}
+.filter input{width:100%;padding:10px 13px;font-size:14px;color:var(--ink);
+  background:var(--surface);border:1px solid var(--rule);border-radius:7px;
+  font-family:"IBM Plex Mono",monospace}
+.filter input:focus{outline:2px solid var(--read);outline-offset:-1px;border-color:transparent}
+.filter input::placeholder{color:var(--ink-3);font-family:"IBM Plex Sans",sans-serif}
+.hits{margin:7px 2px 0;font-size:12px;color:var(--ink-3);min-height:1.2em}
+
+section{margin:30px 0 0;scroll-margin-top:70px}
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;
+   color:var(--ink-3);margin:0 0 9px}
+.tw{overflow-x:auto;border:1px solid var(--rule);border-radius:8px;
+    background:var(--surface);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;font-size:13.7px}
+th{text-align:left;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+   color:var(--ink-3);font-weight:600;padding:10px 13px;background:var(--sunk);
+   border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:9px 13px;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--sunk)}
+td.p{font-weight:600;min-width:150px}
+td.addr,td.dec{white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:12.8px}
+td.dec{color:var(--ink)}
+td.d{white-space:nowrap}
+code{background:var(--sunk);padding:1px 5px;border-radius:4px;font-size:.9em;
+  border:1px solid var(--rule-soft)}
+td code{background:none;border:none;padding:0}
+
+.note{border-left:3px solid var(--warn);background:var(--warn-bg);
+  padding:11px 15px;border-radius:0 7px 7px 0;margin:14px 0 0;max-width:76ch;font-size:13.5px}
+.note b{color:var(--warn)}
+.empty{display:none;padding:24px 4px;color:var(--ink-3)}
+.empty.on{display:block}
+footer{margin-top:34px;padding-top:16px;border-top:1px solid var(--rule);
+  color:var(--ink-3);font-size:12.5px}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>BYOP Parameters</h1>
+  <p class="sub">Everything the PC can read or set on the board, grouped by what it
+  controls. Multi-byte registers are shown as the single value they represent, with the
+  decode.</p>
+  <p class="legend">
+    <span class="chip w">set</span> write only ·
+    <span class="chip rw">get / set</span> read and write ·
+    <span class="chip r">get</span> read only
+  </p>
+</header>
+
+<div class="filter">
+  <input id="q" type="search" placeholder="Filter — try exposure, ldrop, 0x67, pixel clock" aria-label="Filter parameters">
+  <p class="hits" id="hits" role="status"></p>
+</div>
+<p class="empty" id="empty">Nothing matches that.</p>
+
+<section>
+  <h2>Structured light / pattern generator</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Pattern enable</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x13 [6][5]</td><td class="dec">mode_en=1, mode_val=1</td><td>Turns the SLI fringes on. Otherwise taken from the camera <code>mode</code> GPIO, which is pulled low.</td></tr>
+      <tr><td class="p">Colour channels R/G/B</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x13 [3][2][1]</td><td class="dec">1 bit each</td><td>Needs <code>sw_en</code>=1 to override the physical switches.</td></tr>
+      <tr><td class="p">Fringe orientation</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x13 [0]</td><td class="dec">0 / 1</td><td>Horizontal or vertical fringes.</td></tr>
+      <tr><td class="p">Override switches</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x13 [7]</td><td class="dec">sw_en</td><td>USB drives R/G/B/orient instead of the <code>SW[3:0]</code> pins.</td></tr>
+      <tr><td class="p">Linearisation curve</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">table 0x02</td><td class="dec">256 bytes</td><td><b>The one that matters.</b> One entry per grey level, <code>out = corr[cos]</code>. Powers up as identity.</td></tr>
+      <tr><td class="p">Physical switches</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x10</td><td class="dec">{eff[3:0], phys[3:0]}</td><td>Active vs physical, so you can see whether an override took.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Camera — sensor control</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Any sensor register</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x30–0x36</td><td class="dec">9-bit addr, 16-bit data</td><td>Direct access to the PYTHON 1300's own registers — gain, ROI windows, subsampling. Load addr + data, write <code>0x34</code> to fire, read <code>0x35/0x36</code>.</td></tr>
+      <tr><td class="p">Sensor reset</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x37 [reset_n]</td><td class="dec">0 = held in reset</td><td>Also how the camera is idled for independence testing.</td></tr>
+      <tr><td class="p">Trigger lines</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x37 [2:0]</td><td class="dec">3 bits</td><td>Discrete trigger pins to the sensor.</td></tr>
+      <tr><td class="p">Start boot sequence</td><td class="d"><span class="chip w">set</span></td><td class="addr">0x39</td><td class="dec">any value</td><td>Runs the power-up register sequence; read back for status.</td></tr>
+      <tr><td class="p">Simulated ready</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x16</td><td class="dec">{7:en, 0:val}</td><td>Drives the camera-ready GPIO from the host when no camera board is attached.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">The SPI mailbox reaches sensor registers directly. <b>Exposure, trigger period
+  and frame count are not set this way</b> — they have dedicated commands on the Ft+, below.</p>
+</section>
+
+<section>
+  <h2>Camera commands — Ft+ (Port B) only</h2>
+  <p style="margin:0 0 10px;color:var(--ink-2);max-width:68ch;font-size:14px">
+  A single 32-bit word on the OUT pipe: <code>{opcode[31:28], payload[27:0]}</code>. These are
+  the runtime capture controls and they are <b>not available over the UART</b> — the Ft+ has to
+  be stacked.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Command</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Exposure</td><td class="d"><span class="chip w">set</span></td><td class="addr">opcode 1</td><td class="dec">16-bit, × 375 ns</td><td><b>Yes, settable at runtime.</b> 1600 → 600 µs. <code>host/max_exposure.py --apply</code>. Read back at <code>0x40/0x41</code>.</td></tr>
+      <tr><td class="p">Trigger period</td><td class="d"><span class="chip w">set</span></td><td class="addr">opcode 2</td><td class="dec">24-bit, must be &gt; 1000</td><td>Sets the capture rate.</td></tr>
+      <tr><td class="p">Re-arm capture</td><td class="d"><span class="chip w">set</span></td><td class="addr">opcode 3</td><td class="dec">no payload</td><td><b>Required after changing exposure</b> — see below.</td></tr>
+      <tr><td class="p">Frames per burst</td><td class="d"><span class="chip w">set</span></td><td class="addr">opcode 4</td><td class="dec">6-bit, 1…MAXF</td><td>How many frames a triggered capture stores.</td></tr>
+      <tr><td class="p">Request status reply</td><td class="d"><span class="chip w">set</span></td><td class="addr">opcode 5</td><td class="dec">no payload</td><td>Returns a status packet on the IN pipe.</td></tr>
+      <tr><td class="p">Hold camera in reset</td><td class="d"><span class="chip w">set</span></td><td class="addr">opcode 6</td><td class="dec">ms, or 0 = release</td><td>Self-releasing after the given milliseconds. How the camera is idled for independence tests.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note"><b>Changing exposure alone changes nothing you can see.</b> Capture is one-shot
+  per bitstream load, and DDR still holds the burst taken at the old value — so a new exposure
+  needs a <b>re-arm (opcode 3)</b> before the next capture reflects it.</p>
+  <p class="note">Exposure is clamped <b>≤ 8280 µs at 120 Hz</b>. Past that the frame rate halves;
+  at 8300 µs delivery stops and the sensor wedges until it is reconfigured.</p>
+</section>
+
+<section>
+  <h2>Camera — health and rate</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Frame rate</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x3E / 0x3F</td><td class="dec">72e6 / (16 × N)</td><td>Register holds period ÷ 16 in 72 MHz cycles. 599,984 → 120.00 Hz.</td></tr>
+      <tr><td class="p">Exposure (readback)</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x40 / 0x41</td><td class="dec">N × 0.375 µs</td><td>1600 → 600 µs.</td></tr>
+      <tr><td class="p">Dropped frames</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x3C / 0x3D</td><td class="dec">16-bit count</td><td><b>ldrop</b> — static means none lost. The sharp health check.</td></tr>
+      <tr><td class="p">Streaming / aligned / calibrated</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x3A</td><td class="dec">bit flags</td><td>Plus <code>rd_busy</code>, <code>cap</code>, state.</td></tr>
+      <tr><td class="p">FIFO overflow flags</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x3B</td><td class="dec">bit flags</td><td><code>cfifo_ovf</code>, <code>ufifo_ovf</code>, <code>ufifo_empty</code>, <code>txe</code>.</td></tr>
+      <tr><td class="p">Captured line</td><td class="d"><span class="chip r">get</span></td><td class="addr">table 0x04</td><td class="dec">one line</td><td>Raw pixels straight off the sensor.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Display output</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Force offline mode</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x14</td><td class="dec">{7:en, 3..0:idx}</td><td>Pins the generated mode, overriding the EDID pick. Clearing <code>en</code> does <b>not</b> restore the power-up mode.</td></tr>
+      <tr><td class="p">Mode in use</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x20</td><td class="dec">{valid, edid_ok, idx}</td><td>Which curated-table index is generating.</td></tr>
+      <tr><td class="p">Output resolution</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x22–0x25</td><td class="dec">12-bit each</td><td>h_active, v_active of the offline mode.</td></tr>
+      <tr><td class="p">Output refresh</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x21</td><td class="dec">Hz</td><td></td></tr>
+      <tr><td class="p">Output pixel clock</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x26–0x28</td><td class="dec">kHz, 17-bit</td><td></td></tr>
+      <tr><td class="p">Modes the display supports</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x29 / 0x2A</td><td class="dec">13-bit mask</td><td>Bit <em>i</em> = curated table index <em>i</em>.</td></tr>
+      <tr><td class="p">Transmitted raster</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x83–0x8A</td><td class="dec">Hz = 1e8 / period</td><td>What actually goes out, in <b>either</b> offline or pass-through — the two are directly comparable.</td></tr>
+      <tr><td class="p">Transmitted pixel clock</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x8B–0x8D</td><td class="dec">kHz</td><td></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Display input (pass-through)</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Measurement valid</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x67</td><td class="dec">{vs_pol, vid_valid, meas_ok}</td><td><b>Read this first.</b> When <code>meas_ok</code>=0 the fields below hold stale values rather than zeroing.</td></tr>
+      <tr><td class="p">Incoming resolution</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x60–0x63</td><td class="dec">12-bit each</td><td>What the source is actually sending.</td></tr>
+      <tr><td class="p">Incoming frame rate</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x64–0x66</td><td class="dec">Hz = 1e8 / period</td><td></td></tr>
+      <tr><td class="p">Recovered pixel clock</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x68–0x6A</td><td class="dec">kHz</td><td></td></tr>
+      <tr><td class="p">Link lock</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x6B</td><td class="dec">bit flags</td><td>PLL, symbol sync, IDELAY ready, per-lane invalid symbols.</td></tr>
+      <tr><td class="p">HDMI disconnect pulse</td><td class="d"><span class="chip rw">get/set</span></td><td class="addr">0x15</td><td class="dec">{secs×2, proj, host}</td><td>Self-timed, 0.5–31.5 s. Drops the host hot-plug or tristates the output. Reconnects itself.</td></tr>
+      <tr><td class="p">Display's EDID</td><td class="d"><span class="chip r">get</span></td><td class="addr">table 0x03</td><td class="dec">256 B</td><td>Captured off the output DDC.</td></tr>
+      <tr><td class="p">EDID served to the PC</td><td class="d"><span class="chip r">get</span></td><td class="addr">table 0x05</td><td class="dec">256 B</td><td>The merged one the source actually sees.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Genlock timing</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Frame sync edge count</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x58 / 0x59</td><td class="dec">16-bit, wraps</td><td>The sync reaching the camera. Should equal the display's frame rate — sample under 1 s or it wraps.</td></tr>
+      <tr><td class="p">Output vsync period</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x4A–0x4C</td><td class="dec">10 ns units</td><td>The genlock master.</td></tr>
+      <tr><td class="p">Vsync jitter</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x4D–0x52</td><td class="dec">min / max</td><td>max − min <b>is</b> the jitter. Window resets each status tick.</td></tr>
+      <tr><td class="p">Trigger → exposure delay</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x42–0x47</td><td class="dec">10 ns, min / max</td><td>Measured off the sensor's own monitor pin. max − min is the sensor's exposure-start jitter.</td></tr>
+      <tr><td class="p">Integration length</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x48 / 0x49</td><td class="dec">160 ns units</td><td>How long the sensor actually integrated.</td></tr>
+      <tr><td class="p">Max usable exposure</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x53–0x57</td><td class="dec">40-bit</td><td>Computed from the current frame rate.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <h2>Board identity and link events</h2>
+  <div class="tw"><table>
+    <thead><tr><th>Parameter</th><th>Dir</th><th>Address</th><th>Range / decode</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="p">Board ID</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x00</td><td class="dec">0x48 'H'</td><td>Proves the control bitstream is loaded.</td></tr>
+      <tr><td class="p">Protocol version</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x01</td><td class="dec">0x01</td><td></td></tr>
+      <tr><td class="p">Live status byte</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x02</td><td class="dec">bit flags</td><td>Same byte the LEDs show: vsync, hsync, polarity, select, mode, ready, trigger.</td></tr>
+      <tr><td class="p">Table loaded flag</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x06</td><td class="dec">{usb_sw_en, lut_loaded}</td><td>Whether a correction curve has been uploaded since power-up.</td></tr>
+      <tr><td class="p">Link drop counters</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x7D–0x80</td><td class="dec">saturate at 255</td><td>Select, PLL and symbol-sync losses.</td></tr>
+      <tr><td class="p">Hot-plug / EDID events</td><td class="d"><span class="chip r">get</span></td><td class="addr">0x81 / 0x82</td><td class="dec">saturate at 255</td><td><code>0x82</code> counts the 0.5 s EDID re-read, so <b>2/s is healthy</b>, not a fault.</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note"><b>Saturating counters read static at 255</b> while they are still incrementing,
+  which looks stale. Only a bitstream reload zeroes them.</p>
+</section>
+
+<footer>Derived from <code>uart_ctrl.v</code>, 2026-08-31 · full byte-level map in
+<code>USB_COMMAND_REFERENCE.md</code></footer>
+
+</main>
+<script>
+(function(){
+  var q=document.getElementById('q'),hits=document.getElementById('hits'),
+      empty=document.getElementById('empty'),
+      secs=[].slice.call(document.querySelectorAll('main section')),
+      rows=[].slice.call(document.querySelectorAll('main tbody tr'));
+  function run(){
+    var t=q.value.trim().toLowerCase();
+    if(!t){rows.forEach(function(r){r.style.display='';});
+           secs.forEach(function(s){s.style.display='';});
+           hits.textContent='';empty.classList.remove('on');return;}
+    var n=0;
+    rows.forEach(function(r){var on=r.textContent.toLowerCase().indexOf(t)!==-1;
+      r.style.display=on?'':'none';if(on)n++;});
+    secs.forEach(function(s){
+      var rs=s.querySelectorAll('tbody tr');
+      s.style.display=[].some.call(rs,function(r){return r.style.display!=='none';})?'':'none';});
+    hits.textContent=n+(n===1?' parameter':' parameters')+' matching “'+q.value.trim()+'”';
+    empty.classList.toggle('on',n===0);
+  }
+  q.addEventListener('input',run);
+  q.addEventListener('keydown',function(e){if(e.key==='Escape'){q.value='';run();}});
+})();
+</script>
+</body>
+</html>

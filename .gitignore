@@ -88,3 +88,7 @@ build_merged/
 build_pt_hdmi/
 build_*_run.txt
 sim/xsim_work/
+press/*.aux
+press/*.log
+press/*.out
+press/build.log

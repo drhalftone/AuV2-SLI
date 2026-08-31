@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BYOP Register Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* ---- tokens: complete light palette on bare :root ---- */
+:root{
+  --paper:#f7f8fa; --surface:#ffffff; --sunk:#eef1f5;
+  --ink:#10161f; --ink-2:#48525f; --ink-3:#77828f;
+  --rule:#d8dde5; --rule-soft:#e7ebf0;
+  --write:#b45309; --write-bg:#fdf3e7;
+  --read:#0e7490;  --read-bg:#e8f4f7;
+  --ro:#5b21b6;    --ro-bg:#f1ecfb;
+  --warn:#b91c1c;  --warn-bg:#fdf0ef;
+  --shadow:0 1px 2px rgba(16,22,31,.06),0 8px 24px rgba(16,22,31,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0d1117; --surface:#151b24; --sunk:#1b222d;
+    --ink:#e6ecf3; --ink-2:#a3aeba; --ink-3:#78838f;
+    --rule:#2a323d; --rule-soft:#212934;
+    --write:#f0a860; --write-bg:#2a1e10;
+    --read:#5cc8dd;  --read-bg:#0e2830;
+    --ro:#c4a9f5;    --ro-bg:#221a33;
+    --warn:#f08a80;  --warn-bg:#2c1614;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0d1117; --surface:#151b24; --sunk:#1b222d;
+  --ink:#e6ecf3; --ink-2:#a3aeba; --ink-3:#78838f;
+  --rule:#2a323d; --rule-soft:#212934;
+  --write:#f0a860; --write-bg:#2a1e10;
+  --read:#5cc8dd;  --read-bg:#0e2830;
+  --ro:#c4a9f5;    --ro-bg:#221a33;
+  --warn:#f08a80;  --warn-bg:#2c1614;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+}
+
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:1.5rem}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+body{
+  margin:0;background:var(--paper);color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  font-size:15px;line-height:1.62;-webkit-font-smoothing:antialiased;
+}
+code,.mono,th.addr,td.addr{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+/* ---- shell ---- */
+.wrap{display:grid;grid-template-columns:230px minmax(0,1fr);gap:44px;
+      max-width:1180px;margin:0 auto;padding:40px 28px 96px}
+@media (max-width:900px){.wrap{grid-template-columns:1fr;gap:24px;padding:24px 18px 64px}}
+
+/* ---- sidebar ---- */
+nav{position:sticky;top:24px;align-self:start;max-height:calc(100vh - 48px);overflow-y:auto}
+@media (max-width:900px){nav{position:static;max-height:none}}
+nav .eyebrow{font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:600;margin:0 0 10px}
+nav ol{list-style:none;margin:0 0 22px;padding:0;display:flex;flex-direction:column;gap:1px}
+nav a{display:flex;justify-content:space-between;gap:10px;align-items:baseline;
+  padding:5px 8px;border-radius:5px;text-decoration:none;color:var(--ink-2);
+  font-size:13.5px;border-left:2px solid transparent}
+nav a:hover{background:var(--sunk);color:var(--ink)}
+nav a:focus-visible{outline:2px solid var(--read);outline-offset:1px}
+nav a .rng{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--ink-3);
+  font-variant-numeric:tabular-nums}
+
+/* ---- header ---- */
+header{margin:0 0 34px;padding:0 0 22px;border-bottom:1px solid var(--rule)}
+h1{font-size:clamp(27px,3.6vw,36px);line-height:1.14;margin:0 0 10px;
+   font-weight:700;letter-spacing:-.021em;text-wrap:balance}
+.sub{color:var(--ink-2);margin:0;max-width:62ch}
+.provenance{margin:16px 0 0;padding:11px 14px;background:var(--sunk);
+  border-radius:6px;font-size:12.8px;color:var(--ink-2);max-width:70ch}
+.provenance strong{color:var(--ink);font-weight:600}
+
+/* ---- filter ---- */
+.filter{position:sticky;top:0;z-index:5;background:var(--paper);
+  padding:12px 0 14px;margin:0 0 8px;border-bottom:1px solid var(--rule-soft)}
+.filter input{width:100%;padding:10px 13px;font-size:14px;color:var(--ink);
+  background:var(--surface);border:1px solid var(--rule);border-radius:7px;
+  font-family:"IBM Plex Mono",monospace}
+.filter input:focus{outline:2px solid var(--read);outline-offset:-1px;border-color:transparent}
+.filter input::placeholder{color:var(--ink-3);font-family:"IBM Plex Sans",sans-serif}
+.hits{margin:7px 2px 0;font-size:12px;color:var(--ink-3);min-height:1.2em}
+
+/* ---- sections ---- */
+section{margin:0 0 46px;scroll-margin-top:76px}
+h2{font-size:19.5px;font-weight:600;letter-spacing:-.012em;margin:0 0 4px;
+   display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;text-wrap:balance}
+h2 .rng{font-family:"IBM Plex Mono",monospace;font-size:12.5px;font-weight:500;
+  color:var(--ink-3);font-variant-numeric:tabular-nums}
+h3{font-size:15.5px;font-weight:600;margin:26px 0 8px;color:var(--ink)}
+h2+p,h3+p{margin-top:6px}
+p{margin:0 0 13px;max-width:68ch}
+
+/* ---- direction chips ---- */
+.chip{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;
+  font-size:10.5px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;
+  font-family:"IBM Plex Sans",sans-serif;white-space:nowrap}
+.chip.w{background:var(--write-bg);color:var(--write)}
+.chip.r{background:var(--read-bg);color:var(--read)}
+.chip.ro{background:var(--ro-bg);color:var(--ro)}
+
+/* ---- tables ---- */
+.tw{overflow-x:auto;border:1px solid var(--rule);border-radius:8px;
+    background:var(--surface);box-shadow:var(--shadow);margin:0 0 14px}
+table{width:100%;border-collapse:collapse;font-size:13.8px}
+th{text-align:left;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+   color:var(--ink-3);font-weight:600;padding:10px 14px;background:var(--sunk);
+   border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:9px 14px;border-bottom:1px solid var(--rule-soft);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--sunk)}
+td.addr{font-family:"IBM Plex Mono",monospace;font-weight:500;white-space:nowrap;
+  font-variant-numeric:tabular-nums;color:var(--ink)}
+td.nm{font-weight:600;white-space:nowrap}
+code{background:var(--sunk);padding:1px 5px;border-radius:4px;font-size:.9em;
+  border:1px solid var(--rule-soft)}
+td code{background:none;border:none;padding:0;color:var(--ink-2)}
+
+/* ---- callouts ---- */
+.note{border-left:3px solid var(--warn);background:var(--warn-bg);
+  padding:12px 16px;border-radius:0 7px 7px 0;margin:0 0 16px;max-width:74ch}
+.note p{margin:0 0 8px;font-size:13.8px}
+.note p:last-child{margin:0}
+.note .lbl{display:block;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+  font-weight:600;color:var(--warn);margin:0 0 5px}
+.note.calm{border-left-color:var(--read);background:var(--read-bg)}
+.note.calm .lbl{color:var(--read)}
+
+ul{margin:0 0 14px;padding-left:19px;max-width:68ch}
+li{margin:0 0 7px}
+.empty{display:none;padding:26px 4px;color:var(--ink-3);font-size:14px}
+.empty.on{display:block}
+footer{margin-top:20px;padding-top:18px;border-top:1px solid var(--rule);
+  color:var(--ink-3);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<nav aria-label="Register ranges">
+  <p class="eyebrow">Registers</p>
+  <ol>
+    <li><a href="#frames">Frame formats</a></li>
+    <li><a href="#put">Writable <span class="rng">11</span></a></li>
+    <li><a href="#ident">Identity <span class="rng">00–16</span></a></li>
+    <li><a href="#mode">Offline mode <span class="rng">20–2A</span></a></li>
+    <li><a href="#sensor">Sensor SPI <span class="rng">30–39</span></a></li>
+    <li><a href="#camhealth">Camera health <span class="rng">3A–41</span></a></li>
+    <li><a href="#genlock">Genlock <span class="rng">42–59</span></a></li>
+    <li><a href="#hdmiin">HDMI in <span class="rng">60–6C</span></a></li>
+    <li><a href="#decoder">Decoder diag <span class="rng">6D–7C</span></a></li>
+    <li><a href="#events">Events &amp; out <span class="rng">7D–8D</span></a></li>
+    <li><a href="#tables">Tables <span class="rng">6 tgt</span></a></li>
+    <li><a href="#gotchas">Gotchas</a></li>
+  </ol>
+</nav>
+
+<main>
+<header>
+  <h1>BYOP Register Map</h1>
+  <p class="sub">Every get and put available over the USB control link — 11 writable
+  registers, ~120 readable, and 6 table targets.</p>
+  <p class="provenance">Extracted from <code>uart_ctrl.v</code> on 2026-08-31 from the
+  <strong>code</strong> — the <code>rd_data</code> decoder and the write handler — not from
+  header comments. Five diagnostics in this codebase have been found describing signals
+  other than the ones their code touches; where a comment and the decoder disagreed,
+  <strong>the decoder won</strong>.</p>
+</header>
+
+<div class="filter">
+  <input id="q" type="search" placeholder="Filter by address or name — try 0x67, ldrop, vsync" aria-label="Filter registers">
+  <p class="hits" id="hits" role="status"></p>
+</div>
+<p class="empty" id="empty">No register matches that.</p>
+
+<section id="frames">
+  <h2>Frame formats</h2>
+  <p><code>SYNC = 0xA5</code>, and SYNC is <em>never</em> included in any checksum. Every
+  checksum sums its payload to 0 mod 256.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Operation</th><th>Request</th><th>Reply</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">Write register</td><td class="addr">A5 57 ADDR DATA CK</td><td><code>K</code> ok · <code>N</code> read-only/undefined · <code>E</code> bad checksum</td></tr>
+      <tr><td class="nm">Read register</td><td class="addr">A5 52 ADDR CK</td><td><code>ADDR DATA CK2</code> · <code>E</code> on bad request CK</td></tr>
+      <tr><td class="nm">Upload table</td><td class="addr">A5 5B TGT D[0..N-1] CK</td><td><code>K</code> ok · <code>E</code> bad checksum or unknown target</td></tr>
+      <tr><td class="nm">Read table</td><td class="addr">A5 72 TGT CK</td><td><code>TGT D[0..N-1] CK2</code> · <code>E</code> on bad CK or target</td></tr>
+    </tbody>
+  </table></div>
+  <p>A table is committed only on <code>K</code>.</p>
+  <div class="note"><span class="lbl">Trap</span>
+    <p>Reading an <strong>undefined register returns <code>0x00</code></strong> — it does not
+    error. A mistyped address is indistinguishable from a register that legitimately reads zero.</p>
+  </div>
+  <h3>Transports</h3>
+  <div class="tw"><table>
+    <thead><tr><th>Port</th><th>Path</th><th>Availability</th></tr></thead>
+    <tbody>
+      <tr><td class="nm">A</td><td>FT2232H ch.B → host <code>COM6</code>, 115200 8N1</td><td>every build</td></tr>
+      <tr><td class="nm">B</td><td>Ft+ FT601Q → host D3XX, SuperSpeed</td><td>only when the Ft+ is stacked</td></tr>
+    </tbody>
+  </table></div>
+  <p>Port A shares the line with ASCII telemetry; replies interleave and the host frame-scans
+  past it. <strong>Port B replies ride the video frame stream</strong>, so with the camera idle
+  there are no replies at all — a property of the transport, not a fault.</p>
+</section>
+
+<section id="put">
+  <h2>Writable registers <span class="chip w">put</span></h2>
+  <p>Eleven addresses accept writes. Everything else returns <code>N</code>.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Name</th><th>Payload</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x13</td><td class="nm">SLICTRL</td><td><code>{7:sw_en, 6:mode_en, 5:mode_val, 3:R, 2:G, 1:B, 0:orient}</code></td></tr>
+      <tr><td class="addr">0x14</td><td class="nm">MODEFORCE</td><td><code>{7:force_en, 3..0:idx}</code> — pin the offline mode, overriding the EDID pick</td></tr>
+      <tr><td class="addr">0x15</td><td class="nm">LINKCTL</td><td><code>{7..2:secs×2, 1:proj, 0:host}</code> — self-timed HDMI disconnect</td></tr>
+      <tr><td class="addr">0x16</td><td class="nm">CAMSIM</td><td><code>{7:rdy_en, 0:rdy_val}</code> — drive the camera-ready GPIO from the host</td></tr>
+      <tr><td class="addr">0x30</td><td class="nm">SPI addr lo</td><td>sensor register address <code>[7:0]</code></td></tr>
+      <tr><td class="addr">0x31</td><td class="nm">SPI addr hi</td><td><code>{7:rw, 0:addr[8]}</code></td></tr>
+      <tr><td class="addr">0x32</td><td class="nm">SPI wdata lo</td><td><code>[7:0]</code></td></tr>
+      <tr><td class="addr">0x33</td><td class="nm">SPI wdata hi</td><td><code>[15:8]</code></td></tr>
+      <tr><td class="addr">0x34</td><td class="nm">SPI GO</td><td>any value fires the transaction</td></tr>
+      <tr><td class="addr">0x37</td><td class="nm">cam GPIO out</td><td><code>{reset_n, …, trigger[2:0]}</code></td></tr>
+      <tr><td class="addr">0x39</td><td class="nm">cam boot GO</td><td>any value starts the boot sequencer</td></tr>
+    </tbody>
+  </table></div>
+  <h3>0x13 — what the overrides actually reach</h3>
+  <p><code>sw_en</code> makes USB drive R/G/B/orient instead of the physical <code>SW[3:0]</code>
+  pins. <code>mode_en</code> + <code>mode_val</code> drive the SLI pattern enable instead of the
+  camera <code>mode</code> GPIO (<code>C1_in[1]</code>), which the XDC pulls LOW — so with no
+  camera board attached, pattern generation is off and video passes through.</p>
+  <div class="note calm"><span class="lbl">Note</span>
+    <p>The <code>corr</code> LUT shapes <strong>fringe pixels only</strong>, so an uploaded curve
+    has no visible effect until the pattern generator is actually enabled.</p>
+  </div>
+  <h3>0x15 — the disconnect pulse</h3>
+  <p>bit0 drops the HOST hot-plug (<code>hdmi_rx_hpa</code> low → the source re-reads EDID and
+  re-negotiates); bit1 tristates the TMDS <em>output</em> (the projector loses signal).
+  bits <code>[7:2]</code> = duration in <strong>half-seconds</strong>, 1–63 → 0.5–31.5 s. It
+  reconnects automatically. Write <code>0x00</code> to cancel. Reading back gives
+  <code>{proj_active, host_active, remaining_half_secs[5:0]}</code>. Example:
+  <code>A5 57 15 19 CK</code> drops the host for 3 s.</p>
+  <div class="note"><span class="lbl">Trap — 0x14</span>
+    <p>Clearing <code>force_en</code> does <strong>not</strong> restore the power-up mode. It
+    leaves whatever was last forced. Logged against genlock G4.</p>
+  </div>
+</section>
+
+<section id="ident">
+  <h2>Identity and control state <span class="rng">0x00 – 0x16</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x00</td><td><strong>ID</strong> = <code>0x48</code> <code>'H'</code> — proves the control bitstream is loaded</td></tr>
+      <tr><td class="addr">0x01</td><td><strong>VERSION</strong> = <code>0x01</code></td></tr>
+      <tr><td class="addr">0x02</td><td><strong>STATUS</strong> — live <code>led</code> byte <code>{vsync, hsync, VPolarity, sel, mode, rdy, f_frm, trig}</code></td></tr>
+      <tr><td class="addr">0x06</td><td><strong>FLAGS</strong> <code>{…, usb_sw_en, lut_loaded}</code></td></tr>
+      <tr><td class="addr">0x10</td><td><strong>PINS</strong> <code>{eff_sw[3:0], phys_sw[3:0]}</code> — active vs physical switches</td></tr>
+      <tr><td class="addr">0x13 – 0x16</td><td>readback of the four control registers</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="mode">
+  <h2>Offline mode decision <span class="rng">0x20 – 0x2A</span> <span class="chip r">get</span></h2>
+  <p>What <code>mode_select</code> chose from the display's EDID, and what it had to choose from.</p>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x20</td><td><code>{7:valid, 6:edid_ok, 3..0:mode_idx}</code></td></tr>
+      <tr><td class="addr">0x21</td><td>refresh, Hz</td></tr>
+      <tr><td class="addr">0x22 / 0x23</td><td>h_active lo / hi (12-bit)</td></tr>
+      <tr><td class="addr">0x24 / 0x25</td><td>v_active lo / hi (12-bit)</td></tr>
+      <tr><td class="addr">0x26 – 0x28</td><td>pixel clock, kHz, lo / mid / hi (17-bit)</td></tr>
+      <tr><td class="addr">0x29 / 0x2A</td><td>supported-mode mask lo / hi (13-bit, bit <em>i</em> = table index <em>i</em>)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><span class="lbl">Trap</span>
+    <p>These are <strong>not the incoming video</strong>. They report the mode the board
+    <em>could</em> generate offline. With a PC sending 1280×720 these can read 1280×800.
+    The incoming raster is <code>0x60</code>–<code>0x67</code>.</p>
+  </div>
+</section>
+
+<section id="sensor">
+  <h2>PYTHON 1300 sensor <span class="rng">0x30 – 0x39</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x30 – 0x33</td><td>SPI address / write-data readback</td></tr>
+      <tr><td class="addr">0x34</td><td><code>{cam_spi_busy, cam_done, …}</code></td></tr>
+      <tr><td class="addr">0x35 / 0x36</td><td>SPI read data lo / hi</td></tr>
+      <tr><td class="addr">0x37 / 0x38</td><td>GPIO out / GPIO in</td></tr>
+      <tr><td class="addr">0x39</td><td>boot sequencer status</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section id="camhealth">
+  <h2>Camera datapath health <span class="rng">0x3A – 0x41</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x3A</td><td><code>{stw[2:0], rd_busy, calib, aligned, streaming, cap}</code></td></tr>
+      <tr><td class="addr">0x3B</td><td><code>{cfifo_ovf, ufifo_ovf, ufifo_empty, txe, 0000}</code></td></tr>
+      <tr><td class="addr">0x3C / 0x3D</td><td><strong>ldrop</strong> lo / hi — padded frames; <strong>static = none lost</strong></td></tr>
+      <tr><td class="addr">0x3E / 0x3F</td><td>frame period <strong>÷ 16</strong>, in 72 MHz wordclk cycles</td></tr>
+      <tr><td class="addr">0x40 / 0x41</td><td>exposure0 lo / hi, in <strong>375 ns</strong> units</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><span class="lbl">Trap — decoding the frame rate</span>
+    <p><code>0x3E</code>/<code>0x3F</code> holds the period <strong>divided by 16</strong>, and
+    <code>0x40</code> is EXPOSURE, not the period's high byte.</p>
+    <p>Reading <code>0x3D</code>–<code>0x3F</code> as a 24-bit period yields a value 16× too
+    large. Both mistakes were made on 2026-08-31.</p>
+    <p><strong>Frame rate = 72e6 / (16 × [0x3F:0x3E])</strong></p>
+  </div>
+</section>
+
+<section id="genlock">
+  <h2>Genlock instrumentation <span class="rng">0x42 – 0x59</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x42 – 0x44</td><td>trigger → integration start, <strong>minimum</strong>, 10 ns units</td></tr>
+      <tr><td class="addr">0x45 – 0x47</td><td>same, <strong>maximum</strong> — max−min <em>is</em> the measured jitter</td></tr>
+      <tr><td class="addr">0x48 / 0x49</td><td>last integration length, 160 ns units</td></tr>
+      <tr><td class="addr">0x4A – 0x4C</td><td><code>out_vsync</code> period, <strong>last</strong>, 10 ns units</td></tr>
+      <tr><td class="addr">0x4D – 0x4F</td><td>period <strong>minimum</strong> over the window</td></tr>
+      <tr><td class="addr">0x50 – 0x52</td><td>period <strong>maximum</strong> over the window</td></tr>
+      <tr><td class="addr">0x53 – 0x57</td><td>max-exposure calculation (40-bit)</td></tr>
+      <tr><td class="addr">0x58 / 0x59</td><td><strong>ext_sync edge count</strong>, free-running 16-bit, wraps</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><span class="lbl">Trap — counter wrap</span>
+    <p>The min/max windows reset every status tick, so each read is a fresh window, not a
+    high-water mark.</p>
+    <p>For <code>0x58</code>/<code>0x59</code>, sample over <strong>under 1 s</strong> at high
+    edge rates or the 16-bit counter wraps and the computed rate is an aliased
+    <em>under</em>-estimate.</p>
+  </div>
+</section>
+
+<section id="hdmiin">
+  <h2>Incoming HDMI, measured <span class="rng">0x60 – 0x6C</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x60 / 0x61</td><td>h_active lo / hi</td></tr>
+      <tr><td class="addr">0x62 / 0x63</td><td>v_active lo / hi</td></tr>
+      <tr><td class="addr">0x64 – 0x66</td><td>frame period, 10 ns units — Hz = 1e8 / period</td></tr>
+      <tr><td class="addr">0x67</td><td><code>{2:vs_pol, 1:vid_valid, 0:meas_ok}</code></td></tr>
+      <tr><td class="addr">0x68 – 0x6A</td><td>recovered pixel clock, kHz</td></tr>
+      <tr><td class="addr">0x6B</td><td><code>{7:primed, 6:idelay_rdy, 5:3:inv ch2/1/0, 2:dvid, 1:pll, 0:sym}</code></td></tr>
+      <tr><td class="addr">0x6C</td><td>phase-FIFO re-primes — <strong>static = healthy</strong></td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><span class="lbl">Trap — read 0x67 first</span>
+    <p><code>meas_ok = 0</code> means the FPGA is refusing to answer, and the other fields hold
+    <strong>stale</strong> values rather than zeroing — a previous mode's raster can look live.
+    <code>host/rx_timing.py</code> enforces this.</p>
+  </div>
+</section>
+
+<section id="decoder">
+  <h2>HDMI decoder diagnostics <span class="rng">0x6D – 0x7C</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x6D – 0x70</td><td>ch0 control cycles / all-three-lane coincidence</td></tr>
+      <tr><td class="addr">0x71 – 0x74</td><td><code>in_vdp</code> cycles / <strong>in_adp</strong> cycles — the upper half was labelled <code>in_dvid</code></td></tr>
+      <tr><td class="addr">0x75 – 0x78</td><td><strong>vsync rises / hsync rises</strong> per window — <em>not</em> preamble counts</td></tr>
+      <tr><td class="addr">0x79 – 0x7C</td><td>guard band as coded / <strong>vdp_guardband_detect</strong> assertions</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note calm"><span class="lbl">Sanity check</span>
+    <p>For <code>0x75</code>–<code>0x78</code>: hsync must read <code>65536 / htotal</code> per
+    window — <strong>78</strong> at 640×480@75, <strong>40</strong> at 720p — and vsync 0 or 1.
+    Anything else means the link is sick.</p>
+  </div>
+</section>
+
+<section id="events">
+  <h2>Link events and transmitted raster <span class="rng">0x7D – 0x8D</span> <span class="chip r">get</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>Addr</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x7D – 0x80</td><td>drop counters: <code>evt_sel</code>, <code>evt_pll</code>, <code>evt_sym</code> — saturate at 255</td></tr>
+      <tr><td class="addr">0x81</td><td>HPD-to-PC falling edges</td></tr>
+      <tr><td class="addr">0x82</td><td><code>edid_ok</code> falling edges</td></tr>
+      <tr><td class="addr">0x83 – 0x8A</td><td><strong>outgoing</strong> raster: h_active, v_active, period, <code>{valid, ok}</code></td></tr>
+      <tr><td class="addr">0x8B – 0x8D</td><td>transmitted pixel clock, kHz</td></tr>
+    </tbody>
+  </table></div>
+  <p><code>0x83</code>–<code>0x8D</code> measure what the board <strong>transmits</strong>, in
+  either offline or pass-through mode — which is what makes the two directly comparable.</p>
+  <div class="note"><span class="lbl">Trap — 0x82 is not an error counter</span>
+    <p><code>edid_merge</code> re-reads the display's EDID every 0.5 s to detect monitor
+    presence, and <code>chk0_ok</code> drops during each read. A <strong>healthy</strong> board
+    therefore counts exactly <strong>2 per second</strong>. It was twice mistaken for a fault.</p>
+    <p>All of these saturate at 255 and then read <em>static</em>, which looks stale while they
+    are still incrementing. Only a bitstream reload zeroes them.</p>
+  </div>
+</section>
+
+<section id="tables">
+  <h2>Tables <span class="rng">6 targets</span></h2>
+  <div class="tw"><table>
+    <thead><tr><th>TGT</th><th>Contents</th><th>Size</th><th>Direction</th></tr></thead>
+    <tbody>
+      <tr><td class="addr">0x00</td><td>row LUT — <strong>vestigial</strong>, tied off, read by nothing</td><td class="addr">720 B</td><td><span class="chip w">put</span> <span class="chip r">get</span></td></tr>
+      <tr><td class="addr">0x01</td><td>column LUT — <strong>vestigial</strong></td><td class="addr">1280 B</td><td><span class="chip w">put</span> <span class="chip r">get</span></td></tr>
+      <tr><td class="addr">0x02</td><td><strong>corr</strong> intensity correction — <strong>the live linearisation table</strong></td><td class="addr">256 B</td><td><span class="chip w">put</span> <span class="chip r">get</span></td></tr>
+      <tr><td class="addr">0x03</td><td>the display's captured EDID</td><td class="addr">256 B</td><td><span class="chip ro">read-only</span></td></tr>
+      <tr><td class="addr">0x04</td><td>one captured camera line</td><td class="addr">—</td><td><span class="chip ro">read-only</span></td></tr>
+      <tr><td class="addr">0x05</td><td>the merged EDID served to the PC</td><td class="addr">256 B</td><td><span class="chip ro">read-only</span></td></tr>
+    </tbody>
+  </table></div>
+  <p><strong><code>0x02</code> is the one that matters.</strong> 256 entries, one per grey level,
+  applied as <code>out = corr[cos]</code> in <code>pattern_gen</code> — that is what makes a
+  0–255 ramp reproduce linearly on the projector. It powers up as identity.
+  <code>0x00</code> and <code>0x01</code> are tied off in <code>Au2_SLI.vhd</code>
+  ("vestigial from the old indexMap/LUT ROM design").</p>
+  <div class="note calm"><span class="lbl">Note — 0x03</span>
+    <p>Always 256 B, but if the display has no extension block, bytes 128–255 are stale RAM.
+    Byte <code>0x7E</code> of block 0 is the authoritative extension count.</p>
+  </div>
+</section>
+
+<section id="gotchas">
+  <h2>Before you drive this</h2>
+  <ul>
+    <li><strong><code>host/test_silicon.py</code> is destructive.</strong> It uploads test
+    patterns into <code>corr</code>, <code>lut</code> and <code>lutv</code> and leaves them
+    there, which visibly corrupts the display until the bitstream is reloaded or a real curve
+    is re-uploaded with <code>upload_corr.py</code>.</li>
+    <li><strong>Replies longer than 576 bytes</strong> were silently truncated until
+    2026-08-31 — a 50 ms inter-byte watchdog counted down against the board's own reply.
+    Fixed in <code>dd4ea98</code>.</li>
+    <li><strong>An abandoned upload used to wedge the control plane</strong> until the
+    remaining bytes arrived; Ctrl-C during <code>upload_corr.py</code> did it. The same
+    watchdog is the cure, and it still fires for that case.</li>
+    <li><strong>Undefined reads return <code>0x00</code></strong>, so a mistyped address is
+    indistinguishable from a register that legitimately reads zero.</li>
+  </ul>
+</section>
+
+<footer>Generated from <code>sources_1/imports/RTL/uart_ctrl.v</code> · supersedes the register
+portions of <code>PC_INTERFACE_INVENTORY.md</code> (2026-08-17)</footer>
+</main>
+</div>
+
+<script>
+(function(){
+  var q = document.getElementById('q');
+  var hits = document.getElementById('hits');
+  var empty = document.getElementById('empty');
+  var sections = Array.prototype.slice.call(document.querySelectorAll('main section'));
+  var rows = Array.prototype.slice.call(document.querySelectorAll('main tbody tr'));
+
+  function run(){
+    var t = q.value.trim().toLowerCase();
+    if(!t){
+      rows.forEach(function(r){ r.style.display=''; });
+      sections.forEach(function(s){ s.style.display=''; });
+      hits.textContent=''; empty.classList.remove('on');
+      return;
+    }
+    var n=0;
+    rows.forEach(function(r){
+      var on = r.textContent.toLowerCase().indexOf(t) !== -1;
+      r.style.display = on ? '' : 'none';
+      if(on) n++;
+    });
+    sections.forEach(function(s){
+      var vis = s.querySelectorAll('tbody tr');
+      if(!vis.length){ s.style.display = 'none'; return; }
+      var any = Array.prototype.some.call(vis, function(r){ return r.style.display !== 'none'; });
+      s.style.display = any ? '' : 'none';
+    });
+    hits.textContent = n + (n===1?' row':' rows') + ' matching “' + q.value.trim() + '”';
+    empty.classList.toggle('on', n===0);
+  }
+  q.addEventListener('input', run);
+  q.addEventListener('keydown', function(e){ if(e.key==='Escape'){ q.value=''; run(); } });
+})();
+</script>
+</body>
+</html>

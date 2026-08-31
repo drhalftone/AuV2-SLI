@@ -1,0 +1,268 @@
+%==============================================================================
+% BYOP Machine Vision Camera -- press release
+% DRAFT. See NOTES FOR REVIEW at the end of this file before distribution.
+%==============================================================================
+\documentclass[11pt]{article}
+
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{parskip}
+\usepackage[colorlinks=true,urlcolor=ukblue,linkcolor=ukblue]{hyperref}
+
+\definecolor{ukblue}{RGB}{0,51,160}
+
+\titleformat{\section}{\normalfont\large\bfseries\color{ukblue}}{}{0pt}{}
+\titlespacing*{\section}{0pt}{12pt}{4pt}
+
+\newcommand{\pressrule}{\textcolor{ukblue}{\rule{\linewidth}{1.2pt}}}
+
+\begin{document}
+\pagestyle{empty}
+
+\noindent
+{\color{ukblue}\bfseries\large UNIVERSITY OF KENTUCKY}\\
+{\small Department of Electrical and Computer Engineering}
+
+\vspace{2pt}
+\pressrule
+
+\vspace{6pt}
+\noindent{\bfseries FOR IMMEDIATE RELEASE}\hfill{\small\itshape Contact: [name, title, email, phone]}
+
+\vspace{18pt}
+
+\begin{center}
+  {\LARGE\bfseries University of Kentucky Researchers Develop\\[2pt]
+   ``Bring Your Own Projector'' Machine Vision Camera}\\[10pt]
+  {\large A single board pairs a conventional industrial camera with a built-in
+   HDMI controller,\\ turning any projector into a structured-light 3D scanner
+   --- and chaining\\ camera to camera over the video signal itself.}
+\end{center}
+
+\vspace{12pt}
+
+\noindent\textbf{LEXINGTON, Ky.} --- Researchers at the University of Kentucky
+have built a machine vision camera that does something conventional industrial
+cameras do not: it speaks HDMI.
+
+The board is a traditional high-speed machine vision camera --- a global-shutter
+sensor streaming full frames over USB~3.0 --- with a complete HDMI receiver and
+transmitter integrated alongside it on the same FPGA. Video from a host computer
+enters the camera and passes through to a projector. Because the camera sits
+\emph{in} the video path rather than beside it, it knows precisely what is being
+projected, and when.
+
+The team calls the result BYOP, for \emph{Bring Your Own Projector}: connect any
+HDMI projector and the system becomes a structured-light 3D scanner, with no
+external trigger box, frame grabber, or custom synchronization cabling.
+
+\section{Why put HDMI inside a camera?}
+
+Structured-light 3D scanning works by projecting a sequence of patterns onto an
+object and photographing each one. The measurement is only as good as the
+synchronization: the camera must expose once per projected pattern, at a known
+moment within that pattern's display time.
+
+Conventionally that means a trigger generator, a cable harness, and a calibration
+step for the delay between them --- an assembly that has to be reworked whenever
+the projector, the frame rate, or the pattern set changes.
+
+Integrating the video interface into the camera removes the problem rather than
+managing it. The projected frames and the camera's exposures come from the same
+signal, inside one device.
+
+\section{The imager}
+
+The camera is built around the \textbf{onsemi PYTHON 1300}, a global-shutter CMOS
+sensor with $1280 \times 1024$ resolution --- 1.3 megapixels --- reading out over
+four LVDS channels at 720\,Mbit/s each. The sensor is socketed, and the same board
+accepts either the \textbf{monochrome or the colour} variant of the part, so the
+choice is made per application rather than per design.
+
+Pixels are delivered at \textbf{10 bits} of depth, not the 8 bits typical of
+consumer imaging: 1024 grey levels instead of 256. For structured light that
+matters directly --- the depth resolution of a phase measurement follows from how
+finely the camera can distinguish one projected intensity from the next, so the
+extra two bits are measurement precision, not just headroom.
+
+At full resolution and 10-bit depth the sensor is capable of \textbf{210 frames
+per second} --- comfortably more than a USB link can carry continuously. The
+camera closes that gap two ways.
+
+For live streaming, the sensor supports \textbf{up to eight simultaneous regions
+of interest}. Reading out only the windows that matter reduces the data per frame,
+which is how the camera sustains \textbf{120 frames per second} over its USB-C
+connection. Each region carries its own identifier in the data stream, so several
+can be read out and told apart downstream --- useful for tracking multiple parts
+of a scene at once, without paying for pixels nobody needs.
+
+For scans that need to be faster still, the camera does not have to stream at all.
+Frames are captured into \textbf{on-board DDR3 memory} at the sensor's own rate
+and downloaded afterwards, so the length of a scan is set by the sensor rather
+than by the host connection.
+
+A global shutter means every pixel in a region is exposed at the same instant, so
+nothing shears when the subject or the camera is moving.
+
+\section{No host HDMI source required}
+
+The camera does not have to be fed video at all. The board generates its own
+pattern sequences internally and drives the projector directly, at frame rates up
+to \textbf{120 per second} --- the same rate at which it streams full frames.
+
+The entire structured-light loop --- project a pattern, capture it, advance to the
+next --- therefore runs on the camera itself, at 120\,Hz, with nothing driving the
+video path but the camera. A computer is needed only to collect the resulting
+images, not to generate what is projected.
+
+Where a host \emph{is} driving the display, the camera passes its video through
+untouched, so the same hardware serves both arrangements.
+
+\section{Daisy-chaining: one video signal, many cameras}
+
+Because the HDMI path runs \emph{through} the camera, cameras can be chained. The
+host drives the first unit; each unit forwards the video onward to the next and,
+finally, to the projector. Every camera in the chain sees the same frames and can
+key to them.
+
+That makes multi-camera geometries straightforward to assemble:
+
+\begin{itemize}\itemsep2pt
+  \item \textbf{Active stereo} --- two or more cameras viewing a
+        projector-illuminated scene, capturing the same pattern from different
+        viewpoints.
+  \item \textbf{Multi-view capture} --- cameras arranged around a subject, all
+        keyed to a common projected sequence.
+  \item \textbf{Extended baselines} --- units placed far apart, coordinated over
+        the same cable that already carries the video.
+\end{itemize}
+
+\section{The hardware}
+
+\begin{center}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Image sensor}      & onsemi PYTHON 1300, socketed --- monochrome or colour \\
+\textbf{Resolution}        & $1280 \times 1024$ (1.3\,MP), global shutter \\
+\textbf{Pixel depth}       & 10 bits per pixel (1024 grey levels); 8-bit selectable \\
+\textbf{Sensor frame rate} & 210 frames/s at full resolution, 10-bit \\
+\textbf{Regions of interest} & Up to 8 simultaneous, each tagged in the stream \\
+\textbf{Streamed rate}     & 120 frames/s sustained over USB-C \\
+\textbf{Buffered capture}  & To on-board DDR3 at sensor rate, downloaded after \\
+\textbf{Host interface}    & USB 3.0, 325\,MB/s sustained, byte-exact \\
+\textbf{Video in / out}    & HDMI receive and transmit, pass-through \\
+\textbf{Standalone output} & Board-generated video to 120\,Hz, no HDMI source needed \\
+\textbf{Verified modes}    & $640\times480$ through $1280\times800$, 60 to 120\,Hz \\
+\textbf{Processing}        & Xilinx Artix-7 FPGA with DDR3 frame buffer \\
+\textbf{On-board patterns} & Sinusoidal fringe generation, radiometric linearization \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The FPGA generates structured-light fringe patterns on the board itself and
+applies a host-uploadable correction curve, so that a commanded intensity ramp
+reproduces linearly on the projector --- a calibration that otherwise has to be
+carried out in host software for every projector.
+
+\section{}
+
+\begin{quote}
+\itshape
+``[DRAFT QUOTE --- to be written or approved by the named speaker before release.
+The strongest version says, in one sentence and without technical vocabulary,
+what becomes possible that was not possible before.]''
+\end{quote}
+
+\noindent --- [Name, title, University of Kentucky]
+
+\section{Images}
+
+% Replace the placeholder below with the supplied photographs, e.g.
+% \begin{figure}[h]\centering
+%   \includegraphics[width=0.8\linewidth]{board_top.jpg}
+%   \caption{The BYOP camera board. Photo: University of Kentucky.}
+% \end{figure}
+
+\noindent\fbox{\parbox{\linewidth}{\centering\vspace{18pt}
+\textit{[Board photograph to be supplied]}\vspace{18pt}}}
+
+\vspace{6pt}
+{\small Additional images and captions available on request.}
+
+\section{About}
+
+[Boilerplate: department, laboratory, funding acknowledgement, and any licensing
+or availability statement.]
+
+\vspace{6pt}
+\pressrule
+\begin{center}\small \#\ \#\ \#\end{center}
+
+\end{document}
+
+%==============================================================================
+% NOTES FOR REVIEW -- read before this leaves the building
+%==============================================================================
+%
+% MEASURED, SAFE TO STATE AS FACT:
+%   * MONO/COLOUR: the part in the socket today is the MONOCHROME NOIP1SN1300A-QTI
+%     (P1-SN). The colour variant is a different part number in the same family and
+%     package; the board has not been built or tested with one. VERIFY before the
+%     release states it as an option -- the claim is electrical/mechanical
+%     compatibility, and colour would additionally need host-side demosaicing.
+%   * 10-BIT is real and worth leading with: 1024 grey levels vs 256. The sensor
+%     runs 10-bit via divide-by-5 clocking (reg 32[3] adc_mode = 0); 8-bit is
+%     divide-by-4. Both reach the same 720 Mbps/lane and the same max frame rate,
+%     so 10-bit costs nothing in speed -- see CAMERA_SENSOR_PROTOCOL.md 4.0.
+%   * SENSOR: onsemi PYTHON 1300 (NOIP1SN1300A-QTI), monochrome, 4 LVDS channels
+%     at 720 Mbps. 1280x1024, 8/10-bit, global shutter. 210 fps ZROT at full SXGA
+%     (165 fps NROT) -- sourced to CAMERA_SENSOR_PROTOCOL.md, which cites the
+%     onsemi datasheet directly. Up to 8 ROI windows; every frame-sync code
+%     carries a 3-bit window ID (0-7), so regions are distinguishable in-stream.
+%   * The 210 fps figure is the SENSOR's; 120 fps is what the camera SUSTAINS over
+%     USB-C. Do not collapse them into one number. ROIs are the mechanism for
+%     holding 120 fps on the link (less data per frame), NOT a way to exceed it --
+%     an earlier draft had this backwards.
+%   * BUFFER-THEN-DOWNLOAD is the faster path for scans: capture into on-board
+%     DDR3 at sensor rate, download afterwards, so scan length is set by the
+%     sensor and not the host link. NOTE this describes the SEQUENTIAL mode
+%     (capture all frames, then replay), which is the shipping design. OVERLAPPING
+%     capture with download -- which would roughly halve scan time again -- was
+%     attempted on branch wip/concurrent-capture and DOES NOT WORK (DDR3 never
+%     calibrates). Do not imply concurrency.
+%   * USB 3.0 at 325 MB/s, verified byte-exact.
+%   * HDMI pass-through verified at 640x480, 800x600, 1024x768, 1280x720 and
+%     1280x800 (60 Hz; the first three also at 75 Hz).
+%   * Camera and HDMI proven INDEPENDENT: the camera keeps streaming with zero
+%     dropped frames through display mode changes and through total loss of the
+%     video source.
+%   * On-board sinusoidal fringe generation and a host-uploadable linearization
+%     curve.
+%   * STANDALONE OUTPUT to 120 Hz: the board generates and drives its own video
+%     with no host in the video path. All fourteen curated modes were verified
+%     eyes-on 2026-08-28, including 800x600@120 and 640x480@120. Offline is also
+%     the CLEANER master -- its vsync period holds to 10 ns, the measurement floor.
+%     This pairs with the sensor's own 120 fps, so the full project-capture loop
+%     runs at 120 Hz on the camera alone.
+%
+% FORWARD-LOOKING -- worded above as architecture ("can key to them", "come from
+% the same signal") rather than as a finished feature. Soften further if the
+% release must be conservative; do NOT upgrade to past tense yet:
+%   * ONE EXPOSURE PER PROJECTED FRAME (genlock) is IN DEVELOPMENT. The sync
+%     signal reaches the camera and is counted; closed-loop locking across every
+%     display mode is not yet demonstrated.
+%   * DAISY-CHAINING is supported by the pass-through path, which IS proven --
+%     but no multi-camera chain has been built or measured.
+%   * ACTIVE STEREO follows from the above and is likewise not yet demonstrated.
+%
+% STILL TO SETTLE:
+%   * The quote is a placeholder. Do not publish words attributed to a person who
+%     has not written or approved them.
+%   * Contact block, funding acknowledgement, IP/licensing statement.
+%   * Whether "BYOP" is being claimed as a name or used descriptively.
+%   * UK communications office review, and the official department/logo lockup.
+%==============================================================================

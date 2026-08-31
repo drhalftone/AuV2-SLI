@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame Header Fields</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+:root{
+  --paper:#f7f8fa; --surface:#ffffff; --sunk:#eef1f5;
+  --ink:#10161f; --ink-2:#48525f; --ink-3:#77828f;
+  --rule:#d8dde5; --rule-soft:#e7ebf0;
+  --old:#0e7490;  --old-bg:#e8f4f7;
+  --new:#b45309;  --new-bg:#fdf3e7;
+  --mag:#5b21b6;  --mag-bg:#f1ecfb;
+  --rsv:#77828f;  --rsv-bg:#eef1f5;
+  --warn:#b91c1c; --warn-bg:#fdf0ef;
+  --shadow:0 1px 2px rgba(16,22,31,.06),0 8px 24px rgba(16,22,31,.05);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#0d1117; --surface:#151b24; --sunk:#1b222d;
+    --ink:#e6ecf3; --ink-2:#a3aeba; --ink-3:#78838f;
+    --rule:#2a323d; --rule-soft:#212934;
+    --old:#5cc8dd; --old-bg:#0e2830;
+    --new:#f0a860; --new-bg:#2a1e10;
+    --mag:#c4a9f5; --mag-bg:#221a33;
+    --rsv:#78838f; --rsv-bg:#1b222d;
+    --warn:#f08a80; --warn-bg:#2c1614;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#0d1117; --surface:#151b24; --sunk:#1b222d;
+  --ink:#e6ecf3; --ink-2:#a3aeba; --ink-3:#78838f;
+  --rule:#2a323d; --rule-soft:#212934;
+  --old:#5cc8dd; --old-bg:#0e2830;
+  --new:#f0a860; --new-bg:#2a1e10;
+  --mag:#c4a9f5; --mag-bg:#221a33;
+  --rsv:#78838f; --rsv-bg:#1b222d;
+  --warn:#f08a80; --warn-bg:#2c1614;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.3);
+}
+*{box-sizing:border-box}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  font-size:15px;line-height:1.62;-webkit-font-smoothing:antialiased}
+code,.mono{font-family:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+main{max-width:940px;margin:0 auto;padding:40px 26px 96px}
+header{margin:0 0 30px;padding:0 0 22px;border-bottom:1px solid var(--rule)}
+h1{font-size:clamp(26px,3.4vw,34px);margin:0 0 9px;font-weight:700;
+   letter-spacing:-.02em;text-wrap:balance}
+.sub{color:var(--ink-2);margin:0;max-width:64ch}
+
+/* ---- byte map ---- */
+.mapwrap{margin:26px 0 8px;overflow-x:auto}
+.map{display:grid;grid-template-columns:repeat(16,1fr);gap:3px;min-width:520px}
+.b{aspect-ratio:1;border-radius:3px;display:flex;align-items:center;justify-content:center;
+   font-family:"IBM Plex Mono",monospace;font-size:9px;font-weight:500;
+   border:1px solid transparent}
+.b.old{background:var(--old-bg);color:var(--old);border-color:var(--old-bg)}
+.b.new{background:var(--new-bg);color:var(--new);border-color:var(--new-bg)}
+.b.mag{background:var(--mag-bg);color:var(--mag)}
+.b.rsv{background:var(--rsv-bg);color:var(--rsv)}
+.maplegend{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0 0;font-size:12.5px;color:var(--ink-2)}
+.sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;
+    vertical-align:-1px}
+
+/* ---- field cards ---- */
+h2{font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;
+   color:var(--ink-3);margin:38px 0 12px;padding-top:14px;border-top:1px solid var(--rule)}
+.f{background:var(--surface);border:1px solid var(--rule);border-radius:8px;
+   padding:16px 18px;margin:0 0 12px;box-shadow:var(--shadow)}
+.fh{display:flex;align-items:baseline;gap:11px;flex-wrap:wrap;margin:0 0 8px}
+.fn{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:15.5px}
+.pos{font-family:"IBM Plex Mono",monospace;font-size:11.5px;color:var(--ink-3);
+     font-variant-numeric:tabular-nums}
+.tag{font-size:10px;letter-spacing:.07em;text-transform:uppercase;font-weight:600;
+     padding:2px 7px;border-radius:999px}
+.tag.old{background:var(--old-bg);color:var(--old)}
+.tag.new{background:var(--new-bg);color:var(--new)}
+.f p{margin:0 0 9px;font-size:14px;color:var(--ink-2);max-width:70ch}
+.f p:last-child{margin:0}
+.f p strong,.f p b{color:var(--ink)}
+.f .why{border-left:2px solid var(--rule);padding-left:12px;margin-top:10px;font-size:13.5px}
+.f .why b{color:var(--ink)}
+.gotcha{border-left:3px solid var(--warn);background:var(--warn-bg);
+  padding:9px 13px;border-radius:0 6px 6px 0;margin:10px 0 0;font-size:13.5px;color:var(--ink-2)}
+.gotcha b{color:var(--warn)}
+code{background:var(--sunk);padding:1px 5px;border-radius:4px;font-size:.9em;
+  border:1px solid var(--rule-soft)}
+.f code{background:var(--sunk)}
+table.enum{width:100%;border-collapse:collapse;margin:10px 0 0;font-size:13px}
+table.enum td{padding:4px 10px 4px 0;border-bottom:1px solid var(--rule-soft);color:var(--ink-2)}
+table.enum td:first-child{font-family:"IBM Plex Mono",monospace;color:var(--ink);
+  white-space:nowrap;width:1%}
+table.enum tr:last-child td{border-bottom:none}
+footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--rule);
+  color:var(--ink-3);font-size:12.5px}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Frame Header Fields</h1>
+  <p class="sub">Every byte of the 64-byte header that precedes each frame on the
+  USB&nbsp;3 pipe — what it is, why it exists, and how to read it without getting a
+  plausible wrong answer.</p>
+</header>
+
+<div class="mapwrap">
+  <div class="map" id="map"></div>
+</div>
+<p class="maplegend">
+  <span><span class="sw" style="background:var(--old-bg);border:1px solid var(--old)"></span>existing 32 B (format 3)</span>
+  <span><span class="sw" style="background:var(--new-bg);border:1px solid var(--new)"></span>new 32 B (format 4)</span>
+  <span><span class="sw" style="background:var(--mag-bg);border:1px solid var(--mag)"></span>magic / resync</span>
+  <span><span class="sw" style="background:var(--rsv-bg);border:1px solid var(--rsv)"></span>reserved</span>
+</p>
+
+<h2>Existing block — bytes 0–31 · unchanged in format 4</h2>
+
+<div class="f">
+  <div class="fh"><span class="fn">MAGIC</span><span class="pos">byte 0 · 4 B</span><span class="tag old">existing</span></div>
+  <p><code>"SLI0"</code> for a video frame, <code>"SLI1"</code> for a control reply.
+  Stored as <code>0x30494C53</code>; little-endian, so the bytes on the wire read
+  <code>53 4C 49 30</code>.</p>
+  <p class="why"><b>Why it exists:</b> control replies share this pipe with frames.
+  Without a discriminator the host would parse a reply as the start of an image.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">frame_idx</span><span class="pos">byte 4 · 4 B</span><span class="tag old">existing</span></div>
+  <p>Free-running 32-bit counter, <b>+1 per emitted frame</b>, cleared only by reset.
+  414 days at 120 fps, so it never wraps in practice.</p>
+  <p class="why"><b>Why it exists:</b> stream continuity. If it advances by more than
+  one between packets, a frame was lost in transit. That is its whole job.</p>
+  <div class="gotcha"><b>Do not expect it to restart.</b> It is deliberately
+  <em>not</em> zeroed by the epoch reset and <em>not</em> reset per scan — if it were,
+  a frame dropped at a scan boundary would be indistinguishable from a legitimate
+  restart, and boundaries are where drops are most likely. Scan-relative position is
+  <code>slot</code>, below.</div>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">NCOL · NROW</span><span class="pos">byte 8 · 2 B + 2 B</span><span class="tag old">existing</span></div>
+  <p>Frame geometry in pixels — columns then rows.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">ldrop · nf_run · slot</span><span class="pos">byte 12 · 4 B</span><span class="tag old">existing</span></div>
+  <p><code>ldrop</code> (18 bits) counts frames that arrived <b>short and were
+  padded</b>. <code>nf_run</code> is how many frames this burst actually captured;
+  <code>slot</code> is this frame's position within it.</p>
+  <p class="why"><b>Why it is in the header:</b> so a bad frame can be
+  <em>attributed</em> to a real drop rather than guessed at. A run of frames with a
+  static <code>ldrop</code> is positive proof nothing was lost during it.</p>
+  <div class="gotcha"><b>Static is the healthy reading, not zero.</b> A non-zero but
+  unchanging <code>ldrop</code> means drops happened earlier and none are happening
+  now. Compare consecutive frames, don't test against zero.</div>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">FBYTES · FBYTES/4</span><span class="pos">byte 16 · 4 B + 4 B</span><span class="tag old">existing</span></div>
+  <p>Payload length in bytes and in 32-bit words. 1,638,400 bytes for a full frame at
+  10 bpp packed.</p>
+  <p class="why"><b>Why both:</b> the pipe moves whole words, and the header states the
+  <b>padded</b> length, so a host can consume exactly what is on the wire.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">format</span><span class="pos">byte 24 · 4 B</span><span class="tag old">existing</span></div>
+  <p>How the payload is packed, and which header version follows.</p>
+  <table class="enum">
+    <tr><td>2</td><td>10-bit right-aligned in 16-bit words (legacy)</td></tr>
+    <tr><td>3</td><td>dense packed 10-bit — 4 pixels in 5 bytes · 32-byte header</td></tr>
+    <tr><td>4</td><td>as 3, plus the 32-byte extended block described below</td></tr>
+  </table>
+  <div class="gotcha"><b>Switch on this. Never assume it.</b> The source says why:
+  reading packed bytes as <code>u16</code> "will produce a convincing-looking wrong
+  image" — it does not fail, it just quietly gives you the wrong picture.</div>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">~MAGIC</span><span class="pos">byte 28 · 4 B</span><span class="tag old">existing</span></div>
+  <p>Bitwise inverse of <code>MAGIC</code>, closing the first block.</p>
+  <p class="why"><b>Why it exists:</b> a host that loses its place in the stream can
+  scan for the magic/inverse pair and resynchronise, rather than drifting and
+  interpreting payload as a header.</p>
+</div>
+
+<h2>Extended block — bytes 32–63 · format 4 only</h2>
+
+<div class="f">
+  <div class="fh"><span class="fn">vsync_seq</span><span class="pos">byte 32 · 4 B</span><span class="tag new">new</span></div>
+  <p><b>Which projected frame this exposure belonged to.</b> Counts vsync edges of the
+  video being sent to the projector. Zeroed by the epoch-reset command (opcode 8) on
+  the next vsync.</p>
+  <p class="why"><b>Why it exists:</b> triggers stack. With a delay longer than one
+  frame, the capture of pattern <em>k</em> arrives while pattern
+  <em>k&nbsp;+&nbsp;floor(D/T)</em> is on screen. This field states the pairing instead
+  of making the host reconstruct it from a delay register and a frame period.</p>
+  <p class="why"><b>Across cameras:</b> HDMI passes <em>through</em> each unit, so every
+  camera in a daisy chain sees the same vsync. One broadcast reset gives them all a
+  common epoch — no clock distribution needed.</p>
+  <div class="gotcha"><b>Per-hop latency is real.</b> Camera <em>N</em> sees the shared
+  vsync slightly later than camera 1 — small and constant, but measure it before
+  trusting cross-camera timestamps at fine resolution.</div>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">tick_in_frame</span><span class="pos">byte 36 · 3 B</span><span class="tag new">new</span></div>
+  <p>Ticks of <b>10 ns</b> since that frame's vsync. 24 bits spans 167.8 ms, so it
+  covers frame rates down to about 6 Hz.</p>
+  <p class="why"><b>Together with <code>vsync_seq</code> this is the timestamp:</b>
+  <code>vsync_seq × frame_period + tick_in_frame</code>. Same units as
+  <code>gl_dly</code> and the vsync period, so nothing needs converting.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">pattern_idx</span><span class="pos">byte 39 · 1 B</span><span class="tag new">new</span></div>
+  <p><code>{frq[1:0], fra[2:0]}</code> — which SLI pattern was displayed.
+  <code>fra</code> is the phase step 0–7.</p>
+  <table class="enum">
+    <tr><td>frq = 0</td><td>coarse — ×1, about one period across the field</td></tr>
+    <tr><td>frq = 1</td><td>mid — ×6</td></tr>
+    <tr><td>frq = 2</td><td>fine — ×36</td></tr>
+    <tr><td>frq = 3</td><td><b>not a fringe</b> — flat full-field flashing block, for texture/albedo</td></tr>
+  </table>
+  <p class="why"><b>Why it is separate from <code>vsync_seq</code>:</b> that says which
+  projected <em>frame</em>; this says what was <em>on</em> it. They differ whenever a
+  pattern is held across more than one frame.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">exposure</span><span class="pos">byte 40 · 2 B</span><span class="tag new">new</span></div>
+  <p>Integration time <b>as used for this frame</b>, in 375 ns units. 1600 → 600 µs.</p>
+  <p class="why"><b>Why per-frame:</b> exposure is settable at runtime over the Ft+
+  (opcode 1). A frame captured before a change must not be interpreted with the value
+  read after it.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">gl_dly</span><span class="pos">byte 42 · 3 B</span><span class="tag new">new</span></div>
+  <p>The vsync→trigger delay in effect when this frame was captured, in 10 ns ticks.
+  0–167 ms.</p>
+  <p class="why"><b>What it is for:</b> pixels do not reach the screen when their vsync
+  goes out — the projector adds latency, and a DLP with sequential RGB LEDs has real
+  gaps between colours. This delay places the exposure deliberately inside the
+  projected frame.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">trig_out</span><span class="pos">byte 45 · 1 B</span><span class="tag new">new</span></div>
+  <p>How many triggers were outstanding when this one was issued — effectively
+  <code>ceil(delay / frame period)</code>.</p>
+  <p class="why"><b>Why it is here:</b> it is the pairing offset in flight. Redundant
+  if <code>vsync_seq</code> and <code>pattern_idx</code> are both present — which is
+  the argument for having all three, since each can check the others.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">hflags</span><span class="pos">byte 46 · 1 B</span><span class="tag new">new</span></div>
+  <table class="enum">
+    <tr><td>epoch_valid</td><td>an epoch reset has been applied since power-up</td></tr>
+    <tr><td>gl_en</td><td>genlock was <em>commanded</em> on</td></tr>
+    <tr><td>gl_live</td><td>vsync was actually <em>arriving</em></td></tr>
+    <tr><td>orient</td><td>0 = fringes vary down rows · 1 = across columns</td></tr>
+  </table>
+  <p class="why"><b><code>gl_en</code> and <code>gl_live</code> are deliberately
+  separate.</b> They differ exactly when the display has gone away and the trigger has
+  fallen back to free-running — the state most worth being able to see in the data.</p>
+  <div class="gotcha"><b><code>orient</code> is required to interpret
+  <code>pat_period</code>.</b> The period applies to rows or to columns depending on
+  it; without it the phase map cannot be reconstructed.</div>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">hdr_ver</span><span class="pos">byte 47 · 1 B</span><span class="tag new">new</span></div>
+  <p>Version of <em>this second block</em>. Currently <code>1</code>.</p>
+  <p class="why"><b>Why not just use <code>format</code>:</b> <code>format</code>
+  describes the <em>payload</em> packing, which is what a host must switch on to decode
+  pixels. <code>hdr_ver</code> describes the <em>metadata</em>, so the reserved bytes
+  can be filled in later without touching payload semantics.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">pat_period</span><span class="pos">byte 48 · 2 B</span><span class="tag new">new</span></div>
+  <p>The fringe period <b>in pixels, for this frame</b>. <code>0</code> when
+  <code>frq = 3</code>, which is a flat flashing field and has no period.</p>
+  <p class="why"><b>Why the period and not just the frequency index:</b>
+  <code>frq</code> is an index, and the real period is solved per display mode at
+  runtime:</p>
+  <p class="why"><code>F = active size along the varying axis</code> ·
+  <code>b = ceil(F/288)</code> ·
+  <code>P_lo = 288b</code>, <code>P_mid = 48b</code>, <code>P_hi = 8b</code>
+  (exact 1&nbsp;:&nbsp;6&nbsp;:&nbsp;36)</p>
+  <p class="why">So the same <code>frq = 1</code> is a <b>different spatial frequency at
+  every resolution</b>. Deriving it host-side needs <code>orient</code>, a replicated
+  <code>ceil</code> division, and the assumption that neither changed mid-scan.</p>
+  <div class="gotcha"><b>The period is re-solved on a display mode change.</b> A scan
+  spanning one silently changes fringe period. Carrying it per frame is what makes that
+  visible instead of corrupting a phase map that still looks plausible.</div>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">reserved</span><span class="pos">byte 50 · 10 B</span><span class="tag new">new</span></div>
+  <p>Zero. Held for measured trigger→integration delay and achieved integration length
+  per frame, the projected mode and refresh, capture-time health flags, ROI id, and a
+  payload CRC.</p>
+</div>
+
+<div class="f">
+  <div class="fh"><span class="fn">~MAGIC</span><span class="pos">byte 60 · 4 B</span><span class="tag new">new</span></div>
+  <p>Closes the extended block, so it can be validated independently of the first 32
+  bytes.</p>
+</div>
+
+<footer>64 bytes total against a 1,638,400-byte payload — 0.004%. Design detail and
+rationale in <code>FRAME_HEADER_PLAN.md</code>.</footer>
+
+</main>
+<script>
+(function(){
+  var spans = [
+    [0,4,'old','MAGIC'],[4,4,'old','fidx'],[8,4,'old','geom'],[12,4,'old','drop'],
+    [16,4,'old','len'],[20,4,'old','wlen'],[24,4,'old','fmt'],[28,4,'mag','~MAG'],
+    [32,4,'new','vseq'],[36,3,'new','tick'],[39,1,'new','pat'],[40,2,'new','expo'],
+    [42,3,'new','dly'],[45,1,'new','out'],[46,1,'new','flag'],[47,1,'new','ver'],
+    [48,2,'new','per'],[50,10,'rsv','reserved'],[60,4,'mag','~MAG']
+  ];
+  var cells = new Array(64), lbl = new Array(64);
+  spans.forEach(function(s){
+    for (var i=0;i<s[1];i++){ cells[s[0]+i]=s[2]; lbl[s[0]+i] = (i===0? s[3] : ''); }
+  });
+  var m = document.getElementById('map'), html='';
+  for (var i=0;i<64;i++){
+    html += '<div class="b '+cells[i]+'" title="byte '+i+'">'+(lbl[i]||'')+'</div>';
+  }
+  m.innerHTML = html;
+})();
+</script>
+</body>
+</html>
