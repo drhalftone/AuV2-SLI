@@ -101,8 +101,15 @@ module uart_ctrl #(
     // ---- table read ports (Stage 2: read by the pattern datapath) ----
     // Defaulted in the VHDL component decl so the top can leave them open for now.
     input  wire [7:0]  corr_addr,  output reg [7:0] corr_dout,   // 256-entry correction
-    input  wire [9:0]  lut_addr,   output reg [7:0] lut_dout,    // 720-entry row cosine
-    input  wire [10:0] lutv_addr,  output reg [7:0] lutv_dout,   // 1280-entry col cosine
+    // VESTIGIAL, both of them. Au2_SLI ties lut_addr/lutv_addr to 0 and leaves the
+    // douts open -- "vestigial from the old indexMap/LUT ROM design". Nothing in the
+    // datapath reads either table; they remain only as host-writable storage.
+    // They were labelled "row cosine"/"col cosine" here, which is not what they are
+    // and not what they were for. THE LIVE LINEARISATION TABLE IS corr (target 0x02,
+    // 256 entries, one per grey level), applied as out = corr[cos] in pattern_gen --
+    // that is what makes a 0..255 ramp come out linear on the display.
+    input  wire [9:0]  lut_addr,   output reg [7:0] lut_dout,    // 720 B, unused
+    input  wire [10:0] lutv_addr,  output reg [7:0] lutv_dout,   // 1280 B, unused
 
     // ---- captured-EDID read port (TGT_EDID) ----
     // Unlike the tables above, this RAM lives in edid_merge, so we DRIVE the
@@ -591,7 +598,15 @@ case (addr)
 
             // Inter-byte watchdog. Runs only while a frame is part-received.
             rx_timeout <= 1'b0;
-            if (state == S_SYNC || rx_valid) begin
+            // rb_active/resp_len MUST hold it off: during a table READBACK the board
+            // is transmitting and the host is correctly silent, so without this the
+            // watchdog counts down against OUR OWN REPLY and aborts it. 50 ms at
+            // 115200 baud is 576 bytes, so corr (256 B, 22 ms) survived while lut
+            // (720 B) and lutv (1280 B) died -- test_silicon reported "first diff
+            // @575" against a predicted cutoff of 576. Regression from 4e670bd
+            // (2026-08-21); the recorded 15/15 predates it. The watchdog's real job --
+            // aborting a stalled UPLOAD -- is unaffected, because rb_active is 0 then.
+            if (state == S_SYNC || rx_valid || rb_active || resp_len != 2'd0) begin
                 rx_idle <= 0;
             end else if (rx_idle == RX_IDLE_TICKS[$clog2(RX_IDLE_TICKS+1)-1:0]) begin
                 rx_timeout <= 1'b1;                     // one-cycle abort pulse
