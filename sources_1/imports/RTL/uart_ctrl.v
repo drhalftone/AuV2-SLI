@@ -195,7 +195,7 @@ module uart_ctrl #(
     input  wire [15:0] cam_spi_rdata,
     // M4: camera datapath status, 8 bytes at 0x3A..0x41. Read-only, and already
     // captured on a stable snapshot upstream -- see cam_frame_ft's cstat_r.
-    input  wire [191:0] cam_stat_i,
+    input  wire [223:0] cam_stat_i,
     // G0: vsync period measured at 100 MHz -- {max, min, last}, 24 bits each.
     // The master clock genlock would lock to; its stability bounds the
     // achievable lock quality. Regs 0x4A..0x52.
@@ -585,6 +585,13 @@ case (addr)
             8'h8B:   rd_data  = out_pixkhz_i[7:0];            // transmitted pclk kHz
             8'h8C:   rd_data  = out_pixkhz_i[15:8];
             8'h8D:   rd_data  = {6'b0, out_pixkhz_i[17:16]};
+            // 0x8E..0x90: the FREE-RUNNING trigger period (opcode 2), 10 ns ticks.
+            // Previously unreadable, which is why max-exposure had to be inferred
+            // from two other registers. 0x55 bit 5 says which period the max-exposure
+            // answer was computed from.
+            8'h8E:   rd_data  = cam_stat_i[199:192];
+            8'h8F:   rd_data  = cam_stat_i[207:200];
+            8'h90:   rd_data  = cam_stat_i[215:208];
             default: rd_data  = 8'h00;
         endcase
     end

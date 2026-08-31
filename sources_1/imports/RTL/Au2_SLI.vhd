@@ -260,10 +260,10 @@ architecture Behavioral of Au2_SLI is
     -- reg 0x16 CAMSIM: host-driven camera-ready, so the pacing logic in
     -- pixel_pipe can be exercised with no camera board attached.
     signal cam_sim_w    : std_logic_vector(7 downto 0) := (others => '0');
-    signal cam_stat_raw : std_logic_vector(191 downto 0);
+    signal cam_stat_raw : std_logic_vector(223 downto 0);
     signal cam_stat_tog : std_logic;
     signal cst_s        : std_logic_vector(2 downto 0) := "000";
-    signal cam_stat_q   : std_logic_vector(191 downto 0) := (others => '0');
+    signal cam_stat_q   : std_logic_vector(223 downto 0) := (others => '0');
 
     -- Port A arbitration, see the CAM_DIAG generic.
     signal sli_usb_tx : std_logic;
@@ -514,7 +514,7 @@ architecture Behavioral of Au2_SLI is
                hpd_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
                out_meas    : in  STD_LOGIC_VECTOR(55 downto 0) := (others => '0');
                out_pixkhz  : in  STD_LOGIC_VECTOR(17 downto 0) := (others => '0');
-               cam_stat_i  : in  STD_LOGIC_VECTOR(191 downto 0) := (others => '0');
+               cam_stat_i  : in  STD_LOGIC_VECTOR(223 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                rx2_valid   : in  STD_LOGIC := '0';
                rpl_byte    : out STD_LOGIC_VECTOR(7 downto 0);
@@ -675,6 +675,11 @@ architecture Behavioral of Au2_SLI is
     -- selection of 13 correctly needs no reprogram because that is already loaded.
     signal mode_idx_f   : std_logic_vector(3 downto 0) := "0010";
     signal mode_idx_f_q : std_logic_vector(3 downto 0) := "1101";  -- = 13, MMCM power-up
+    -- STARTUP RETUNE ONE-SHOT. See the SEN process below.
+    -- INTEGER, not unsigned: this file has BOTH STD_LOGIC_ARITH and NUMERIC_STD in
+    -- scope, so `unsigned` is genuinely ambiguous here and will not compile.
+    signal boot_cnt  : integer range 0 to 100_000_000 := 0;
+    signal boot_done : std_logic := '0';
     signal vg_hStart, vg_hEnd, vg_hMax : std_logic_vector(11 downto 0);
     signal vg_vStart, vg_vEnd, vg_vMax : std_logic_vector(11 downto 0);
 
@@ -693,7 +698,7 @@ architecture Behavioral of Au2_SLI is
                clk200_ext : in std_logic; clk100_ext : in std_logic;
                led    : out std_logic_vector(7 downto 0);
                usb_tx : out std_logic;
-               cam_stat_o     : out std_logic_vector(191 downto 0);
+               cam_stat_o     : out std_logic_vector(223 downto 0);
                ext_sync       : in  std_logic := '0';
                cam_stat_tog_o : out std_logic;
                ctl_byte       : out std_logic_vector(7 downto 0);
@@ -1154,9 +1159,41 @@ i_mode_select : mode_select generic map ( CEIL_KHZ => 85000 )
             end if;
             mode_idx_f_q <= mode_idx_f;
 
-            -- 1-clk100 SEN pulse, raised the cycle AFTER the index settles.
-            if mode_idx_f /= mode_idx_f_q then clkgen_sen <= '1';
-            else                               clkgen_sen <= '0';
+            -- STARTUP ONE-SHOT: RE-ISSUE THE RETUNE ~1 s AFTER CONFIGURATION.
+            --
+            -- The change detector below is correct and still fires at power-up --
+            -- mode_idx_f_q starts at 13 and mode_idx_f settles to the EDID pick, so
+            -- they differ and SEN pulses. THE PULSE IS THROWN AWAY: it happens within
+            -- the first clocks of clk100, before the MMCM has locked and the DRP will
+            -- accept a reconfiguration. Nothing changes again afterwards, so no second
+            -- attempt is ever made.
+            --
+            -- MEASURED CONSEQUENCE, on every fresh bitstream load: the timing ROM uses
+            -- the selected index's GEOMETRY while the MMCM keeps the clock wizard's own
+            -- power-up rate. read_mode reports "idx 2, 1024x768@75, 78.750 MHz" while
+            -- the board actually transmits 1024x768 at 108000 kHz -- 102.90 Hz, which no
+            -- monitor displays. It presents as dead hardware, and it is why forcing ANY
+            -- different index made a picture appear: that produced a real change, late
+            -- enough for the DRP to take it.
+            --
+            -- (The two initialisers disagree about what the MMCM powers up as --
+            -- applied_idx says index 2, mode_idx_f_q says 13. Measured, it is 13.
+            -- This one-shot makes the question moot: whatever it powers up as, the
+            -- selected mode is applied once the DRP is ready.)
+            if boot_done = '0' then
+                if boot_cnt = 100_000_000 then                   -- 1.00 s at 100 MHz
+                    boot_done <= '1';
+                else
+                    boot_cnt <= boot_cnt + 1;
+                end if;
+            end if;
+
+            -- 1-clk100 SEN pulse: on any index change, OR once at the boot deadline.
+            if (mode_idx_f /= mode_idx_f_q)
+               or (boot_done = '0' and boot_cnt = 100_000_000) then
+                clkgen_sen <= '1';
+            else
+                clkgen_sen <= '0';
             end if;
         end if;
     end process;

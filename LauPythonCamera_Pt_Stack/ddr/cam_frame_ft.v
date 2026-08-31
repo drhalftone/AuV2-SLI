@@ -123,7 +123,7 @@ module cam_frame_ft #(
     // M4: the same status this module already assembles for its own UART, handed
     // to the parent so a MERGED build can report camera health on Port A without
     // taking Port A away from the SLI control plane. See cstat_r below.
-    output wire [191:0] cam_stat_o,
+    output wire [223:0] cam_stat_o,
     output wire        cam_stat_tog_o,
 
     // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
@@ -2242,7 +2242,7 @@ module cam_frame_ft #(
     // some from the new -- and a torn status word is worse than none, because it
     // reads as a plausible state that never existed. The toggle lets the parent
     // capture only when the whole word is known stable.
-    reg [191:0] cstat_r  = 192'd0;
+    reg [223:0] cstat_r  = 224'd0;
     reg        cstat_tog = 1'b0;
     assign cam_stat_o     = cstat_r;
     assign cam_stat_tog_o = cstat_tog;
@@ -2276,7 +2276,9 @@ module cam_frame_ft #(
                 // silently truncated from the TOP -- losing dur_p and shifting
                 // nothing else, so every other field would still have looked
                 // right. Arithmetic checked rather than assumed.
-                cstat_r <= { gl_ovf,                           // 0x5F
+                cstat_r <= { 8'd0,                             // spare
+                             trig_per,                          // 0x8E..0x90
+                             gl_ovf,                            // 0x5F
                              gl_out,                            // 0x5E
                              {6'd0, gl_live, gl_en},            // 0x5D
                              gl_dly,                            // 0x5A..0x5C

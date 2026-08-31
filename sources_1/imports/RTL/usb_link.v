@@ -111,7 +111,7 @@ module usb_link #(
     output wire        cam_reset_n,
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
-    input  wire [191:0] cam_stat_i,      // M4 0x3A..0x41, G0 timestamps 0x42..0x49,
+    input  wire [223:0] cam_stat_i,      // M4 0x3A..0x41, G0 timestamps 0x42..0x49,
                                          // G1 sync count 0x58..0x59, G3 delay 0x5A..0x5D
     // M6a: a SECOND source of 0xA5 bytes, arriving over the FT601 instead of the
     // UART. Merged below rather than muxed: the two are alternative transports
@@ -256,14 +256,40 @@ module usb_link #(
     // 14 ps is not margin. The value is read over a 115200 baud serial link and
     // only changes once per status window, so spending three clocks on it costs
     // literally nothing and hands the slack back.
+    // WHICH PERIOD THE CAMERA IS ACTUALLY TRIGGERED AT.
+    //
+    // This used vsp_last_p -- the VSYNC period -- unconditionally, which is right
+    // only when the camera is genlocked to the display. Free-running, the sensor is
+    // triggered by trig_per (opcode 2) and the vsync period says nothing about its
+    // budget. At a 60 Hz display with the camera free-running at 120 Hz the old
+    // answer was 16641 us against a real ceiling near 8279 us, and WRITING IT WEDGES
+    // THE SENSOR.
+    //
+    // host/max_exposure.py compensated by comparing the two periods host-side and
+    // warning. That inference broke the moment genlock existed: the camera period
+    // register is 16 bits holding period/16 and cannot represent anything below
+    // 68.67 Hz, so a genlocked 60 Hz reads as 475 Hz, the tool declared NOT GENLOCKED,
+    // and recommended 5461 units where 44297 was available -- safe direction, but 8x
+    // the light budget thrown away.
+    //
+    // Decide it here instead, where both periods and the genlock state are known for
+    // certain. gl_live (NOT gl_en) is the right selector: it is whether ext_sync is
+    // actually ARRIVING, so a display that goes away falls back with the answer.
+    // Both are already in 10 ns ticks, so no conversion.
+    wire        gl_live_s  = cam_stat_i[169];
+    wire [23:0] trig_per_s = cam_stat_i[215:192];
+    wire [23:0] eff_per    = gl_live_s ? vsp_last_p : trig_per_s;
+
     reg        per_ok_r = 1'b0;
     reg [23:0] usable_r = 24'd0;
     reg [43:0] mul_r    = 44'd0;
+    reg        src_r    = 1'b0;
     always @(posedge clk100) begin
-        per_ok_r <= (vsp_last_p >= PER_MIN) && (vsp_last_p <= PER_MAX);
-        usable_r <= (vsp_last_p > RESERVE_TICKS)
-                      ? (vsp_last_p - RESERVE_TICKS) : 24'd0;
+        per_ok_r <= (eff_per >= PER_MIN) && (eff_per <= PER_MAX);
+        usable_r <= (eff_per > RESERVE_TICKS)
+                      ? (eff_per - RESERVE_TICKS) : 24'd0;
         mul_r    <= usable_r * 44'd27962;
+        src_r    <= gl_live_s;
     end
     wire        per_ok  = per_ok_r;
     wire [23:0] usable  = usable_r;
@@ -277,7 +303,10 @@ module usb_link #(
     // The reserve is published too: if the FPGA says "max is X" and the host
     // writes X, a wrong reserve wedges the sensor. Better inspectable than
     // buried in a bitstream.
-    wire [39:0] maxexp_w = {RESERVE_TICKS[15:0], per_ok, mexp_rlim, 6'd0, mexp};
+    // src: 1 = computed from the VSYNC period (genlocked), 0 = from trig_per
+    // (free-running). Published so the host READS which clock the answer describes
+    // instead of deducing it from two registers that can disagree.
+    wire [39:0] maxexp_w = {RESERVE_TICKS[15:0], per_ok, mexp_rlim, src_r, 5'd0, mexp};
 
     // ---- producers ----
     wire [7:0] s_data;  wire s_send, s_busy;        // status_line producer
