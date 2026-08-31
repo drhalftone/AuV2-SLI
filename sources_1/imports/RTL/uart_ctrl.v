@@ -195,7 +195,7 @@ module uart_ctrl #(
     input  wire [15:0] cam_spi_rdata,
     // M4: camera datapath status, 8 bytes at 0x3A..0x41. Read-only, and already
     // captured on a stable snapshot upstream -- see cam_frame_ft's cstat_r.
-    input  wire [143:0] cam_stat_i,
+    input  wire [191:0] cam_stat_i,
     // G0: vsync period measured at 100 MHz -- {max, min, last}, 24 bits each.
     // The master clock genlock would lock to; its stability bounds the
     // achievable lock quality. Regs 0x4A..0x52.
@@ -504,6 +504,28 @@ case (addr)
             // that the projector's vsync actually reaches cam_frame_ft.
             8'h58:   rd_data  = cam_stat_i[135:128];
             8'h59:   rd_data  = cam_stat_i[143:136];
+            // ---- 0x5A..0x5D: G3 VSYNC -> TRIGGER DELAY (readback) -----------
+            // The delay is set over the Ft+ (opcode 7) but must be readable here,
+            // because Port A is the link that still answers when Port B is silent.
+            //   0x5A/0x5B/0x5C  delay, 10 ns ticks (24-bit, 0..167 ms)
+            //   0x5D  {6'b0, gl_live, gl_en}
+            // gl_en is what was COMMANDED; gl_live is whether ext_sync is actually
+            // arriving. They differ exactly when the display has gone away and the
+            // trigger has fallen back to free-running -- which is the state worth
+            // being able to see.
+            8'h5A:   rd_data  = cam_stat_i[151:144];
+            8'h5B:   rd_data  = cam_stat_i[159:152];
+            8'h5C:   rd_data  = cam_stat_i[167:160];
+            8'h5D:   rd_data  = cam_stat_i[175:168];
+            // 0x5E outstanding triggers, 0x5F FIFO overflows (saturates).
+            // OUTSTANDING IS NOT DIAGNOSTIC PADDING. With a delay longer than one
+            // frame the capture of pattern k lands while pattern k+floor(D/T) is on
+            // screen -- every frame is present and the rate is full, but the PAIRING
+            // is offset. The host must read that offset here rather than assume it:
+            // an assumed offset wrong by one yields a phase map that looks plausible
+            // and is wrong everywhere.
+            8'h5E:   rd_data  = cam_stat_i[183:176];
+            8'h5F:   rd_data  = cam_stat_i[191:184];
             // ---- 0x60..0x67: INCOMING HDMI TIMING, measured ---------------
             // What the SOURCE is sending, from video_meas. Read 0x67 FIRST: if
             // meas_ok is 0 the other six read 0 on purpose, because a stale

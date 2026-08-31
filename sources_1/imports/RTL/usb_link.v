@@ -111,7 +111,8 @@ module usb_link #(
     output wire        cam_reset_n,
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
-    input  wire [143:0] cam_stat_i,      // M4 0x3A..0x41, G0 timestamps 0x42..0x49, G1 sync count 0x58..0x59
+    input  wire [191:0] cam_stat_i,      // M4 0x3A..0x41, G0 timestamps 0x42..0x49,
+                                         // G1 sync count 0x58..0x59, G3 delay 0x5A..0x5D
     // M6a: a SECOND source of 0xA5 bytes, arriving over the FT601 instead of the
     // UART. Merged below rather than muxed: the two are alternative transports
     // for one protocol, never both mid-command at once, and the receiver already

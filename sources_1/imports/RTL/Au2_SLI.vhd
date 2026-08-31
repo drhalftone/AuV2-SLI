@@ -260,10 +260,10 @@ architecture Behavioral of Au2_SLI is
     -- reg 0x16 CAMSIM: host-driven camera-ready, so the pacing logic in
     -- pixel_pipe can be exercised with no camera board attached.
     signal cam_sim_w    : std_logic_vector(7 downto 0) := (others => '0');
-    signal cam_stat_raw : std_logic_vector(143 downto 0);
+    signal cam_stat_raw : std_logic_vector(191 downto 0);
     signal cam_stat_tog : std_logic;
     signal cst_s        : std_logic_vector(2 downto 0) := "000";
-    signal cam_stat_q   : std_logic_vector(143 downto 0) := (others => '0');
+    signal cam_stat_q   : std_logic_vector(191 downto 0) := (others => '0');
 
     -- Port A arbitration, see the CAM_DIAG generic.
     signal sli_usb_tx : std_logic;
@@ -514,7 +514,7 @@ architecture Behavioral of Au2_SLI is
                hpd_diag    : in  STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
                out_meas    : in  STD_LOGIC_VECTOR(55 downto 0) := (others => '0');
                out_pixkhz  : in  STD_LOGIC_VECTOR(17 downto 0) := (others => '0');
-               cam_stat_i  : in  STD_LOGIC_VECTOR(143 downto 0) := (others => '0');
+               cam_stat_i  : in  STD_LOGIC_VECTOR(191 downto 0) := (others => '0');
                rx2_data    : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                rx2_valid   : in  STD_LOGIC := '0';
                rpl_byte    : out STD_LOGIC_VECTOR(7 downto 0);
@@ -693,7 +693,7 @@ architecture Behavioral of Au2_SLI is
                clk200_ext : in std_logic; clk100_ext : in std_logic;
                led    : out std_logic_vector(7 downto 0);
                usb_tx : out std_logic;
-               cam_stat_o     : out std_logic_vector(143 downto 0);
+               cam_stat_o     : out std_logic_vector(191 downto 0);
                ext_sync       : in  std_logic := '0';
                cam_stat_tog_o : out std_logic;
                ctl_byte       : out std_logic_vector(7 downto 0);

@@ -123,7 +123,7 @@ module cam_frame_ft #(
     // M4: the same status this module already assembles for its own UART, handed
     // to the parent so a MERGED build can report camera health on Port A without
     // taking Port A away from the SLI control plane. See cstat_r below.
-    output wire [143:0] cam_stat_o,
+    output wire [191:0] cam_stat_o,
     output wire        cam_stat_tog_o,
 
     // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
@@ -385,6 +385,132 @@ module cam_frame_ft #(
         xs_d <= xs_s[1];
         if (xs_s[1] && !xs_d) xs_cnt <= xs_cnt + 16'd1;
     end
+    wire xs_rise = xs_s[1] & ~xs_d;
+
+    //------------------------------------------- G3: VSYNC -> TRIGGER DELAY
+    // Set by opcode 7: {4'd7, en, 2'b0, dly[23:0]}, dly in 10 ns ticks at 100 MHz.
+    // 24 bits = 167 ms, so the delay may exceed a frame, which G3 requires.
+    //
+    // WHY A DELAY AT ALL. Pixels do not appear on the screen when their VSYNC goes
+    // out: a projector adds its own latency, and a DLP with sequential RGB LEDs has
+    // real gaps between the colours. The exposure has to be placed deliberately
+    // inside the projected frame, not merely started with it.
+    //
+    // GRACEFUL DEGRADATION (G4) IS PART OF THIS, NOT A FOLLOW-UP. If ext_sync stops
+    // -- display unplugged, source asleep -- xs_age saturates, gl_live drops, and the
+    // trigger falls back to the free-running trig_per. The camera must keep
+    // delivering when the display goes away; that is a stated requirement, and a
+    // genlock that silently stops triggering would satisfy nothing.
+    // TRIGGERS STACK -- several delays are in flight at once. See GENLOCK_MILESTONES
+    // "G3 -- TRIGGERS STACK" for the full argument; the short version:
+    //
+    // The AuV2 waited for the camera's ready before advancing, because it drove an
+    // EXTERNAL camera and could not see when that camera would next be free. So if
+    // exposure + delay overran a frame, the SLI sequence advanced every 2nd or 3rd
+    // frame and the scan ran slower than the display.
+    //
+    // Here the FPGA SETS both exposure (opcode 1) and delay (opcode 7), and the
+    // sensor is in pipelined global shutter -- integrating the next frame while
+    // reading out the current one. There is nothing to discover and nothing to wait
+    // for, so the pattern advances at the FULL HDMI rate and the delay merely shifts
+    // phase. The rate condition is the one that was always there:
+    //
+    //     exposure + 54.1 us <= HDMI frame period      <- must hold
+    //     delay                                        <- free, MAY exceed a frame
+    //
+    // A SINGLE COUNTDOWN CANNOT EXPRESS THIS, and the first cut used one: it re-armed
+    // on every vsync, so a delay longer than one frame restarted the count before it
+    // expired and the trigger NEVER FIRED. That guarded against a mis-set delay
+    // halving the rate, at the cost of forbidding the actual design intent.
+    //
+    // Absolute fire-times in a FIFO instead. Depth 32 covers the worst case: 167 ms
+    // of delay at 120 Hz needs 20 entries. Overflow is COUNTED, not dropped quietly
+    // -- a lost trigger is a lost frame of the scan.
+    localparam [23:0] XS_TIMEOUT = 24'd10_000_000;   // 100 ms without a frame edge
+    localparam integer GLQ_AW = 5;                   // 32 outstanding triggers
+    reg        gl_en   = 1'b0;
+    reg [23:0] gl_dly  = 24'd0;
+    reg        gl_fire = 1'b0;      // 1-cycle strobe: start the trigger pulse NOW
+    reg [23:0] xs_age  = XS_TIMEOUT;
+    wire       gl_live = gl_en && (xs_age != XS_TIMEOUT);
+
+    reg [23:0] gl_now = 24'd0;                        // free-running 10 ns time base
+    reg [23:0] glq [0:(1<<GLQ_AW)-1];                 // absolute fire-times
+    reg [GLQ_AW-1:0] glq_wr = 0, glq_rd = 0;
+    reg [7:0]  gl_ovf = 8'd0;                         // FIFO overflow count (saturates)
+    reg [7:0]  gl_out = 8'd0;                         // triggers currently outstanding
+    wire [23:0] gl_late = gl_now - glq[glq_rd];   // top bit clear = deadline passed
+    wire [GLQ_AW-1:0] glq_nxt = glq_wr + 1'b1;
+    wire glq_full  = (glq_nxt == glq_rd);
+    wire glq_empty = (glq_wr  == glq_rd);
+    wire gl_push   = xs_rise && gl_live && !glq_full;
+    wire gl_pop    = !glq_empty && !gl_late[23];
+
+    always @(posedge clk) begin
+        if (rst) begin
+            gl_fire <= 1'b0; xs_age <= XS_TIMEOUT;
+            gl_now  <= 24'd0; glq_wr <= 0; glq_rd <= 0;
+            gl_ovf  <= 8'd0;  gl_out <= 8'd0;
+        end else begin
+            gl_fire <= 1'b0;
+            gl_now  <= gl_now + 24'd1;
+
+            if (xs_rise)                   xs_age <= 24'd0;
+            else if (xs_age != XS_TIMEOUT) xs_age <= xs_age + 24'd1;
+
+            // ---- push one fire-time per projected frame ----
+            if (xs_rise && gl_live) begin
+                if (glq_full) begin
+                    if (gl_ovf != 8'hFF) gl_ovf <= gl_ovf + 8'd1;
+                end else begin
+                    glq[glq_wr] <= gl_now + gl_dly;
+                    glq_wr      <= glq_nxt;
+                end
+            end
+
+            // ---- fire when the head's time has ARRIVED OR PASSED ----
+            // MUST NOT be an equality test. `glq[glq_rd] == gl_now` was the first
+            // cut and it is skippable: miss the match by one cycle and the entry
+            // waits a full 2^24-tick (167.8 ms) wrap. Worse, the lag then SUSTAINS
+            // itself -- the next entry is already late by the time the read pointer
+            // reaches it -- so every trigger fires one wrap late while pushes and
+            // pops still balance at one per frame. That looks perfectly rate-locked
+            // and is 167.8 ms out of phase. MEASURED: outstanding settled at exactly
+            // 167.8 ms x frame rate -- 10 entries at 59.9 Hz, 13 at 75.0 Hz.
+            //
+            // Modular "deadline reached" instead: the difference is taken in 24-bit
+            // arithmetic and the top bit clear means gl_now is at or past the target
+            // (within half a wrap), which no cycle can step over.
+            if (!glq_empty && !gl_late[23]) begin
+                gl_fire <= 1'b1;
+                glq_rd  <= glq_rd + 1'b1;
+            end
+
+            // ---- outstanding count: push and pop resolved TOGETHER ----
+            // Separate `+1` and `-1` statements are wrong when both happen in the
+            // same cycle -- the later assignment wins and the count nets -1 instead
+            // of 0. That is not a rare corner: it happens on EVERY frame whenever the
+            // delay is an integer multiple of the frame period, so the count leaks to
+            // zero while triggers really are in flight. MEASURED: 40 ms at 75 Hz is
+            // exactly 3.0 frames and read 0 outstanding; 20 ms (1.5) and 100 ms (7.5)
+            // never coincide and read correctly. This register is what the host uses
+            // to pair captured frames with patterns, so a wrong count is a wrong phase
+            // map -- it has to be exact, not approximately right.
+            if (gl_push && !gl_pop) begin
+                if (gl_out != 8'hFF) gl_out <= gl_out + 8'd1;
+            end else if (gl_pop && !gl_push) begin
+                if (gl_out != 8'd0)  gl_out <= gl_out - 8'd1;
+            end
+
+            // Draining on loss of sync: if the display goes away mid-flight the queued
+            // triggers still fire on schedule, then the FIFO empties and the free-running
+            // fallback takes over. Nothing is stranded.
+            if (!gl_en) begin
+                glq_wr <= glq_rd;      // discard on an explicit disable only
+                gl_out <= 8'd0;
+            end
+        end
+    end
 
     wire boot_cam_reset_n;
     // (1) and (2) from above: force the sensor into reset AND hold the booter, so
@@ -484,7 +610,20 @@ module cam_frame_ft #(
             tcnt  <= 24'd0;
             trig0 <= 1'b0;
             tidx  <= 3'd0;
+        end else if (gl_live) begin
+            // GENLOCKED. The projected frame starts the period, gl_dly after its
+            // vsync. tcnt SATURATES rather than wrapping, so exactly one pulse is
+            // emitted per frame edge and a missing edge produces no trigger at all
+            // (rather than a free-running one that would look like a lock).
+            if (gl_fire) begin
+                tcnt <= 24'd0;
+                if (EXPO_SWEEP != 0) tidx <= tidx + 3'd1;
+            end else if (tcnt != 24'hFFFFFF) begin
+                tcnt <= tcnt + 24'd1;
+            end
+            trig0 <= (tcnt < hi_cyc);
         end else begin
+            // FREE-RUNNING: genlock off, or ext_sync has been gone for XS_TIMEOUT.
             if (tcnt == trig_per - 24'd1) begin
                 tcnt <= 24'd0;
                 // Only the sweep advances the width index. Left ungated, this
@@ -709,6 +848,8 @@ module cam_frame_ft #(
             4'd5: rpl_tog <= ~rpl_tog;
             4'd4: if (cw_ft[5:0] != 6'd0 && cw_ft[5:0] <= MAXF[5:0])
                       nframes_r <= cw_ft[5:0];
+            // G3: vsync -> trigger delay. bit27 enables genlock, [23:0] = 10 ns ticks.
+            4'd7: begin gl_en <= cw_ft[27]; gl_dly <= cw_ft[23:0]; end
             default: ;
             endcase
         end
@@ -2101,7 +2242,7 @@ module cam_frame_ft #(
     // some from the new -- and a torn status word is worse than none, because it
     // reads as a plausible state that never existed. The toggle lets the parent
     // capture only when the whole word is known stable.
-    reg [143:0] cstat_r  = 144'd0;
+    reg [191:0] cstat_r  = 192'd0;
     reg        cstat_tog = 1'b0;
     assign cam_stat_o     = cstat_r;
     assign cam_stat_tog_o = cstat_tog;
@@ -2135,7 +2276,11 @@ module cam_frame_ft #(
                 // silently truncated from the TOP -- losing dur_p and shifting
                 // nothing else, so every other field would still have looked
                 // right. Arithmetic checked rather than assumed.
-                cstat_r <= { xs_cnt,                            // 0x58..0x59
+                cstat_r <= { gl_ovf,                           // 0x5F
+                             gl_out,                            // 0x5E
+                             {6'd0, gl_live, gl_en},            // 0x5D
+                             gl_dly,                            // 0x5A..0x5C
+                             xs_cnt,                            // 0x58..0x59
                              dur_p,                             // 0x48..0x49
                              rise_max_p,                        // 0x45..0x47
                              rise_min_p,                        // 0x42..0x44
