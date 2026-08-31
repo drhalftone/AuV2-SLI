@@ -212,7 +212,32 @@ work at once. Defaults to 0.
 
 ---
 
-## M3 — PARTIAL: 3c and 3d PASS (2026-08-21)
+## M3 — RESULT: PASS (3a closed 2026-08-31; 3c/3d 2026-08-21, 3b 2026-08-24)
+
+> **3a PASSED 2026-08-31, and with it M3 and the merge campaign.** It had sat
+> PARTIAL since 2026-08-21 for one reason only -- no HDMI source was on the
+> bench. Run on the merged build with a PC on the RX port and an EDID fob:
+>
+> ```
+>  0.2s-1.5s  PASSTHROUGH  vid_valid=1  out_clk 74250
+>  1.7s       vid_valid -> 0, OFFLINE            <- LINKCTL 0x15 host drop
+>  2.1s       out_clk retunes 74250 -> 71111     <- offline 1280x800@60 (fob EDID)
+>  throughout cam streaming=1, ldrop=0, frame period CONSTANT
+>  after      link recovers: passthrough 1280x720@60, meas_ok=1 both sides
+>             camera ldrop=0, 120.00 Hz, calib/aligned set, no cfifo_ovf
+> ```
+>
+> HDMI fell back to offline mode; the camera never noticed. No cable was
+> touched -- reg 0x15's self-timed host-disconnect pulse is the repeatable way
+> to run 3a, which is worth knowing since the milestone was written assuming a
+> physical unplug.
+>
+> TEST BUGS, twice, in the same session -- both mine, both caught before the
+> result was recorded: the first run sampled so slowly its "t=6s" label was
+> really ~17 s and the drop had already expired; and the frame period was
+> decoded from 0x3D/0x40 (0x40 is EXPOSURE), giving 7.5 Hz where the true rate
+> is 120.00 Hz. Constancy still held, which is what the criterion needs, but
+> the absolute number came from `read_cam_status.py`, not my arithmetic.
 
 The two tests that carry the weight are done. Both directions of coupling are
 now ruled out.
@@ -305,9 +330,9 @@ deliberately empty.
 
 | | Blocked on |
 |---|---|
-| **3a** — unplug the HDMI source mid-capture | No HDMI source is connected (`S=0`, `edid_ok=False`). Needs a PC on the Hd RX port. |
+| ~~**3a** — unplug the HDMI source mid-capture~~ | **PASSED 2026-08-31.** The blocker (no HDMI source on the bench) is gone. HDMI fell to offline, camera `ldrop` static at 0, 120.00 Hz. See the M3 header. |
 | ~~**3b** — camera idle / held in reset~~ | **PASSED 2026-08-24.** The hook now exists: camera opcode 6, self-timed. See below. |
-| 3c's reporting half | The camera "says so on Port A" needs M4 -- `calib`/`aligned`/`cfifo_ovf` are still not exposed as registers. |
+| ~~3c's reporting half~~ | **CLOSED by M4 (PASS 2026-08-21).** `calib`/`aligned`/`cfifo_ovf` are now registers 0x3A/0x3B and read correctly -- confirmed again 2026-08-31. |
 
 ---
 

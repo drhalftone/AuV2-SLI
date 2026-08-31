@@ -701,8 +701,35 @@ hdmi_section_decode: process(clk_pixel)
                 last_was_ctl <= '0';
                 adp_data_valid <= '0';
                 if in_vdp = '1' then
-                    raw_vsync <= '0';
-                    raw_hsync <= '0';
+                    -- HOLD SYNC THROUGH THE VIDEO DATA PERIOD -- DO NOT FORCE IT LOW.
+                    -- Sync is only transmitted during CONTROL periods (HDMI 1.3a /
+                    -- DVI 1.0), so raw_vsync/raw_hsync carry the source's level only
+                    -- during blanking. Forcing them to 0 here is harmless for a
+                    -- POSITIVE-polarity source -- idle is low anyway -- but for a
+                    -- NEGATIVE one the idle level is HIGH, so the signal collapsed
+                    -- every active line and sprang back at each horizontal blanking:
+                    -- ONE FALSE EDGE PER ACTIVE LINE.
+                    --
+                    -- WHY THIS MATTERS (measured 2026-08-31, merged build):
+                    -- ext_sync -- the GENLOCK MASTER into cam_frame_ft -- is raw
+                    -- out_vsync (Au2_SLI.vhd). Via the G1 edge counter 0x58/0x59:
+                    --     800x600@60  (+vsync)  ext_sync =      62 Hz   one per frame
+                    --     1024x768@60 (-vsync)  ext_sync = ~43,000 Hz   one per LINE
+                    -- EIGHT of the fourteen curated modes have VPOL = 0, so genlock's
+                    -- G2 ("one exposure per projected frame, at EVERY mode") would have
+                    -- triggered the camera ~768x per frame on those, and the symptom
+                    -- would have looked like a camera fault.
+                    --
+                    -- It also broke the polarity learner at the root: Au2_SLI samples
+                    -- `if (blank = '0') then VPolarity <= vsync;` -- ACTIVE VIDEO, the
+                    -- exact window this branch was zeroing -- so VPolarity could only
+                    -- ever learn 0. video_meas worked around it internally (eb0265a);
+                    -- ext_sync and the G0 period counter never got that fix. Holding
+                    -- fixes every consumer at the source instead.
+                    --
+                    -- Not assigning inside a clocked process is the hold. For a
+                    -- positive-polarity source holding 0 is IDENTICAL to forcing 0, so
+                    -- this cannot regress the +vsync modes.
                     raw_blank <= '0';            
                     -- ERROR CONCEALMENT: HOLD THE LAST GOOD PIXEL.
                     -- This used to substitute x"EF"/x"16"/x"16" -- bright RED -- and
@@ -725,9 +752,8 @@ hdmi_section_decode: process(clk_pixel)
                     end if;
             
                 elsif in_dvid = '1' then
-                    -- In the Video data period
-                    raw_vsync <= '0';
-                    raw_hsync <= '0';
+                    -- In the Video data period -- sync HELD, not forced low, for the
+                    -- reason spelled out in the in_vdp branch above.
                     raw_blank <= '0';            
                     raw_ch2   <= ch2_data;
                     raw_ch1   <= ch1_data;

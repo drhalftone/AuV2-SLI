@@ -147,6 +147,64 @@ S ≈ hours · M ≈ a day · L ≈ multiple days
 
 ---
 
+## G0/G1 BLOCKER FOUND 2026-08-31: the genlock master fires ONCE PER LINE on
+## negative-vsync modes
+
+**`ext_sync => out_vsync` (Au2_SLI.vhd:1346) is the RAW output vsync, with no
+polarity normalisation.** `hdmi_input` forces `raw_vsync` low through the video data
+period, so on a NEGATIVE-vsync source -- where the idle level is HIGH -- it collapses
+every active line and springs back at each horizontal blanking. One false rising edge
+PER ACTIVE LINE.
+
+MEASURED on hardware, merged build, pass-through, via the G1 edge counter 0x58/0x59:
+
+    800x600@60   (+vsync)   ext_sync =      62.0 Hz    one edge per frame   OK
+    1024x768@60  (-vsync)   ext_sync = ~43,000 Hz      768 active lines x 60 Hz
+
+The same defect makes the G0 period counter (`vs_meas => out_vsync`) report the LINE
+period on those modes, which is what exposed it:
+
+    | mode        | vpol | G0 mean period | true line period |
+    |-------------|------|----------------|------------------|
+    | 1280x720@60 |  +   | 16666.61 us, span 10 ns (CLEAN) | -- |
+    | 800x600@60  |  +   | 16579.14 us, span 10 ns (CLEAN) | -- |
+    | 640x480@60  |  -   | 31.77 us       | 31.78 us         |
+    | 1024x768@60 |  -   | 20.66 us (min) | 20.68 us         |
+
+Both negative modes report their line period to two decimals. This is an INSTRUMENT
+and MASTER fault, not display jitter -- the +vsync modes sit at the 10 ns measurement
+floor, same as offline.
+
+**EIGHT OF FOURTEEN curated modes have VPOL = 0** and are therefore affected:
+800x600@120, 640x480@120, 640x480@75, 1024x768@70, 640x480@72, 1280x800@60,
+1024x768@60, 640x480@60. Safe: 1024x768@75, 800x600@75, 800x600@72, 1280x720@60,
+800x600@60, 1280x1024@60.
+
+**WHY THIS MATTERS MORE THAN A BROKEN GAUGE.** G2 requires "one exposure per projected
+frame -- none missed, none doubled, at EVERY mode that will be used". On any -vsync
+mode the camera would be triggered at ~46 kHz. G2 would have failed there and the
+symptom would have looked like a camera or trigger-pacing fault, not a sync-polarity
+one.
+
+**ROOT CAUSE, and it is already known.** `Au2_SLI.vhd` learns polarity as
+`if (blank = '0') then VPolarity <= vsync; end if;` -- it samples during ACTIVE VIDEO,
+which is exactly the window `hdmi_input` has just forced to 0, so `VPolarity` can
+never learn 1 and `vsync_Pos` is never corrected. `video_meas` works around this
+INTERNALLY (see `eb0265a`: sample during blanking, hold through active video, vote on
+duty). Neither `ext_sync` nor the G0 period counter received that fix.
+
+**FIX DIRECTION.** Holding sync through the video data period instead of forcing it low
+makes `VPolarity` learnable at the source and fixes every consumer at once. That exact
+change was written and reverted on 2026-08-31 because it did not fix the 640x480 black
+screen (that was `alignment_detect`) -- but it is the correct fix for THIS, and it is a
+proven no-op for +vsync modes, where holding 0 is identical to forcing 0.
+
+**G0 IS THEREFORE PART-PASSED:** pass-through at +vsync modes is measured and CLEAN
+(10 ns floor, equal to offline). Pass-through at -vsync modes cannot be measured until
+the master is polarity-correct. The micro-HDMI cable blocker below is GONE.
+
+---
+
 ## G0 — RESULT SO FAR: offline PASSES, passthrough not yet measured
 
 **Offline, 2026-08-24** — `host/measure_vsync_period.py COM6 --seconds=34`:
@@ -255,6 +313,94 @@ clearing `force_en` the board sat at 75 Hz; a reflash restored 102.9 Hz. G4's
 
 Unresolved loose end: `0x20` reported index 2 while the board was demonstrably
 running 102.9 Hz, so the reported index and the active timing disagreed.
+
+---
+
+## G3 — TRIGGERS STACK. The delay costs latency, not rate.
+
+_Design settled 2026-08-31, before building. The first implementation got this
+wrong; the correction is below and the reasoning is the point._
+
+### What the AuV2 had to do, and why
+
+The AuV2 handshake is **serialising**. `pixel_pipe`'s `pending` is 1-deep and is
+cleared by the vsync that consumes it, so **at most one trigger is ever
+outstanding**. If exposure plus delay ran past the next vsync the camera was not
+ready, `hold` stayed high, no trigger went out, and the pattern was projected
+again unchanged -- the sequence advanced every second or third frame.
+
+That was not a defect. The FPGA was driving an external AVT camera over a DB9 and
+**could not see when it would next be ready**, so waiting was the only safe
+policy. The cost was that the SLI sequence ran slower than the display.
+
+### Why this system does not have to
+
+Two things changed, and together they remove the need to wait:
+
+1. **The FPGA SETS both numbers.** Exposure is opcode 1, delay is opcode 7. It does
+   not have to DISCOVER readiness -- it can compute it. There is nothing to wait for.
+2. **The sensor is in pipelined global shutter**, integrating the next frame while
+   reading out the current one. G0's own note depends on this: the integration start
+   "snaps to a line boundary whenever integration begins during a readout -- which in
+   pipelined mode is always."
+
+So triggers may be **stacked**: issue one per projected frame, with several in
+flight, and advance the SLI pattern at the **full HDMI rate**.
+
+### The constraint is EXPOSURE, not exposure + delay
+
+A delay applied uniformly to every trigger shifts PHASE, not PERIOD. The trigger
+period stays the HDMI period however large the delay is. So the only rate condition
+is the one that was always there:
+
+    exposure + 54.1 us  <=  HDMI frame period      <- must hold
+    delay                                          <- free, MAY exceed a frame
+
+54.1 us is `GAP_TICKS` (44.1 us, measured) + `MARGIN_TICKS` (10 us) from
+`usb_link.v`, and it is exactly what the max-exposure register already computes:
+`usable = vsync_period - RESERVE`, scaled by 27962/2^20 = 0.026667 to turn 10 ns
+ticks into 375 ns exposure units. It is why the clamp is 8280 us at 120 Hz -- one
+period minus 54 us.
+
+**Delay buys latency. It does not cost frame rate.**
+
+### THE FIRST IMPLEMENTATION FORBADE EXACTLY THIS
+
+The delay engine built earlier on 2026-08-31 re-armed on every vsync:
+
+    if (xs_rise) begin dly_cnt <= gl_dly; dly_run <= 1'b1; end
+
+with the comment "a fresh frame edge RE-ARMS unconditionally [...] otherwise a
+mis-set delay would quietly halve the trigger rate". The guard is real but the
+policy is backwards: with `gl_dly` longer than one frame, each vsync restarts the
+countdown before it expires and **the trigger never fires at all**. Guarding
+against a mis-set delay was chosen over supporting the actual design intent.
+
+### The correct structure: several delays in flight
+
+One countdown cannot represent N outstanding triggers. Push an absolute fire-time
+per vsync instead:
+
+  * a free-running tick counter (10 ns) as the time base;
+  * on each `xs_rise`, push `now + gl_dly` into a small FIFO;
+  * fire the trigger when the head entry is reached, and pop it.
+
+Depth covers the worst case delay/period ratio: 167 ms of delay at 120 Hz needs 20
+entries, so **32 is ample**. An overflow means the delay exceeds what the FIFO can
+hold and must be reported, not silently dropped -- a lost trigger is a lost frame
+of the scan.
+
+### The consequence to design around is BOOKKEEPING, not timing
+
+With D larger than one frame period, the capture of pattern *k* arrives while
+pattern *k + floor(D/T)* is on the screen. The frames are all there and the rate is
+full; only the PAIRING moves. The host must offset frame index against pattern
+index by `floor(D/T)`.
+
+**Expose the outstanding-trigger count in a register** so that offset is READ, not
+assumed. An assumed offset that is wrong by one produces a phase map that looks
+plausible and is wrong everywhere -- the exact failure class this project keeps
+producing.
 
 ---
 
