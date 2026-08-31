@@ -87,3 +87,4 @@ build_merged/
 # camera). Build output only -- regenerate with build_pt_hdmi.tcl if needed.
 build_pt_hdmi/
 build_*_run.txt
+sim/xsim_work/

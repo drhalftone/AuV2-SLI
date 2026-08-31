@@ -97,7 +97,17 @@ detect_alignment_proc: process(clk)
                     -------------------------------------------------------------------
                     signal_quality(27 downto 24) <= x"4";
                 else
-                    signal_quality <= signal_quality + x"000100";   -- add a million if there is a symbol error
+                    -- WAS x"000100" (=256). The header says "each error increases the
+                    -- count by a million [...] after 12 errors it will cause us to change
+                    -- bitslip or delay settings", and the trigger is the TOP NIBBLE
+                    -- reaching x"F" (0xF000000). Adding 256 needs 983,040 errors to get
+                    -- there, not 12 -- the literal was 65536x too small, i.e. one 16-bit
+                    -- shift. Consequence on hardware: ~31 ms per IDELAY tap adjustment and
+                    -- ~0.74 s for a full 32-tap sweep, so a link that drifts out of
+                    -- alignment stays broken for tens to hundreds of ms before recovery
+                    -- even starts. x"1000000" adds 1 to the top nibble per error, giving
+                    -- the documented ~15-error reaction.
+                    signal_quality <= signal_quality + x"100000";   -- UPSTREAM VALUE, restored
                 end if;
             else 
                 -----------------------------------------------

@@ -83,6 +83,15 @@ Host: `host/rx_timing.py` (refuses to interpret when `meas_ok=0`),
 
 ## The pass-through pixel-clock floor is 40 MHz (Pt, and Au V2 alike)
 
+> **SUPERSEDED 2026-08-31 -- THIS SECTION IS HISTORY, NOT CURRENT BEHAVIOUR.**
+> The fixed `CLKFBOUT_MULT_F = 15.0` it describes is gone; `rx_freq_band` +
+> `rx_drp_recfg` now retune the recovery MMCM per band. MEASURED on hardware:
+> 640x480@75 locks at exactly 31500 kHz and 640x480@60 at 25156 kHz, both with
+> `pll=1 sym=1` and zero invalid symbols -- so the "broken (below minimum)" rows
+> in the table below are NO LONGER TRUE. Those modes still fail, but on SYNC
+> DECODE, not on clocking: see "Known defects still open" section A.
+> Keep this section for the arithmetic and for why the floor once existed.
+
 `hdmi_input.vhd` fixes `CLKFBOUT_MULT_F = 15.0`, so VCO = pixel x 15. The Artix-7
 `-2` MMCM VCO minimum is 600 MHz, giving a hard floor of **600 / 15 = 40.0 MHz**.
 Measured behaviour matches that arithmetic exactly:
@@ -154,14 +163,116 @@ It is the obvious first probe if a low-clock mode is ever chased again -- though
 
 ## Known defects still open
 
-* **The preamble gate does no real work.** It counts 14680 hits per window —
-  essentially every control cycle — where a real 8-character preamble should give
-  ~320. `ch1_ctl` is effectively stuck at `"01"`, so `vdp_prefix_seen` is asserted
-  almost continuously. It is permissive rather than blocking, so it does not stop
-  video, but the gate is not discriminating and may bite later.
-* **Only one of the two guard characters is detected.** Worked around, not explained.
-* The raster measured `1281x720` — one extra pixel per line — because `in_vdp` rose a
-  cycle early. A follow-up removes the early entry path; re-measure for exactly 1280.
+_Register rebuilt 2026-08-31 from a full audit of the pass-through path plus that
+day's measurements. Grouped by ROOT CAUSE / WORKAROUND / INSTRUMENT, because most of
+the list exists only because the first group was never fixed._
+
+### A. Decoder root causes
+
+All of this is INHERITED code -- `hdmi_input`, `tmds_decoder`, `tmds_encoder`,
+`input_channel`, `alignment_detect`, `deserialiser_1_to_10`, `hdmi_io` all arrived
+whole as "Add files via upload" (2025-03-24 / 2025-04-17, `Engineer: Qihsi Hu`) and
+were never audited. They showed a picture at 1280x720 and 1024x768, and that was
+taken as sufficient.
+
+1. **THE CONTROL-PERIOD DETECTOR IS SYMBOL-LOCAL.** It declares a control period
+   whenever three symbols pattern-match control codes, ANYWHERE in the line, with no
+   knowledge of where it is in the raster. A correct receiver brackets the video data
+   period with the preamble -> guard-band -> video SEQUENCE. MEASURED per line
+   (65536-px windows, normalised):
+
+   | mode | ctl_call/line | real hblank | vdp/line | real active | display |
+   |---|---|---|---|---|---|
+   | 1280x720@60 | 363.6 | 370 | 1249 | 1280 | works |
+   | 640x480@75 | **232.9** | **200** | 600 | 640 | 95% black |
+
+   A control period CANNOT outlast the blanking interval. At 640x480 it does, by 33
+   cycles per line -- real VIDEO data decoding as control on all three lanes at once.
+   Each of those cycles feeds `ch0_ctl(1)` into vsync, i.e. pushes PIXEL DATA into the
+   sync signal, and steals the same ~40 px from the video period.
+   The false rate per line is roughly CONSTANT; only the denominator changes --
+   33/370 = 9% at 720p, 33/200 = 16.5%, 33/160 = 21% at 640x480@60. That is the whole
+   ">=256 px blanking works / <=200 fails" split, and it is why a majority vote cannot
+   close it: the false samples are IN the vote.
+
+2. **The preamble gate does no real work.** 14680 hits per window -- essentially every
+   control cycle -- where a real 8-character preamble gives ~320. `ch1_ctl` is
+   effectively stuck at `"01"`, so `vdp_prefix_seen` is asserted almost continuously.
+   Logged earlier as "permissive rather than blocking [...] may bite later". IT BIT.
+
+3. **Only one of the two guard characters is detected.** Worked around, not explained.
+
+4. **`alignment_detect` IS STRUCTURALLY BLIND TO THE ERROR THAT MATTERS.** Its only
+   feedback is `invalid_symbol`. A corrupted control symbol is still a LEGAL control
+   code, so the flag never fires, the delay is never advanced, bitslip never asserts --
+   and every instrument reports a perfect link while sync rots. This is why
+   `inv ch2/ch1/ch0 = 0/0/0`, `sym=1`, `pll=1` coexisted with a black screen all day.
+   **"Zero invalid symbols" is NOT evidence the link is clean.**
+
+5. **The video data period runs ~40 px/line short and is unstable** -- 600 detected vs
+   640 real at 640x480@75, drifting 600 <-> 641 between reads. Consequence of (1).
+
+### B. Workarounds stacked on the above (2026-08-31, UNCOMMITTED)
+
+Every one of these exists only because A1-A4 are unfixed. If A is repaired these
+should be DELETED, not left layered on a correct decoder.
+
+6. Sync HELD through the VDP instead of forced low. Spec-correct and a proven no-op for
+   positive-polarity modes. **Did not fix the target bug.**
+7. ADP sync overwrite removed (two sites). Defensible independently -- `edid_merge`
+   forwards no CEA extension, so we present a DVI sink and every data island is
+   spurious by construction. **Did not fix the target bug.**
+8. 16-cycle persistence debounce. **MANUFACTURED A DEFECT** -- control cycles exist only
+   inside blanking, so an edge arriving late deferred into the next line, giving +/-1
+   line jitter in the transmitted frame. Removed.
+9. Per-line vsync majority vote committed at the hsync edge. Jitter span 2 -> 1.
+   OFFLINE at the same mode is span 0. **Partial.**
+10. `CTL_MIN = 12` qualified-control-period gate on the sync latch only. Gates sync,
+    NOT `in_vdp`/`raw_blank`/pixels, so working-mode geometry cannot shift -- which also
+    means the ~40 stolen pixels are NOT recovered. Built 2026-08-31, result pending.
+
+### C. Instruments that misreported
+
+11. **`pre_diag`'s header comment is WRONG.** It claims `[15:0]` = video preamble
+    as-coded and `[31:16]` = the same with ch1/ch2 swapped. The live code counts
+    **vsync rises** and **hsync rises**. Reading the header instead of the code yields a
+    bogus "the channels are swapped" conclusion -- it produced exactly that today.
+12. `vdp_diag[31:16]` is labelled `in_dvid` but counts `in_adp`.
+13. `video_meas` `vs_hi` overflow: 22-bit counter, 2^21 window, and the ">= half" test
+    reads bit 20. At 100.0% duty the count reaches 2^21, bit 20 CLEARS, and the vote
+    comes out INVERTED. Latent, not today's cause.
+14. `vs_pol` reads 0 even at 1024x768@60, a negative-vsync mode that passes through
+    perfectly. The polarity detector does not do what its comments claim.
+15. **Saturating 8-bit counters read 255 and look STALE while actively climbing.** This
+    hid `edid_fall` for hours -- it reads 255 static, and only a bitstream reload (which
+    zeroes it) reveals it is incrementing ~3/sec.
+16. `video_phase_fifo` freezes `rdata` when unprimed, so a stalled FIFO emits a FROZEN
+    raster rather than blanking -- it presents as valid signal, not as "no signal".
+
+### D. Open and unexplained
+
+17. **`edid_fall` climbs ~3/sec, continuously,** at every mode. `hpd_fall` stays 0, so
+    the ~500 ms HPA yank in `edid_merge` is NOT firing. Never explained, never chased.
+18. 640x480@60 (160 px blanking, the worst case in the table) is untested against any
+    2026-08-31 change.
+19. 1280x800@60 is claimed working at hblank 160, which would BREAK the blanking
+    correlation. The attached display does not offer that mode, so the load-bearing
+    counter-example cannot be checked here. Treat the correlation as unconfirmed until
+    it is.
+
+### E. Theories KILLED by measurement (do not revive without new evidence)
+
+* **Negative sync polarity.** 1024x768@60 is `-hsync -vsync` and passes through
+  perfectly. Both the vsync and the hsync variants of this theory are dead.
+* **Low pixel clock / IDELAY range.** OFFLINE drives the SAME 31500 kHz to the SAME
+  sink flawlessly (`v_active` span 0). 315 Mbps is not too slow for this board, cable
+  or display.
+* **Single-bit errors from an uncentred eye.** The implied BER (~4e-4) would visibly
+  destroy pixel data; all three lanes report ZERO invalid symbols.
+* **Blanking budget as a spec limit.** 160 px is far above the ~22-character HDMI
+  minimum. Short blanking is the STRESSOR that exposes A1, not the cause.
+* The raster measured `1281x720` -- one extra pixel per line -- because `in_vdp` rose a
+  cycle early. Fixed in `c1b00c6`; re-measure for exactly 1280 if it recurs.
 
 ## Two traps that cost time here
 
