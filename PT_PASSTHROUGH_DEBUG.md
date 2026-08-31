@@ -72,7 +72,7 @@ All counted over one 65536-pixel window, readable over the Ft+ or COM6:
 | `0x6C` | phase-FIFO re-primes (static = healthy) |
 | `0x6D`–`0x70` | ch0 control cycles / all-three coincident |
 | `0x71`–`0x74` | **`in_vdp` duty / `in_adp` duty** |
-| `0x75`–`0x78` | **video preamble as-coded / with ch1,ch2 swapped** |
+| `0x75`–`0x78` | **vsync rises / hsync rises** per window (NOT preamble counts) |
 | `0x79`–`0x7C` | **VDP guard band detected / `vdp_guardband_detect`** |
 
 > `0x22`–`0x25` are **NOT** the input — they are the offline mode `mode_select` chose
@@ -251,8 +251,15 @@ should be DELETED, not left layered on a correct decoder.
 
 ### D. Open and unexplained
 
-17. **`edid_fall` climbs ~3/sec, continuously,** at every mode. `hpd_fall` stays 0, so
-    the ~500 ms HPA yank in `edid_merge` is NOT firing. Never explained, never chased.
+17. ~~`edid_fall` climbs ~3/sec~~ **NOT A DEFECT -- RESOLVED 2026-08-31.** It is the
+    designed monitor-presence heartbeat. `edid_merge` has no working output HPD sense,
+    so it re-reads the display EDID over DDC on a `probe_cnt == 50_000_000` timer at
+    clk100 = **exactly 0.5 s = 2.0 Hz**, and `chk0_ok` deasserts during each read and
+    re-asserts on a good checksum -> one falling edge per probe. Measured ~2/sec, an
+    exact match. A HEALTHY board sits at 2/sec forever; the 8-bit counter saturating at
+    255 just means it has been up two minutes. The NAME reads like an error counter and
+    it is not one -- that misled this investigation twice, first as "stale", then as a
+    "live unexplained fault".
 18. 640x480@60 (160 px blanking, the worst case in the table) is untested against any
     2026-08-31 change.
 19. 1280x800@60 is claimed working at hblank 160, which would BREAK the blanking

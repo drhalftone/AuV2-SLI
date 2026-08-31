@@ -53,12 +53,21 @@ entity hdmi_input is
         --   [31:16] cycles with ALL THREE ctl_valid, same window
         -- Healthy: the two are nearly equal. Skewed: the second collapses.
         ctl_diag     : out std_logic_vector(31 downto 0);
-        -- [15:0] cycles with in_vdp high, [31:16] with in_dvid high, same window
+        -- [15:0] cycles with in_vdp high, [31:16] cycles with in_adp high, same window.
+        -- (The upper half was ORIGINALLY in_dvid, which settled at 0 and was repurposed
+        -- to in_adp; the label was not updated with it. Corrected 2026-08-31.)
         vdp_diag     : out std_logic_vector(31 downto 0);
-        -- [15:0] video preamble AS CODED (ch1=01,ch2=00); [31:16] the same
-        -- pattern with ch1/ch2 SWAPPED. Exactly one of these can be right.
+        -- [15:0] ch0_ctl(1) RISING EDGES = vsync rises per window;
+        -- [31:16] ch0_ctl(0) RISING EDGES = hsync rises per window.
+        -- THIS COMMENT PREVIOUSLY CLAIMED "video preamble as-coded / with ch1,ch2
+        -- swapped", which the code has never done. Reading the label instead of the
+        -- code yields a bogus "the TMDS channels are swapped" conclusion -- it produced
+        -- exactly that on 2026-08-31 and cost hours. Sanity check: hsync must read
+        -- 65536/htotal per window (78 at 640x480@75, 40 at 720p) and vsync 0 or 1.
         pre_diag     : out std_logic_vector(31 downto 0);
-        -- [15:0] VDP guard band as coded; [31:16] vdp_prefix_seen assertions
+        -- [15:0] VDP guard band as coded; [31:16] vdp_guardband_detect assertions.
+        -- (Upper half was vdp_prefix_seen once; the code moved, the label did not.
+        -- Corrected 2026-08-31. Both read ~2.00 per line on a healthy link.)
         gb_diag      : out std_logic_vector(31 downto 0);
     
         -- Raw data signals

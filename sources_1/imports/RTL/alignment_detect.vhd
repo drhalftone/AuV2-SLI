@@ -115,7 +115,7 @@ detect_alignment_proc: process(clk)
                 -- closer to having a valid stream
                 -----------------------------------------------
                 if signal_quality(27 downto 24) > 0 then
-                    signal_quality <= signal_quality - 1;   -- add a million if there is a symvole error;
+                    signal_quality <= signal_quality - 1;   -- one good symbol: count down by one
                 end if;        
             end if;
             ------------------------------------
