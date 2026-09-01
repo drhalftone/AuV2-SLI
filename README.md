@@ -499,9 +499,14 @@ recovered vs. pipe-output top-left red, `N` = VSYNC edges per window.
 
 Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 
+> **There is exactly one viewer: `cam_live.py`.** Because only one process can hold the D3XX handle,
+> a second viewer could only ever be the wrong one to have open. `ft_video_grab.py` used to default
+> to a controls-free PySide6 window; that was removed 2026-09-01 and it is now headless. Nothing in
+> the repo needs PySide6.
+
 | Tool | Does |
 |---|---|
-| `cam_live.py` | **The live viewer.** tkinter; exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate |
+| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate |
 | `cam_ctl.py` | Exposure, frame rate and re-arm from the command line |
 | `campack.py` | Frame geometry, header parsing and 10-bit unpacking — **shared** by the other tools |
 | `cam_rate_bench.py` | Frame rate over repeated 24-frame runs |
@@ -515,7 +520,8 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 | `ddr_loop_check.py` | Concurrent DDR3 write+read loopback, byte by byte |
 | `test_campack.py` | Round-trips the packed-10 layout against a model of the RTL packer |
 | `test_m5_reply.py` | Does the link answer back without damaging the frame stream? |
-| `ft_video_grab.py`, `ft_bench_async.py`, `ft_diag_rows.py` | Throughput and diagnostic harnesses |
+| `ft_video_grab.py` | Throughput meter, **headless** — framed FPS/MB-s, or `--raw` unframed. Also the home of `FtDevice` / `FrameAssembler` / `unpack_raw10`, which the other tools import |
+| `ft_bench_async.py`, `ft_diag_rows.py` | Zero-copy throughput sweep; per-column corruption forensics |
 
 > **`ft_video_snap.py` validates the SYNTHETIC SLI pattern**, not the camera. Pointed at real camera
 > data it reports "0 frames matching, worst pixel error 1023" and writes a random-looking PNG. That

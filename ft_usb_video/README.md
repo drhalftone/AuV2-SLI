@@ -31,11 +31,12 @@ nothing. Everything here reuses those exact, already-proven pins.
 | `rtl/raw10_test_gen.v` | packed 10-bit (MIPI RAW10) pixel-index counter, 16 px / 5 words — the bandwidth/integrity pattern |
 | `rtl/ft_video_top.v` | top: `PIX_FMT` selects the source, wires generator → master → FT601 pins; single `ft_clk` domain |
 | `build/run_ftvideo.tcl` | Vivado batch build → `out/ft_video.bit` + `out/ft_video.bin`, **+ FT601 IOB/timing assertions** |
-| `host/ft_video_grab.py` | D3XX grabber: GUI display + FPS/MB-s, or `--bench` / `--raw` headless |
-| `host/ft_video_snap.py` | **byte-exact verifier**: recomputes the RTL pattern and diffs every pixel; writes PNGs (stdlib only, no PySide6) |
+| `host/ft_video_grab.py` | D3XX throughput meter, **headless**: FPS/MB-s framed, or `--raw` unframed. Also the home of `FtDevice` / `FrameAssembler` / `unpack_raw10` |
+| `host/ft_video_snap.py` | **byte-exact verifier**: recomputes the RTL pattern and diffs every pixel; writes PNGs (stdlib only) |
 | `host/ft_diag_rows.py` | corruption forensics: per-column consensus, error rate, byte-lane / offset histograms |
 | `host/ft_bench_async.py` | zero-copy / overlapped throughput bench — `--sweep` (size×depth), `--stall` (consumer freeze). **Found the 348 MB/s ceiling.** |
-| `host/requirements.txt` | `ftd3xx`, `numpy`, `PySide6` |
+| `host/cam_live.py` | **THE VIEWER** — the only one. tkinter; exposure slider, sync-to-projector checkbox, trigger-delay slider |
+| `host/requirements.txt` | `ftd3xx`, `numpy`, `pillow` |
 
 ### Live camera tools (`cam_frame_ft` — the DDR3 ring build)
 
@@ -281,11 +282,17 @@ Prereqs: **FTDI D3XX driver** installed and the FT601 enumerating as a D3XX devi
 cd host
 pip install -r requirements.txt
 
-python ft_video_grab.py                # GUI: live fringes + fps/MB-s/drops
-python ft_video_grab.py --bench        # headless: parse frames, print fps + MB/s + drops
-python ft_video_grab.py --raw          # headless: pure read, link upper-bound MB/s
-python ft_video_grab.py --bench --stream --chunk 0x100000   # streaming pipe, 1 MiB URBs
+python cam_live.py                     # LOOK at the camera (the one viewer)
+
+python ft_video_grab.py                # MEASURE: parse frames, print fps + MB/s + drops
+python ft_video_grab.py --raw          # pure read, link upper-bound MB/s
+python ft_video_grab.py --stream --chunk 0x100000   # streaming pipe, 1 MiB URBs
 ```
+
+> **One viewer, one measurer.** `ft_video_grab.py` is headless; it used to default
+> to a controls-free PySide6 window, which was removed 2026-09-01. Only one process
+> can hold the D3XX handle at a time, so a second viewer could only ever be the
+> wrong one to have open. To see pixels, use `cam_live.py`.
 
 - `--raw` vs `--bench`: `--raw` measures the driver+link with zero parsing (the true
   ceiling); `--bench` measures after framing/drop-detection. A big gap between them

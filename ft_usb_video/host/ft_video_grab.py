@@ -15,12 +15,21 @@
 #   word6 = format (1 = 8bpp mono, 4px/word)
 #   word7 = ~magic 0xCFB6B3AC
 #
-# Modes:
-#   (default)   PySide6 GUI: live grayscale + FPS / MB/s / dropped frames
-#   --bench     headless: parse frames, print MB/s + FPS + drops each second
-#   --raw       headless: pure read (no framing) -> the link's upper-bound MB/s
+# THIS TOOL ANSWERS "HOW FAST?", NOT "WHAT DOES IT LOOK LIKE?". It is headless.
+# To LOOK at the camera use cam_live.py, which is the one viewer in this repo and
+# the only one with exposure and genlock controls. Only one process can hold the
+# D3XX handle at a time, so a second viewer here could only ever be the wrong one
+# to have open -- this tool used to default to a controls-free PySide6 window and
+# that cost a session's confusion. Removed 2026-09-01.
 #
-# Requires:  pip install ftd3xx numpy pyside6   (numpy/pyside6 only for parse/GUI)
+# Modes:
+#   (default)   parse frames, print MB/s + FPS + drops each second
+#   --raw       pure read (no framing) -> the link's upper-bound MB/s
+#
+# Also the home of FtDevice / FrameAssembler / unpack_raw10, imported by
+# ft_video_snap.py and ft_diag_rows.py.
+#
+# Requires:  pip install ftd3xx numpy    (numpy only for parsing)
 # and FTDI's D3XX driver installed (the FT601 must enumerate as a D3XX device).
 # ============================================================================
 import argparse
@@ -278,70 +287,10 @@ def run_headless(dev, chunk, parse):
         th.join(timeout=1.0)
 
 
-# --------------------------------------------------------------------------
-# GUI mode (PySide6).
-# --------------------------------------------------------------------------
-def run_gui(dev, chunk):
-    import numpy as np
-    from PySide6 import QtCore, QtGui, QtWidgets
-
-    stats = Stats()
-    th = threading.Thread(target=reader_loop, args=(dev, stats, chunk, True), daemon=True)
-    th.start()
-
-    app = QtWidgets.QApplication(sys.argv)
-    win = QtWidgets.QWidget()
-    win.setWindowTitle("FT601 SLI video")
-    lay = QtWidgets.QVBoxLayout(win)
-    info = QtWidgets.QLabel("waiting for frames...")
-    info.setStyleSheet("font-family: monospace; font-size: 13px;")
-    view = QtWidgets.QLabel()
-    view.setMinimumSize(640, 512)
-    view.setAlignment(QtCore.Qt.AlignCenter)
-    view.setStyleSheet("background:#111;")
-    lay.addWidget(info)
-    lay.addWidget(view, 1)
-
-    def tick():
-        with stats.lock:
-            mbps, fps, drop = stats.mbps, stats.fps, stats.dropped
-            w, h, frame, fmt = stats.width, stats.height, stats.frame, stats.fmt
-        tag = {1: "8b mono", 3: "10b RAW10"}.get(fmt, f"fmt{fmt}")
-        info.setText(
-            f"{fps:6.1f} fps   {mbps:7.1f} MB/s ({mbps*8/1000:.2f} Gbps)   "
-            f"{w}x{h} {tag}   dropped: {drop}"
-        )
-        need = FrameAssembler.payload_bytes(fmt, w, h)
-        if frame and w and h and need and len(frame) >= need:
-            if fmt == 3:
-                # unpack, then >>2 to 8 bits purely for display
-                arr = (unpack_raw10(frame[:need], w, h) >> 2).astype(np.uint8)
-            else:
-                arr = np.frombuffer(frame, dtype=np.uint8, count=w * h).reshape(h, w)
-            arr = np.ascontiguousarray(arr)
-            img = QtGui.QImage(arr.data, w, h, w, QtGui.QImage.Format_Grayscale8)
-            pm = QtGui.QPixmap.fromImage(img).scaled(
-                view.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.FastTransformation
-            )
-            view.setPixmap(pm)
-
-    timer = QtCore.QTimer()
-    timer.timeout.connect(tick)
-    timer.start(33)                       # ~30 Hz display (capture runs far faster)
-
-    win.resize(900, 800)
-    win.show()
-    try:
-        app.exec()
-    finally:
-        stats.running = False
-        th.join(timeout=1.0)
-
-
 def main():
-    ap = argparse.ArgumentParser(description="Grab/measure the FT601 SLI video stream.")
-    ap.add_argument("--bench", action="store_true", help="headless: parse frames, print FPS + MB/s")
-    ap.add_argument("--raw", action="store_true", help="headless: pure read, link upper-bound MB/s")
+    ap = argparse.ArgumentParser(description="Measure the FT601 SLI video stream (headless; use cam_live.py to view).")
+    ap.add_argument("--bench", action="store_true", help="parse frames, print FPS + MB/s (default)")
+    ap.add_argument("--raw", action="store_true", help="pure read, no framing: the link's upper-bound MB/s")
     ap.add_argument("--index", type=int, default=0, help="D3XX device index (default 0)")
     ap.add_argument("--pipe", type=lambda x: int(x, 0), default=DEFAULT_PIPE, help="read pipe id (default 0x82)")
     ap.add_argument("--chunk", type=lambda x: int(x, 0), default=1 << 20, help="read size in bytes (default 1 MiB)")
@@ -354,12 +303,10 @@ def main():
         stream_size=args.chunk if args.stream else 0,
     )
     try:
-        if args.raw:
-            run_headless(dev, args.chunk, parse=False)
-        elif args.bench:
-            run_headless(dev, args.chunk, parse=True)
-        else:
-            run_gui(dev, args.chunk)
+        # Always headless. There is exactly ONE viewer in this repo, cam_live.py,
+        # and only one process can hold the D3XX handle at a time -- a second
+        # viewer here could only ever be the wrong one to have open.
+        run_headless(dev, args.chunk, parse=not args.raw)
     finally:
         dev.close()
 

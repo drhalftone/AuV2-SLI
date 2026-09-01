@@ -1,4 +1,7 @@
-# FT601 SLI video grabber
+# FT601 SLI video tools
 ftd3xx>=1.0        # FTDI D3XX Python wrapper (needs the D3XX driver installed)
-numpy>=1.20        # frame reshape (GUI + --bench)
-PySide6>=6.4       # GUI only; not needed for --bench / --raw
+numpy>=1.20        # frame reshape and 10-bit unpack
+pillow>=9.0        # cam_live.py display, and the PNG writers
+
+# NOT PySide6. cam_live.py is tkinter (stdlib) and is the only viewer; the
+# PySide6 window in ft_video_grab.py was removed 2026-09-01.
