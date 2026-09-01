@@ -69,6 +69,13 @@ DISP_W, DISP_H = 800, 640        # initial preview size; the image now follows t
 FRAME_HZ = 120.0
 PERIOD_US = 1e6 / FRAME_HZ
 EXPO_MAX_US = 8280               # us, measured at 120 Hz; 8300 collapses
+DLY_MAX_MS  = 50.0               # G3 asks for >= 0-50 ms; the register holds 167 ms
+# The exposure ceiling is FRAME PERIOD MINUS A RESERVE, so it moves with the rate.
+# Genlocked to a slower display the budget GROWS -- 13.3 ms at 75 Hz, 16.6 ms at
+# 60 Hz -- and capping at the free-running 8280 us would throw that light away.
+# 54.1 us is the FPGA's own figure: GAP_TICKS (44.1 us, measured) + MARGIN_TICKS.
+EXPO_RESERVE_US = 54.1
+EXPO_REG_MAX_US = 65535 * 0.375  # 24576 us -- the 16-bit exposure register itself
 SAT_LEVEL = 1020                 # 10-bit full scale is 1023
 CAPTURE_DIR = "captures"         # created on demand, next to the script
 
@@ -214,6 +221,10 @@ class App:
         self.save_dir = os.path.abspath(CAPTURE_DIR)   # remembered between saves
         self.ldrop0 = None                    # ldrop at start, to report GROWTH
         self.ldrop = 0
+        self.cam_fps = None                   # measured from frame_idx, not display fps
+        self.rate_idx0 = None
+        self.rate_t0 = 0.0
+        self.expo_ceil = None
         self.sat = 0.0
 
         root.title("PYTHON1300 live -- Ft+")
@@ -233,6 +244,11 @@ class App:
         self.stats.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 4))
 
         bar = ttk.Frame(root)
+        bar2 = ttk.Frame(root)
+        # PACK ORDER IS REVERSED for side=BOTTOM: the FIRST widget packed sits
+        # lowest. bar2 is therefore packed first so it lands BELOW bar, even
+        # though bar is populated first.
+        bar2.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 4))
         bar.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=2)
 
         # THE IMAGE MUST NOT BE ABLE TO RESIZE ITS OWN CONTAINER.
@@ -262,6 +278,7 @@ class App:
         sc = ttk.Scale(bar, from_=40, to=EXPO_MAX_US, variable=self.expo, length=200,
                        command=self.on_expo_move)
         sc.pack(side=tk.LEFT)
+        self.expo_scale = sc          # retune_expo_ceiling moves its upper bound
         # Apply on RELEASE, not on every pixel of drag: each change is a USB
         # command and the sensor needs a frame to act on it, so streaming
         # hundreds of them while dragging just floods the control channel.
@@ -271,7 +288,31 @@ class App:
         # No "set" button: the exposure is sent when the slider is RELEASED, so a
         # button could only re-send a value that is already in effect.
 
+        # ---- genlock: one exposure per PROJECTED frame -------------------
+        # Both fields ride ONE command word (opcode 7: {en, 2'b0, dly[23:0]}), so
+        # either control sends the pair -- otherwise toggling the checkbox would
+        # silently zero the delay.
+        #
+        # ext_sync is the OUTPUT vsync, so this locks to whatever the board is
+        # PROJECTING -- identical whether that video came from a PC over HDMI or
+        # from the board's own offline generator.
+        self.sync = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar2, text="sync to projector", variable=self.sync,
+                        command=self.set_genlock).pack(side=tk.LEFT)
+
+        ttk.Label(bar2, text="trig delay ms").pack(side=tk.LEFT, padx=(12, 2))
+        self.dly = tk.DoubleVar(value=0.0)
+        sd = ttk.Scale(bar2, from_=0.0, to=DLY_MAX_MS, variable=self.dly, length=200,
+                       command=self.on_dly_move)
+        sd.pack(side=tk.LEFT)
+        # Applied on RELEASE for the same reason as exposure: every drag pixel
+        # would otherwise be a USB command.
+        sd.bind("<ButtonRelease-1>", lambda _e: self.set_genlock())
+        self.dly_lbl = ttk.Label(bar2, text="", width=18)
+        self.dly_lbl.pack(side=tk.LEFT, padx=4)
+
         self.on_expo_move(None)
+        self.on_dly_move(None)
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.tick()
 
@@ -299,12 +340,101 @@ class App:
     def on_expo_move(self, _ev):
         """Live feedback while dragging -- no command sent until release."""
         self.expo_lbl.configure(
-            text="%d / %d us" % (int(self.expo.get()), EXPO_MAX_US))
+            text="%d / %d us" % (int(self.expo.get()), self.expo_ceiling_us()))
 
     def set_expo(self):
-        us = min(int(self.expo.get()), EXPO_MAX_US)
+        us = min(int(self.expo.get()), self.expo_ceiling_us())
         units = int(round(us / EXPO_UNIT_US))
         self.cam.command(1, max(1, min(units, 0xFFFF)))
+
+    def track_rate(self, idx):
+        """Measure the TRUE camera rate from frame_idx, not from display fps.
+
+        The display deliberately drops frames -- the reader keeps only the newest
+        -- so painted frames per second says nothing about what the sensor is
+        doing. frame_idx increments once per frame the FPGA emitted, so its delta
+        over wall time is the real rate whether or not we painted them.
+        """
+        now = time.time()
+        if self.rate_idx0 is None or idx < self.rate_idx0:
+            self.rate_idx0, self.rate_t0 = idx, now
+            return
+        dt = now - self.rate_t0
+        if dt < 1.0:
+            return
+        rate = (idx - self.rate_idx0) / dt
+        self.rate_idx0, self.rate_t0 = idx, now
+        if rate <= 1.0:
+            return
+        self.cam_fps = rate
+        self.retune_expo_ceiling()
+
+    def expo_ceiling_us(self):
+        """Largest exposure the CURRENT frame period allows."""
+        if self.cam_fps is None:
+            return EXPO_MAX_US
+        us = 1e6 / self.cam_fps - EXPO_RESERVE_US
+        return int(max(40.0, min(us, EXPO_REG_MAX_US)))
+
+    def retune_expo_ceiling(self):
+        """Move the slider's ceiling to match the measured rate.
+
+        Only acts on a real change, so the widget is not rebuilt every second.
+        If the ceiling DROPS below the current setting the value is clamped and
+        RE-SENT -- see set_genlock for why that ordering matters.
+        """
+        ceil = self.expo_ceiling_us()
+        if self.expo_ceil is not None and abs(ceil - self.expo_ceil) < 100:
+            return
+        self.expo_ceil = ceil
+        self.expo_scale.configure(to=ceil)
+        if int(self.expo.get()) > ceil:
+            self.expo.set(ceil)
+            self.set_expo()
+        self.on_expo_move(None)
+
+    def on_dly_move(self, _ev):
+        ms = float(self.dly.get())
+        self.dly_lbl.config(text="%.2f ms (%d us)" % (ms, int(round(ms * 1000))))
+
+    def set_genlock(self):
+        """Send enable + delay together as one opcode-7 word.
+
+        WHAT SYNC CHANGES. Off, the sensor free-runs on trig_per (120 Hz). On, it
+        is triggered once per projected frame, so the rate follows the DISPLAY --
+        75 Hz against a 75 Hz output, 60 against 60. A rate drop after ticking the
+        box is the feature working, not a fault.
+
+        WHY THE DELAY EXISTS. Pixels do not reach the screen when their vsync goes
+        out: the projector adds latency, and a DLP with sequential RGB LEDs has
+        real gaps between the colours. The delay places the exposure deliberately
+        inside the projected frame rather than merely starting it with the frame.
+
+        A delay longer than one frame is FINE and does not cost frame rate --
+        triggers stack, several are in flight at once, and the pattern still
+        advances at the full display rate. It costs latency: the capture of
+        pattern k arrives while a later pattern is on screen.
+        """
+        ticks = int(round(float(self.dly.get()) * 100000.0))   # ms -> 10 ns ticks
+        ticks = max(0, min(ticks, 0xFFFFFF))                   # 24 bits = 167.7 ms
+        en = 1 if self.sync.get() else 0
+
+        # ORDER MATTERS WHEN TURNING SYNC OFF, and getting it wrong wedges the
+        # sensor. Genlocked to a slow display the exposure ceiling GROWS -- 16.6 ms
+        # at 60 Hz. Unticking the box returns the camera to its free-running
+        # 120 Hz, an 8.33 ms period, and an exposure LONGER THAN THE FRAME PERIOD
+        # stops delivery until the part is reconfigured (measured: 8300 us at
+        # 120 Hz collapses to 0.0 fps). So shorten the exposure FIRST, then change
+        # the rate -- never the other way round, which leaves a window where the
+        # commanded exposure exceeds the period that is about to take effect.
+        if en == 0 and int(self.expo.get()) > EXPO_MAX_US:
+            self.expo.set(EXPO_MAX_US)
+            self.cam.command(1, int(round(EXPO_MAX_US / EXPO_UNIT_US)))
+            self.expo_scale.configure(to=EXPO_MAX_US)
+            self.expo_ceil = EXPO_MAX_US
+            self.on_expo_move(None)
+
+        self.cam.command(7, (en << 27) | ticks)
 
     def save_tiff(self):
         """Write the frame currently on screen to a 16-bit TIFF.
@@ -366,6 +496,7 @@ class App:
             if self.ldrop0 is None:
                 self.ldrop0 = ldrop
             self.ldrop = ldrop - self.ldrop0
+            self.track_rate(idx)
             self.sat = 100.0 * float((a >= SAT_LEVEL).mean())
             # STATISTICS ON A SUBSAMPLE, NOT THE WHOLE FRAME. np.percentile sorts
             # every one of 1.31 M pixels to find two numbers -- 8.6 ms each, and
