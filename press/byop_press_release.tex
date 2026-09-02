@@ -24,10 +24,6 @@
 \pagestyle{empty}
 
 \noindent
-{\color{ukblue}\bfseries\large UNIVERSITY OF KENTUCKY}\\
-{\small Department of Electrical and Computer Engineering}
-
-\vspace{2pt}
 \pressrule
 
 \vspace{6pt}
@@ -56,10 +52,9 @@ University of Kentucky\\
 \vspace{12pt}
 
 \noindent\textbf{LEXINGTON, Ky.} --- Researchers at the University of Kentucky
-have built a machine vision camera that does something conventional industrial
-cameras do not: it speaks HDMI.
-
-The board is a traditional high-speed machine vision camera --- a global-shutter
+have introduced a machine vision camera that incorporates an HDMI controller for
+interfacing directly to commodity projectors. The board is a traditional high-speed
+machine vision camera --- a global-shutter
 sensor streaming full frames over USB~3.0 --- with a complete HDMI receiver and
 transmitter integrated alongside it on the same FPGA. Video from a host computer
 enters the camera and passes through to a projector. Because the camera sits
@@ -69,108 +64,126 @@ projected, and when.
 The team calls the result BYOP, for \emph{Bring Your Own Projector}: connect any
 HDMI projector and the system becomes a structured-light 3D scanner, with no
 external trigger box, frame grabber, or custom synchronization cabling. The reason to
-want that is economic as much as technical. Structured-light systems are conventionally
-built around dedicated projection light engines --- metrology modules made in small
-volumes, at prices that dominate the cost of the instrument. Commodity projectors are
-mass-produced against the 3D-Ready and DLP market instead, and they win on nearly every
-axis that matters to a scanner: far greater luminance, a wide choice of fields of view
-and throw distances, and, with LED illumination, an operating life measured in tens of
-thousands of hours. What kept them out of precision scanning was never their optics ---
-it was the difficulty of making a camera keep time with a device never designed to be
-part of a measuring instrument.
+want that is access. Structured-light systems are conventionally built around dedicated
+projection light engines --- metrology modules made in small volumes, at prices that
+dominate the cost of the instrument. To an industrial buyer specifying a measuring
+machine, that cost is simply part of the machine. To everyone else it is a barrier, and
+it has confined structured-light 3D scanning to the groups that can afford the light
+engine.
+
+Academic laboratories, this one included, have long worked the other way round
+--- adapting to the commodity projectors they can actually buy. Those projectors are
+mass-produced against the 3D-Ready and DLP market, and they bring real advantages of
+their own: high luminance, a wide choice of fields of view and throw distances, and,
+with LED illumination, an operating life measured in tens of thousands of hours. What
+has made them awkward to build with was never their optics --- it was the difficulty of
+making a camera keep time with a device never designed to be part of a measuring
+instrument.
+
+The instrument is built as a stack. Three of its boards are commercially available
+parts from \textbf{Alchitry} --- the Pt~V2 mainboard carrying the Artix-7 FPGA, the
+Ft+ for the USB~3.0 link, and the Hd+ for HDMI in and out --- and on top of them sits
+a \textbf{custom-designed sensor board}, developed for this project, carrying the
+PYTHON~1300 and its power supplies. The boards mate through a common high-density
+stacking connector, so the whole camera assembles without a single internal cable and
+drops into the printed enclosure shown in Figure~\ref{fig:stack}.
+Table~\ref{tab:hardware} summarises the hardware.
 
 \section{Why put HDMI inside a camera?}
 
 Structured-light 3D scanning works by projecting a sequence of patterns onto an
 object and photographing each one. The measurement is only as good as the
 synchronization: the camera must expose once per projected pattern, at a known
-moment within that pattern's display time.
+moment within that pattern's display time. Conventionally, that means a trigger
+generator, a cable harness, and a calibration step for the delay between them ---
+an assembly that has to be reworked whenever the projector, the frame rate, or the
+pattern set changes. Integrating the video interface into the camera removes the
+problem rather than managing it. The projected frames and the camera's exposures
+come from the same signal, inside one device.
 
-Conventionally, that means a trigger generator, a cable harness, and a calibration
-step for the delay between them --- an assembly that has to be reworked whenever
-the projector, the frame rate, or the pattern set changes.
-
-Integrating the video interface into the camera removes the problem rather than
-managing it. The projected frames and the camera's exposures come from the same
-signal, inside one device.
+It also solves a subtler problem. A PC's graphics hardware is not a real-time
+system: it may hold the same image on screen for an extra refresh, or deliver the
+next one late, and nothing in the video signal announces which has happened. The
+camera therefore reads the \textbf{top-left pixel} of every incoming frame and
+watches that value for change. A change means a genuinely new pattern has arrived
+and the frame should be captured; no change means the computer has repeated itself
+and the frame should be ignored. That sampled value then travels with the image:
+it is embedded in the \textbf{frame header} the camera sends to the host, so the PC
+can line the sequence of captured frames up against the sequence of patterns it
+played. The pattern sequence and the captured sequence stay in step even though the
+machine driving them makes no timing guarantees.
 
 \section{The imager}
 
 The camera is built around the \textbf{onsemi PYTHON 1300}, a global-shutter CMOS
 sensor with $1280 \times 1024$ resolution --- 1.3 megapixels --- reading out over
 four LVDS channels at 720\,Mbit/s each. The sensor is socketed, and the same board
-accepts either the \textbf{monochrome or the colour} variant of the part, so the
-choice is made per application rather than per design.
-
-Pixels are delivered at \textbf{10 bits} of depth, not the 8 bits typical of
-consumer imaging: 1024 grey levels instead of 256. For structured light, that
-matters directly --- the depth resolution of a phase measurement follows from how
-finely the camera can distinguish one projected intensity from the next, so the
-extra two bits are measurement precision, not just headroom.
-
-At full resolution and 10-bit depth, the sensor is capable of \textbf{210 frames
-per second} --- comfortably more than a USB link can carry continuously.
-
-For live streaming, the camera delivers \textbf{120 frames per second} over its
-USB-C connection, at the sensor's full $1280 \times 1024$ and full 10-bit depth ---
-no cropping, no windowing, and no reduction in depth to buy the rate. Pixels are
-packed 10-to-a-word rather than padded into 16 bits, which is what makes a
-full-resolution frame fit the link at that rate.
-
-For scans that need to be faster still, the camera does not have to stream at all.
-Frames are captured into \textbf{on-board DDR3 memory} at the sensor's own rate
-and downloaded afterwards, so the length of a scan is set by the sensor rather
-than by the host connection.
-
-A global shutter means every pixel in a region is exposed at the same instant, so
-nothing shears when the subject or the camera is moving.
+accepts either the \textbf{monochrome or the colour} variant of the part. Its
+pixels are 4.8\,$\mu$m square, with a \textbf{global shutter}, and are delivered at
+\textbf{10 bits} of depth --- 1024 grey levels rather than 256. At full resolution
+and 10-bit depth the sensor is capable of \textbf{210 frames per second}. For live
+streaming, the camera delivers \textbf{120 frames per second} over its USB-C
+connection, at the sensor's full $1280 \times 1024$ and full 10-bit depth --- no
+cropping, no windowing, and no reduction in depth. For slower USB~2.0 connections,
+the camera does not have to stream at all. Frames are captured into \textbf{on-board
+DDR3 memory} as they are projected and downloaded afterwards, so the speed of the
+scan is set by the HDMI frame rate rather than by the streaming rate of the host
+connection.
 
 \section{No host HDMI source required}
 
 The camera does not have to be fed video at all. The board generates its own
 pattern sequences internally and drives the projector directly, at frame rates up
-to \textbf{120 per second} --- the same rate at which it streams full frames.
+to \textbf{120 per second} --- the same rate at which it streams full frames. That
+rate is not arbitrary. \textbf{3D-Ready DLP projectors} --- a large and inexpensive
+installed base, built to accept 120\,Hz for shutter-glasses stereo --- take a
+120\,Hz signal as a matter of course. The camera drives them at their native rate,
+and the highest standard mode it drives at 120\,Hz is \textbf{800$\times$600}. The
+entire structured-light loop --- project a pattern, capture it, advance to the next
+--- therefore runs on the camera itself, at 120\,Hz, with nothing driving the video
+path but the camera. A computer is needed only to collect the resulting images, not
+to generate what is projected.
 
-That rate is not arbitrary. \textbf{3D-Ready DLP projectors} --- a large and
-inexpensive installed base, built to accept 120\,Hz for shutter-glasses stereo ---
-take a 120\,Hz signal as a matter of course. The camera drives them at their native
-rate, and the highest standard mode it drives at 120\,Hz is
-\textbf{800$\times$600}. Anything above that is a 60 to 75\,Hz proposition.
-
-The entire structured-light loop --- project a pattern, capture it, advance to the
-next --- therefore runs on the camera itself, at 120\,Hz, with nothing driving the
-video path but the camera. A computer is needed only to collect the resulting
-images, not to generate what is projected.
-
-Where a host \emph{is} driving the display, the camera passes its video through
-untouched, so the same hardware serves both arrangements.
+Where a host \emph{is} driving the display, the FPGA can be configured to work
+either way. It can \textbf{replace} the incoming pixels with its own structured-light
+scan patterns, generated to suit the resolution arriving on the cable, and trigger
+the camera on every vertical sync --- the host supplies the video timing, the camera
+supplies the patterns. Or it can \textbf{pass} the host's pixels through untouched
+and use the top-left-pixel mechanism to decide when to trigger, leaving the pattern
+sequence entirely to the software driving the display. The same hardware serves
+both arrangements.
 
 \section{Any projector --- and a host offered only what works}
 
-Nothing about the camera is tied to a particular projector. On power-up, it reads the
-projector's \textbf{EDID} --- the small data block every display serves back over the
-video cable to describe what it can accept --- and works from what it finds there. In
-standalone operation, it drives the projector at a mode the projector actually
-advertises, rather than at an assumed one.
+Nothing about the camera is tied to a particular projector, or to a particular
+projection technology. On power-up it reads the connected projector's \textbf{EDID}
+--- the data block every display serves back over the video cable, listing the
+resolutions and frame rates it will accept --- and adapts to whatever it finds there.
+DLP, LCD or LCoS, the camera drives the projector at a mode that projector itself
+advertises, rather than at an assumed one. The 120\,Hz 3D-Ready projectors described
+above are simply the fastest case, not a requirement.
 
 When a host PC is in the video path, the camera goes a step further: it builds an EDID
-of its own and serves that to the computer. What the PC is offered is the projector's
-mode list \emph{narrowed to the range the camera can itself receive} --- from
-\textbf{640$\times$480 at 60\,Hz} at the bottom to \textbf{1280$\times$800 at 60\,Hz}
-at the top, taking in 1024$\times$768 at up to 75\,Hz along the way. The camera is
-working to a pixel-rate budget rather than a single maximum, so resolution and frame
-rate trade against one another: the smaller the frame, the faster it may arrive.
+of its own and serves that to the computer, offering the projector's own mode list
+narrowed to those modes the camera can also receive. The PC is therefore shown a set
+of display modes already known to work end to end, and the operator chooses among them
+in the ordinary display settings.
 
-Because many projectors serve a placeholder EDID while they warm up, the camera keeps
-re-reading it and re-offers the host an updated list whenever the content changes --- so
-the projector's real modes appear without anyone unplugging a cable.
+Nothing in that arrangement is specific to projectors, and the group expects to put it
+to work on high-speed gaming monitors next. Displays running at \textbf{200 to
+210\,Hz} are now commodity items, and at those rates a screen meets the PYTHON 1300 at
+the top of its own range --- 210 frames per second. The application is
+\emph{deflectometry}, where the pattern is reflected off a specular surface rather
+than projected onto a diffuse one, and where shiny parts that defeat a projector are
+exactly the ones worth measuring. That is intended future work, not a capability of
+the board today.
 
 \section{Daisy-chaining: one video signal, many cameras}
 
-Because the HDMI path runs \emph{through} the camera, cameras can be chained. The
-host drives the first unit; each unit forwards the video onward to the next and,
-finally, to the projector. Every camera in the chain sees the same frames and can
-key to them.
+Because the HDMI path runs \emph{through} the camera --- a separate input and output
+port, visible in Figure~\ref{fig:connectors} --- cameras can be chained. The host
+drives the first unit; each unit forwards the video onward to the next and, finally,
+to the projector. Every camera in the chain sees the same frames and can key to them.
 
 That makes multi-camera geometries straightforward to assemble:
 
@@ -184,44 +197,7 @@ That makes multi-camera geometries straightforward to assemble:
         the same cable that already carries the video.
 \end{itemize}
 
-\section{The hardware}
 
-\begin{center}
-\small
-\begin{tabular}{@{}ll@{}}
-\toprule
-\textbf{Image sensor}      & onsemi PYTHON 1300, socketed --- monochrome or colour \\
-\textbf{Resolution}        & $1280 \times 1024$ (1.3\,MP), global shutter \\
-\textbf{Pixel depth}       & 10 bits per pixel (1024 grey levels); 8-bit selectable \\
-\textbf{Sensor frame rate} & 210 frames/s at full resolution, 10-bit \\
-\textbf{Streamed rate}     & 120 frames/s sustained over USB-C \\
-\textbf{Buffered capture}  & To on-board DDR3 at sensor rate, downloaded after \\
-\textbf{Host interface}    & USB 3.0, 325\,MB/s sustained, byte-exact \\
-\textbf{Video in / out}    & HDMI receive and transmit, pass-through \\
-\textbf{Projector support} & Reads the projector's EDID; any projector in the window \\
-\textbf{Pass-through window} & 25--90\,MHz pixel clock, enforced in the EDID served to the host \\
-\textbf{Standalone output} & Board-generated video, no HDMI source needed \\
-\textbf{Highest 120\,Hz mode} & 800$\times$600 at 120\,Hz (3D-Ready DLP projectors) \\
-\textbf{Verified modes}    & $640\times480$ through $1280\times800$, 60 to 120\,Hz \\
-\textbf{Processing}        & Xilinx Artix-7 FPGA with DDR3 frame buffer \\
-\textbf{Construction}      & Alchitry Pt~V2, Ft+ and Hd+ boards plus a custom sensor board \\
-\textbf{On-board patterns} & Sinusoidal fringe generation, radiometric linearization \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-The FPGA generates structured-light fringe patterns on the board itself and
-applies a host-uploadable correction curve, so that a commanded intensity ramp
-reproduces linearly on the projector --- a calibration that otherwise has to be
-carried out in host software for every projector.
-
-The instrument is built as a stack. Three of its boards are commercially available
-parts from \textbf{Alchitry} --- the Pt~V2 mainboard carrying the Artix-7 FPGA, the
-Ft+ for the USB~3.0 link, and the Hd+ for HDMI in and out --- and on top of them sits
-a \textbf{custom-designed sensor board}, developed for this project, carrying the
-PYTHON~1300 and its power supplies. The boards mate through a common high-density
-stacking connector, so the whole camera assembles without a single internal cable and
-drops into the printed enclosure shown below.
 
 \section{Background --- the work this camera comes from}
 
@@ -256,7 +232,7 @@ the reasoning behind the design will find it in the following.
         multiplexing that lets two projectors run at once.}
 \end{itemize}
 
-\section{}
+\vfill
 
 \begin{quote}
 \itshape
@@ -268,33 +244,7 @@ unlocks years more of technological improvements in SLI.''
 \noindent --- Daniel L. Lau, DataBeam Professor of Electrical and Computer
 Engineering, University of Kentucky
 
-\section{Images}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.86\linewidth]{stack_with_lens_cap.jpg}
-  \caption*{\small\textbf{The complete camera, opened.} The board stack sits in its
-  printed enclosure: the HDMI board at the bottom, the USB~3.0 image link and the
-  Artix-7 FPGA above it, and the PYTHON~1300 sensor board on top, its glass lid
-  facing up. The 48-pin sensor, on a 1.016\,mm lead pitch, was soldered by hand in
-  the lab. At right, the enclosure's lid carries the lens and drops straight onto
-  the stack. \textit{Photo: University of Kentucky.}}
-\end{figure}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=0.86\linewidth]{stack_connector_edge.jpg}
-  \caption*{\small\textbf{The connector edge.} The two HDMI ports at the bottom are
-  the video input and output. The \emph{input} is fed by the host PC, or by the
-  previous camera when units are daisy-chained; the \emph{output} drives the
-  projector, or the next camera in the chain. Above them are two
-  USB-C connectors: the lower carries the image stream to the host, the upper is the
-  FPGA board's own configuration and diagnostic link. The sensor board is the
-  topmost in the stack. \textit{Photo: University of Kentucky.}}
-\end{figure}
-
-\vspace{6pt}
-{\small Additional images and captions available on request.}
+\vfill
 
 \section{About}
 
@@ -312,6 +262,62 @@ contributions to digital printing and 3D imaging.
 \vspace{6pt}
 \pressrule
 \begin{center}\small \#\ \#\ \#\end{center}
+
+\clearpage
+\clearpage
+\begin{table}[h!]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Image sensor}      & onsemi PYTHON 1300, socketed --- monochrome or colour \\
+\textbf{Resolution}        & $1280 \times 1024$ (1.3\,MP), global shutter \\
+\textbf{Pixel depth}       & 10 bits per pixel (1024 grey levels); 8-bit selectable \\
+\textbf{Sensor frame rate} & 210 frames/s at full resolution, 10-bit \\
+\textbf{Streamed rate}     & 120 frames/s sustained over USB-C \\
+\textbf{Camera timing}     & Free-running, or keyed to the projector --- HDMI sync not required \\
+\textbf{Buffered capture}  & To on-board DDR3 at sensor rate, downloaded after \\
+\textbf{Host interface}    & USB 3.0, byte-exact --- 325\,MB/s achieved in testing \\
+\textbf{Video in / out}    & HDMI receive and transmit, pass-through \\
+\textbf{Projector support} & Reads the projector's EDID; any projector in the window \\
+\textbf{Pass-through window} & 25--90\,MHz pixel clock, enforced in the EDID served to the host \\
+\textbf{Standalone output} & Board-generated video, no HDMI source needed \\
+\textbf{Highest 120\,Hz mode} & 800$\times$600 at 120\,Hz (3D-Ready DLP projectors) \\
+\textbf{Verified modes}    & $640\times480$ through $1280\times800$, 60 to 120\,Hz \\
+\textbf{Processing}        & Xilinx Artix-7 FPGA with DDR3 frame buffer \\
+\textbf{Construction}      & Alchitry Pt~V2, Ft+ and Hd+ boards plus a custom sensor board \\
+\textbf{On-board patterns} & Sinusoidal fringe generation, radiometric linearization \\
+\bottomrule
+\end{tabular}
+\caption{\small\textbf{BYOP camera --- hardware summary.}}
+\label{tab:hardware}
+\end{table}
+\clearpage
+
+\clearpage
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.70\linewidth]{stack_with_lens_cap_print.jpg}
+  \caption{\small\textbf{The complete camera, opened.} The board stack sits in its
+  printed enclosure: the HDMI board at the bottom, the USB~3.0 image link and the
+  Artix-7 FPGA above it, and the PYTHON~1300 sensor board on top, its glass lid
+  facing up. The 48-pin sensor was soldered by hand in
+  the lab. At right, the enclosure's lid carries the lens and drops straight onto
+  the stack. \textit{Photo: University of Kentucky.}}
+  \label{fig:stack}
+\end{figure}
+
+\begin{figure}[h!]
+  \centering
+  \includegraphics[width=0.70\linewidth]{stack_connector_edge_print.jpg}
+  \caption{\small\textbf{The connector edge.} The two HDMI ports at the bottom are
+  the video input and output. The \emph{input} is fed by the host PC, or by the
+  previous camera when units are daisy-chained; the \emph{output} drives the
+  projector, or the next camera in the chain. Above them, the lower USB-C connector
+  carries the image stream to the host. The sensor board is the topmost in the stack. \textit{Photo: University of Kentucky.}}
+  \label{fig:connectors}
+\end{figure}
+
 
 \end{document}
 
@@ -362,7 +368,28 @@ contributions to digital printing and 3D imaging.
 %     capture with download -- which would roughly halve scan time again -- was
 %     attempted on branch wip/concurrent-capture and DOES NOT WORK (DDR3 never
 %     calibrates). Do not imply concurrency.
-%   * USB 3.0 at 325 MB/s, verified byte-exact.
+%   * USB 3.0 THROUGHPUT -- three DIFFERENT numbers, do not merge them again:
+%       325 MB/s  LINK CEILING, achieved in testing by replaying stored frames out
+%                 of DDR3 faster than the camera fills it -- no sensor in the loop.
+%                 Sourced to host/usb_speed.py: "The link can do more -- 325 MB/s
+%                 was measured replaying from DDR faster than the camera fills it."
+%       196.6 MB/s SENSOR full rate: 120.000 fps x 1.6384 MB. The real ceiling for
+%                 any LIVE stream -- above this there is nothing to send.
+%       193.0 MB/s SUSTAINED, measured: M7 soak 2026-08-21, 30.0 min, 211,942
+%                 frames, 347.25 GB, ldrop 0, zero frame_idx gaps, 117.8 fps flat.
+%     An earlier draft said "325 MB/s SUSTAINED", which is the one combination that
+%     is false: it takes the burst ceiling and attaches the adjective that belongs
+%     to 193. Divide 325 by the release's own 120 fps and an editor gets 198 fps.
+%     Now worded as headroom -- 325 achieved in testing, 193 in use -- which is
+%     true, and stronger, because zero-loss-for-30-minutes is what competitors do
+%     not publish. DO NOT restore "sustained" to the 325 figure.
+%     NOTE two internal docs still carry the merged version and want fixing:
+%     MERGE_MILESTONES.md:791 ("the 325 MB/s / 117 fps of the M7 soak" -- it was
+%     193 at 117.8) and README.md:38 ("~325 MB/s measured, 132 fps at 10-bit" --
+%     132 appears nowhere else and 325 / 1.6384 is 198 fps, not 132).
+%   * FREE-RUNNING is why the headroom is usable: the camera does not have to be
+%     synchronised to the projector. Streaming at 120 fps is what is MEASURED --
+%     do not state a higher live frame rate until one is soaked.
 %   * HDMI pass-through verified at 640x480, 800x600, 1024x768, 1280x720 and
 %     1280x800 (60 Hz; the first three also at 75 Hz).
 %   * Camera and HDMI proven INDEPENDENT: the camera keeps streaming with zero
@@ -399,6 +426,32 @@ contributions to digital printing and 3D imaging.
 %   * DAISY-CHAINING is supported by the pass-through path, which IS proven --
 %     but no multi-camera chain has been built or measured.
 %   * ACTIVE STEREO follows from the above and is likewise not yet demonstrated.
+%   * GAMING MONITORS AT 200-210 Hz FOR DEFLECTOMETRY -- explicitly worded as future
+%     work ("intended future work, not a capability of the board today"). Keep it that
+%     way. The 210 Hz figure is the SENSOR's and is already in the release; the
+%     DISPLAY side is the open question. Today's pass-through window is 25-90 MHz
+%     (edid_builder.v F_MIN_10K=2500 / F_MAX_10K=9000), and 200 Hz exceeds it for
+%     anything much above 640x480 -- 800x600@200 needs roughly 125 MHz. So a 200 Hz
+%     monitor does NOT pass through at useful resolution on the current build. If a
+%     reporter asks, the honest answer is that the sensor reaches 210 fps and the
+%     video front end would need its window widened to feed it from a monitor.
+%   * TLP IN THE FRAME HEADER -- NOT YET IMPLEMENTED, stated in the release anyway
+%     as a deliberate decision (2026-09-02); to be made true before distribution.
+%     WHAT IS REAL: the top-left-pixel novel/duplicate DETECTION, sourced to
+%     pixel_pipe.v 219-247. TLP_THRESH = 4 exists specifically to reject GPU +-1 LSB
+%     dither, so the "GPUs are not real-time" framing is the design intent, not a
+%     retrofit. README.md 2.1 documents it as an operating mode.
+%     WHAT IS NOT: the sampled value reaching the CAMERA FRAME HEADER. Today it goes
+%     pixel_pipe.tlp_dbg -> Au2_SLI.vhd:431 tlp_val (commented "diagnostic") -> the
+%     UART telemetry block at :870 (the "P=" value upload_corr.py reads). It never
+%     crosses into the frame header. FRAME_HEADER_PLAN.md has NO TLP field; word 2's
+%     pattern_idx is {frq,fra} from the ON-BOARD pattern sequencer -- a DIFFERENT
+%     mode from the one where the PC plays the patterns and TLP is used.
+%     TO CLOSE IT: word 3 [95:16] is reserved and zeroed -- 80 free bits, and 8 is
+%     all this needs. Carry tlp_val across into the camera header builder, then
+%     delete this note. VERIFY BEFORE THE RELEASE SHIPS -- this is the same shape as
+%     the ROI claim: plausible, adjacent to something real, and the first thing a
+%     technical editor asks to see.
 %
 %   * PRIOR WORK: the four citations in "Background" are verified against SPIE, Optica
 %     and UKnowledge. NOTE the framing is deliberate -- the 2019 SPIE paper PROPOSED
