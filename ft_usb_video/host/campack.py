@@ -51,6 +51,14 @@ def parse_header(buf, off):
         "ldrop": (h[3] >> 14) & 0xFFFF,
         "fbytes": h[4],
         "fmt": h[6],
+        # TOP-LEFT PIXEL of the HDMI frame this capture was triggered by, in the
+        # top byte of word 5 (the rest of that word is FBYTES/4, which the host
+        # can derive anyway). In pass-through mode the PC owns the pattern
+        # sequence and a GPU may repeat or delay a frame, so this is what lets a
+        # captured sequence be matched to the displayed one rather than assumed.
+        # Reads 0 when nothing is driving the HDMI input, and on the standalone
+        # camera build where the TLP wire does not exist.
+        "tlp": (h[5] >> 24) & 0xFF,
     }
 
 

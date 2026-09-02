@@ -71,6 +71,22 @@ if {[llength $doe_src] >= 36} {
     puts "### ERROR: tristate multicycle NOT applied -- matched [llength $doe_src] pins"
 }
 
+# ext_tlp / ext_tlp_tog exist for the MERGED build, where Au2_SLI feeds this module
+# the top-left pixel of the incoming HDMI frame for the frame header. In THIS build
+# cam_frame_ft is the top and there is no HDMI side, so those two inputs have no pin
+# and no XDC entry -- which is a UCIO-1 error at write_bitstream, not a warning.
+#
+# The waiver is scoped to exactly these ports rather than downgrading UCIO-1 wholesale:
+# an unconstrained pin is a real fault for every OTHER signal here, and blanket-
+# disabling the check to get past one known-harmless case is how a genuinely floating
+# pin ships. With them unconnected the header simply reports tlp = 0.
+if {[llength [get_ports -quiet {ext_tlp[*] ext_tlp_tog}]] > 0} {
+    create_waiver -type DRC -id UCIO-1 \
+        -objects [get_ports {ext_tlp[*] ext_tlp_tog}] \
+        -description "merged-build-only TLP inputs; unused when cam_frame_ft is top"
+    puts "### UCIO-1 waived for ext_tlp/ext_tlp_tog (merged-build ports)"
+}
+
 opt_design
 place_design
 # phys_opt_design was never in this flow, which is why small violations kept

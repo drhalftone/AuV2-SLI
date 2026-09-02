@@ -330,6 +330,7 @@ architecture Behavioral of Au2_SLI is
             out_green : out std_logic_vector(7 downto 0);
             out_blue  : out std_logic_vector(7 downto 0);
             tlp_dbg      : out std_logic_vector(7 downto 0);
+            tlp_tog      : out std_logic;
             olp_dbg      : out std_logic_vector(7 downto 0);
             trig_cnt_dbg : out std_logic_vector(7 downto 0);
             -- radiometric transfer LUT seam -> uart_ctrl's host-uploadable corr table
@@ -429,6 +430,9 @@ architecture Behavioral of Au2_SLI is
                pix_khz   : out STD_LOGIC_VECTOR(17 downto 0) );
     end component;
     signal tlp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe INPUT (diagnostic)
+    -- Flips once per HDMI frame, with tlp_val. Carries the TLP across to the
+    -- camera's frame header; see cam_frame_ft's "TLP capture" CDC.
+    signal tlp_tog_s : std_logic;
     signal olp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe OUTPUT (diagnostic)
     signal trig_cnt  : std_logic_vector(7 downto 0);  -- trigger pulse count (diagnostic)
 
@@ -700,6 +704,8 @@ architecture Behavioral of Au2_SLI is
                usb_tx : out std_logic;
                cam_stat_o     : out std_logic_vector(223 downto 0);
                ext_sync       : in  std_logic := '0';
+               ext_tlp        : in  std_logic_vector(7 downto 0) := (others => '0');
+               ext_tlp_tog    : in  std_logic := '0';
                cam_stat_tog_o : out std_logic;
                ctl_byte       : out std_logic_vector(7 downto 0);
                ctl_valid      : out std_logic;
@@ -1304,6 +1310,7 @@ i_processing: pixel_pipe Port map (
         out_green => out_green,
         out_blue  => out_blue,
         tlp_dbg      => tlp_val,
+        tlp_tog      => tlp_tog_s,
         olp_dbg      => olp_val,
         trig_cnt_dbg => trig_cnt,
         lut_din  => pat_lut_din,
@@ -1381,6 +1388,9 @@ i_cam_frame_ft : cam_frame_ft
         -- G1: the projector's vsync reaches the camera module. Ignored there
         -- for now; only the edge counter proves the wire works.
         ext_sync => out_vsync,
+        -- The top-left pixel of the incoming HDMI frame, and its update toggle,
+        -- so the camera can stamp each captured frame with the pattern it saw.
+        ext_tlp => tlp_val, ext_tlp_tog => tlp_tog_s,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 

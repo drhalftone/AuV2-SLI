@@ -16,9 +16,30 @@ Every packet on the Ft+ IN pipe is already **32 bytes of header + payload**, as 
 | 0 | `[95:64]` | `{NROW[15:0], NCOL[15:0]}` |
 | 0 | `[127:96]` | `{ldrop[17:0], nf_run/slot}` — scan length and padded-frame count |
 | 1 | `[31:0]` | `FBYTES` — payload bytes |
-| 1 | `[63:32]` | `FBYTES/4` — payload words |
+| 1 | `[55:32]` | `FBYTES/4` — payload words (24 bits; the value is 409,600) |
+| 1 | `[63:56]` | **`tlp`** — top-left pixel of the HDMI frame that triggered this capture |
 | 1 | `[95:64]` | **format** — `3` = dense packed 10-bit (4 px in 5 bytes) |
 | 1 | `[127:96]` | `~MAGIC` — inverse, so a lost host can resynchronise |
+
+**Why `tlp` lives in word 1 and not the format word.** In pass-through mode the PC
+owns the pattern sequence, and a GPU is not a real-time system: it may hold a frame
+for an extra refresh or deliver the next one late, and nothing in the video signal
+says which happened. `pixel_pipe.v` already samples the top-left pixel of every
+incoming HDMI frame and triggers the camera when it changes (`TLP_THRESH = 4` there
+rejects GPU dither). Carrying the sampled VALUE in the header lets the host match a
+captured frame back to the pattern actually displayed instead of trusting its own
+play order.
+
+It went into the spare top byte of `FBYTES/4` because that field is pure redundancy
+— the host can divide `FBYTES`. The format word was the obvious alternative and is
+the wrong choice: several host tools compare it with `==` or `in (1,3)`, so widening
+it would break them silently. Word 0 has only two spare bits.
+
+The value crosses from the HDMI pixel clock to `ui_clk` as a toggle + 3FF + sample,
+the same shape as `fs_tog` — not a bare 2FF on the bus, because a torn byte would
+make the host match a frame to the WRONG pattern, which is worse than reporting none.
+Reads 0 when nothing drives the HDMI input, and on the standalone camera build where
+the wire does not exist.
 
 Two of its choices are principles worth preserving, not just details:
 

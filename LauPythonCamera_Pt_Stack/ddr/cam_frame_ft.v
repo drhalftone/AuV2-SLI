@@ -156,6 +156,23 @@ module cam_frame_ft #(
     // any failure unattributable.
     input  wire        ext_sync,
 
+    // TOP-LEFT PIXEL, carried from the HDMI side into the frame header.
+    //
+    // In pass-through mode the PC owns the pattern sequence, and a GPU is not a
+    // real-time system: it may repeat a frame or deliver one late. pixel_pipe.v
+    // already samples the top-left pixel of every incoming HDMI frame and fires
+    // the camera trigger when it changes (TLP_THRESH there rejects GPU dither).
+    // Putting the SAMPLED VALUE in the header lets the host match each captured
+    // frame back to the pattern it actually displayed, rather than assuming its
+    // own play order survived the display pipeline.
+    //
+    // ext_tlp is in the HDMI PIXEL CLOCK domain and ext_tlp_tog flips in the same
+    // cycle it updates -- see the CDC at "TLP capture" below. Both default to 0,
+    // so the standalone camera build (build_cam_ft.tcl, where this module is the
+    // top) leaves them unused and the header simply reports tlp = 0.
+    input  wire [7:0]  ext_tlp,
+    input  wire        ext_tlp_tog,
+
     input  wire        ft_clk,
     inout  wire [31:0] ft_data,
     inout  wire [3:0]  ft_be,
@@ -789,6 +806,30 @@ module cam_frame_ft #(
     reg [2:0] fs_s = 3'b000;
     always @(posedge ui_clk) fs_s <= {fs_s[1:0], fs_tog};
     wire fs_pulse = fs_s[2] ^ fs_s[1];      // frame_start, in ui_clk
+
+    //------------------------------------------- TLP capture (HDMI -> ui_clk)
+    // Same toggle + 3FF + edge-detect shape as fs_tog above, and for the same
+    // reason: ext_tlp is EIGHT bits crossing from the HDMI pixel clock, whose
+    // frequency changes with the video mode. A plain 2FF on the bus would let
+    // the byte tear on the one cycle it changes -- and a torn TLP is worse than
+    // no TLP, because the host would silently match a frame to the wrong
+    // pattern instead of noticing a gap. Sampling the bus only on the synced
+    // toggle edge is safe: pixel_pipe holds ext_tlp stable for a whole frame
+    // either side of the flip.
+    // EXACTLY 24 BITS, and it must stay that way. FBYTES is a `localparam integer`,
+    // so `FBYTES/4` is 32 bits wide and masking it with 24'hFFFFFF does NOT narrow
+    // it -- the width of `a & b` is max(width(a), width(b)). Concatenating that with
+    // tlp_ui gave a 40-bit field inside a 128-bit word, which silently truncated the
+    // top of ~MAGIC and shifted every field: the host would have rejected every
+    // frame. Naming the width here is what keeps the header word exactly 128 bits.
+    wire [23:0] fb4 = FBYTES / 4;           // 409,600 -- fits 24 bits with room
+
+    reg [2:0] tlp_s   = 3'b000;
+    reg [7:0] tlp_ui  = 8'd0;
+    always @(posedge ui_clk) begin
+        tlp_s <= {tlp_s[1:0], ext_tlp_tog};
+        if (tlp_s[2] ^ tlp_s[1]) tlp_ui <= ext_tlp;
+    end
 
     reg  fe_tog = 1'b0;
     always @(posedge wordclk) if (frame_end) fe_tog <= ~fe_tog;
@@ -1812,7 +1853,15 @@ module cam_frame_ft #(
                     // was 10-bit right-aligned in 16-bit words. The host MUST
                     // switch on this rather than assume, or it will read packed
                     // bytes as u16 and produce a convincing-looking wrong image.
-                    ufifo_din <= { ~MAGIC, 32'd3, FBYTES/4, FBYTES };
+                    //
+                    // WORD 5 NOW CARRIES THE TLP in its top byte. That word held
+                    // FBYTES/4, which is pure redundancy -- the host can divide.
+                    // It goes here rather than in the format word because several
+                    // host tools compare word 6 with == or `in (1,3)`, and rather
+                    // than in word 3 because that has only two spare bits. FBYTES/4
+                    // is 409,600, so 24 bits is ample and the low field is unchanged
+                    // for any reader that masks.
+                    ufifo_din <= { ~MAGIC, 32'd3, {tlp_ui, fb4}, FBYTES };
                 if (hw == 3'd1) begin
                     hw <= 3'd0;
                     rd_iss <= 18'd0; rd_got <= 18'd0;
