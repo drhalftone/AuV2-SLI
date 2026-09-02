@@ -109,15 +109,13 @@ finely the camera can distinguish one projected intensity from the next, so the
 extra two bits are measurement precision, not just headroom.
 
 At full resolution and 10-bit depth, the sensor is capable of \textbf{210 frames
-per second} --- comfortably more than a USB link can carry continuously. The
-camera closes that gap two ways.
+per second} --- comfortably more than a USB link can carry continuously.
 
-For live streaming, the sensor supports \textbf{up to eight simultaneous regions
-of interest}. Reading out only the windows that matter reduces the data per frame,
-which is how the camera sustains \textbf{120 frames per second} over its USB-C
-connection. Each region carries its own identifier in the data stream, so several
-can be read out and told apart downstream --- useful for tracking multiple parts
-of a scene at once, without paying for pixels nobody needs.
+For live streaming, the camera delivers \textbf{120 frames per second} over its
+USB-C connection, at the sensor's full $1280 \times 1024$ and full 10-bit depth ---
+no cropping, no windowing, and no reduction in depth to buy the rate. Pixels are
+packed 10-to-a-word rather than padded into 16 bits, which is what makes a
+full-resolution frame fit the link at that rate.
 
 For scans that need to be faster still, the camera does not have to stream at all.
 Frames are captured into \textbf{on-board DDR3 memory} at the sensor's own rate
@@ -196,7 +194,6 @@ That makes multi-camera geometries straightforward to assemble:
 \textbf{Resolution}        & $1280 \times 1024$ (1.3\,MP), global shutter \\
 \textbf{Pixel depth}       & 10 bits per pixel (1024 grey levels); 8-bit selectable \\
 \textbf{Sensor frame rate} & 210 frames/s at full resolution, 10-bit \\
-\textbf{Regions of interest} & Up to 8 simultaneous, each tagged in the stream \\
 \textbf{Streamed rate}     & 120 frames/s sustained over USB-C \\
 \textbf{Buffered capture}  & To on-board DDR3 at sensor rate, downloaded after \\
 \textbf{Host interface}    & USB 3.0, 325\,MB/s sustained, byte-exact \\
@@ -335,12 +332,29 @@ contributions to digital printing and 3D imaging.
 %   * SENSOR: onsemi PYTHON 1300 (NOIP1SN1300A-QTI), monochrome, 4 LVDS channels
 %     at 720 Mbps. 1280x1024, 8/10-bit, global shutter. 210 fps ZROT at full SXGA
 %     (165 fps NROT) -- sourced to CAMERA_SENSOR_PROTOCOL.md, which cites the
-%     onsemi datasheet directly. Up to 8 ROI windows; every frame-sync code
-%     carries a 3-bit window ID (0-7), so regions are distinguishable in-stream.
+%     onsemi datasheet directly.
 %   * The 210 fps figure is the SENSOR's; 120 fps is what the camera SUSTAINS over
-%     USB-C. Do not collapse them into one number. ROIs are the mechanism for
-%     holding 120 fps on the link (less data per frame), NOT a way to exceed it --
-%     an earlier draft had this backwards.
+%     USB-C at FULL 1280x1024 and full 10-bit depth. Do not collapse them into one
+%     number. What makes the full frame fit the link is PACKED 10-bit (10-to-a-word
+%     rather than padded into 16); padding costs 37% of the rate for no extra
+%     information.
+%
+%   * DO NOT REINSTATE THE ROI CLAIM. An earlier draft said the sensor's "up to
+%     eight simultaneous regions of interest" were how the camera holds 120 fps.
+%     BOTH HALVES WERE WRONG and the paragraph has been cut:
+%       - NOT IMPLEMENTED. grep for roi|window_id|win_id|roi_id across
+%         sources_1/imports/RTL/ and LauPythonCamera_Pt_Stack/ddr/ returns ZERO
+%         hits. Nothing configures the sensor's windowing registers and no host
+%         tool exposes them. The only mention in the repo is FRAME_HEADER_PLAN.md
+%         ("roi_id -- 3 bits. Moves to word 2 IF ROIs are actually used").
+%       - WRONG MECHANISM ANYWAY. 120 Hz is achieved at FULL FRAME, no cropping --
+%         LauPythonCamera_Pt_Stack/README.md "Operating point -- ACHIEVED
+%         2026-08-17", confirmed by the 30-minute M7 soak. No pixels are skipped.
+%     What IS true and datasheet-cited is that the PYTHON 1300 SUPPORTS up to 8
+%     windows and tags every frame-sync code with a 3-bit window ID (0-7). That is
+%     a property of the PART, not a feature of this camera. It is how the earlier
+%     draft's notes came to file it under "safe to state as fact". If ROIs are ever
+%     built, this claim can come back -- with a measurement behind it.
 %   * BUFFER-THEN-DOWNLOAD is the faster path for scans: capture into on-board
 %     DDR3 at sensor rate, download afterwards, so scan length is set by the
 %     sensor and not the host link. NOTE this describes the SEQUENTIAL mode
