@@ -6,6 +6,7 @@
 
 \usepackage[letterpaper,margin=1in]{geometry}
 \usepackage{graphicx}
+\usepackage{caption}
 \usepackage{booktabs}
 \usepackage{xcolor}
 \usepackage{titlesec}
@@ -30,7 +31,17 @@
 \pressrule
 
 \vspace{6pt}
-\noindent{\bfseries FOR IMMEDIATE RELEASE}\hfill{\small\itshape Contact: [name, title, email, phone]}
+\noindent
+\begin{minipage}[t]{0.40\linewidth}
+{\bfseries FOR IMMEDIATE RELEASE}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.56\linewidth}
+\raggedleft\small
+\textit{Contact:} Daniel L. Lau\\
+DataBeam Professor of Electrical and Computer Engineering\\
+University of Kentucky\\
+\href{mailto:dllau@uky.edu}{dllau@uky.edu}
+\end{minipage}
 
 \vspace{18pt}
 
@@ -57,7 +68,16 @@ projected, and when.
 
 The team calls the result BYOP, for \emph{Bring Your Own Projector}: connect any
 HDMI projector and the system becomes a structured-light 3D scanner, with no
-external trigger box, frame grabber, or custom synchronization cabling.
+external trigger box, frame grabber, or custom synchronization cabling. The reason to
+want that is economic as much as technical. Structured-light systems are conventionally
+built around dedicated projection light engines --- metrology modules made in small
+volumes, at prices that dominate the cost of the instrument. Commodity projectors are
+mass-produced against the 3D-Ready and DLP market instead, and they win on nearly every
+axis that matters to a scanner: far greater luminance, a wide choice of fields of view
+and throw distances, and, with LED illumination, an operating life measured in tens of
+thousands of hours. What kept them out of precision scanning was never their optics ---
+it was the difficulty of making a camera keep time with a device never designed to be
+part of a measuring instrument.
 
 \section{Why put HDMI inside a camera?}
 
@@ -66,7 +86,7 @@ object and photographing each one. The measurement is only as good as the
 synchronization: the camera must expose once per projected pattern, at a known
 moment within that pattern's display time.
 
-Conventionally that means a trigger generator, a cable harness, and a calibration
+Conventionally, that means a trigger generator, a cable harness, and a calibration
 step for the delay between them --- an assembly that has to be reworked whenever
 the projector, the frame rate, or the pattern set changes.
 
@@ -83,12 +103,12 @@ accepts either the \textbf{monochrome or the colour} variant of the part, so the
 choice is made per application rather than per design.
 
 Pixels are delivered at \textbf{10 bits} of depth, not the 8 bits typical of
-consumer imaging: 1024 grey levels instead of 256. For structured light that
+consumer imaging: 1024 grey levels instead of 256. For structured light, that
 matters directly --- the depth resolution of a phase measurement follows from how
 finely the camera can distinguish one projected intensity from the next, so the
 extra two bits are measurement precision, not just headroom.
 
-At full resolution and 10-bit depth the sensor is capable of \textbf{210 frames
+At full resolution and 10-bit depth, the sensor is capable of \textbf{210 frames
 per second} --- comfortably more than a USB link can carry continuously. The
 camera closes that gap two ways.
 
@@ -113,6 +133,12 @@ The camera does not have to be fed video at all. The board generates its own
 pattern sequences internally and drives the projector directly, at frame rates up
 to \textbf{120 per second} --- the same rate at which it streams full frames.
 
+That rate is not arbitrary. \textbf{3D-Ready DLP projectors} --- a large and
+inexpensive installed base, built to accept 120\,Hz for shutter-glasses stereo ---
+take a 120\,Hz signal as a matter of course. The camera drives them at their native
+rate, and the highest standard mode it drives at 120\,Hz is
+\textbf{800$\times$600}. Anything above that is a 60 to 75\,Hz proposition.
+
 The entire structured-light loop --- project a pattern, capture it, advance to the
 next --- therefore runs on the camera itself, at 120\,Hz, with nothing driving the
 video path but the camera. A computer is needed only to collect the resulting
@@ -120,6 +146,26 @@ images, not to generate what is projected.
 
 Where a host \emph{is} driving the display, the camera passes its video through
 untouched, so the same hardware serves both arrangements.
+
+\section{Any projector --- and a host offered only what works}
+
+Nothing about the camera is tied to a particular projector. On power-up, it reads the
+projector's \textbf{EDID} --- the small data block every display serves back over the
+video cable to describe what it can accept --- and works from what it finds there. In
+standalone operation, it drives the projector at a mode the projector actually
+advertises, rather than at an assumed one.
+
+When a host PC is in the video path, the camera goes a step further: it builds an EDID
+of its own and serves that to the computer. What the PC is offered is the projector's
+mode list \emph{narrowed to the range the camera can itself receive} --- from
+\textbf{640$\times$480 at 60\,Hz} at the bottom to \textbf{1280$\times$800 at 60\,Hz}
+at the top, taking in 1024$\times$768 at up to 75\,Hz along the way. The camera is
+working to a pixel-rate budget rather than a single maximum, so resolution and frame
+rate trade against one another: the smaller the frame, the faster it may arrive.
+
+Because many projectors serve a placeholder EDID while they warm up, the camera keeps
+re-reading it and re-offers the host an updated list whenever the content changes --- so
+the projector's real modes appear without anyone unplugging a cable.
 
 \section{Daisy-chaining: one video signal, many cameras}
 
@@ -155,9 +201,13 @@ That makes multi-camera geometries straightforward to assemble:
 \textbf{Buffered capture}  & To on-board DDR3 at sensor rate, downloaded after \\
 \textbf{Host interface}    & USB 3.0, 325\,MB/s sustained, byte-exact \\
 \textbf{Video in / out}    & HDMI receive and transmit, pass-through \\
-\textbf{Standalone output} & Board-generated video to 120\,Hz, no HDMI source needed \\
+\textbf{Projector support} & Reads the projector's EDID; any projector in the window \\
+\textbf{Pass-through window} & 25--90\,MHz pixel clock, enforced in the EDID served to the host \\
+\textbf{Standalone output} & Board-generated video, no HDMI source needed \\
+\textbf{Highest 120\,Hz mode} & 800$\times$600 at 120\,Hz (3D-Ready DLP projectors) \\
 \textbf{Verified modes}    & $640\times480$ through $1280\times800$, 60 to 120\,Hz \\
 \textbf{Processing}        & Xilinx Artix-7 FPGA with DDR3 frame buffer \\
+\textbf{Construction}      & Alchitry Pt~V2, Ft+ and Hd+ boards plus a custom sensor board \\
 \textbf{On-board patterns} & Sinusoidal fringe generation, radiometric linearization \\
 \bottomrule
 \end{tabular}
@@ -168,35 +218,99 @@ applies a host-uploadable correction curve, so that a commanded intensity ramp
 reproduces linearly on the projector --- a calibration that otherwise has to be
 carried out in host software for every projector.
 
+The instrument is built as a stack. Three of its boards are commercially available
+parts from \textbf{Alchitry} --- the Pt~V2 mainboard carrying the Artix-7 FPGA, the
+Ft+ for the USB~3.0 link, and the Hd+ for HDMI in and out --- and on top of them sits
+a \textbf{custom-designed sensor board}, developed for this project, carrying the
+PYTHON~1300 and its power supplies. The boards mate through a common high-density
+stacking connector, so the whole camera assembles without a single internal cable and
+drops into the printed enclosure shown below.
+
+\section{Background --- the work this camera comes from}
+
+The architecture announced here was proposed and argued for in this group's earlier
+published work. What is new is that it has been built, and measured. Readers who want
+the reasoning behind the design will find it in the following.
+
+\begin{itemize}\itemsep4pt
+  \item M.~P.~Ruffner, Y.~Yu and D.~L.~Lau, ``Structured light smart camera for spatial
+        augmented reality applications,'' \emph{Proc. SPIE} \textbf{10932}, Emerging
+        Digital Micromirror Device Based Systems and Applications XI, 109320J (2019).
+        \href{https://doi.org/10.1117/12.2508553}{doi:10.1117/12.2508553}\\
+        \small\textit{The direct predecessor. It sets out why a PC cannot be trusted to
+        synchronize a projector and a camera, and proposes putting the image sensor and
+        an HDMI input and output onto the FPGA controller itself --- the design this
+        camera realizes.}
+  \item M.~P.~Ruffner, ``Design of a Machine Vision Camera for Spatial Augmented
+        Reality,'' MSEE thesis, University of Kentucky (2018).
+        \href{https://uknowledge.uky.edu/ece_etds/129/}{uknowledge.uky.edu/ece\_etds/129}\\
+        \small\textit{The long-form treatment of the same design, including the power
+        and layout work that a sensor board of this kind stands or falls on.}
+  \item Y.~Yu, D.~L.~Lau, M.~P.~Ruffner and K.~Liu, ``Dual-projector structured light 3D
+        shape measurement,'' \emph{Applied Optics} \textbf{59}(4), 964--974 (2020).
+        \href{https://doi.org/10.1364/AO.378363}{doi:10.1364/AO.378363}\\
+        \small\textit{Why more than one light engine is worth the trouble: fewer
+        occlusions, better signal-to-noise, fewer frames per scan, and multi-path
+        made visible. The argument that makes a chainable camera worth building.}
+  \item Y.~Yu and D.~L.~Lau, ``3D scanning by means of dual-projector structured light
+        illumination,'' \emph{Proc. SPIE} \textbf{10932}, 109320M (2019).
+        \href{https://doi.org/10.1117/12.2510990}{doi:10.1117/12.2510990}\\
+        \small\textit{The conference treatment of the above, with the temporal-frequency
+        multiplexing that lets two projectors run at once.}
+\end{itemize}
+
 \section{}
 
 \begin{quote}
 \itshape
-``[DRAFT QUOTE --- to be written or approved by the named speaker before release.
-The strongest version says, in one sentence and without technical vocabulary,
-what becomes possible that was not possible before.]''
+``This system is the culmination of years of research and development into structured
+light imaging, and by making commodity projector synchronization so easy, I hope it
+unlocks years more of technological improvements in SLI.''
 \end{quote}
 
-\noindent --- [Name, title, University of Kentucky]
+\noindent --- Daniel L. Lau, DataBeam Professor of Electrical and Computer
+Engineering, University of Kentucky
 
 \section{Images}
 
-% Replace the placeholder below with the supplied photographs, e.g.
-% \begin{figure}[h]\centering
-%   \includegraphics[width=0.8\linewidth]{board_top.jpg}
-%   \caption{The BYOP camera board. Photo: University of Kentucky.}
-% \end{figure}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.86\linewidth]{stack_with_lens_cap.jpg}
+  \caption*{\small\textbf{The complete camera, opened.} The board stack sits in its
+  printed enclosure: the HDMI board at the bottom, the USB~3.0 image link and the
+  Artix-7 FPGA above it, and the PYTHON~1300 sensor board on top, its glass lid
+  facing up. The 48-pin sensor, on a 1.016\,mm lead pitch, was soldered by hand in
+  the lab. At right, the enclosure's lid carries the lens and drops straight onto
+  the stack. \textit{Photo: University of Kentucky.}}
+\end{figure}
 
-\noindent\fbox{\parbox{\linewidth}{\centering\vspace{18pt}
-\textit{[Board photograph to be supplied]}\vspace{18pt}}}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.86\linewidth]{stack_connector_edge.jpg}
+  \caption*{\small\textbf{The connector edge.} The two HDMI ports at the bottom are
+  the video input and output. The \emph{input} is fed by the host PC, or by the
+  previous camera when units are daisy-chained; the \emph{output} drives the
+  projector, or the next camera in the chain. Above them are two
+  USB-C connectors: the lower carries the image stream to the host, the upper is the
+  FPGA board's own configuration and diagnostic link. The sensor board is the
+  topmost in the stack. \textit{Photo: University of Kentucky.}}
+\end{figure}
 
 \vspace{6pt}
 {\small Additional images and captions available on request.}
 
 \section{About}
 
-[Boilerplate: department, laboratory, funding acknowledgement, and any licensing
-or availability statement.]
+The BYOP camera comes out of the laboratory of \textbf{Daniel L. Lau}, DataBeam
+Professor of Electrical and Computer Engineering at the University of Kentucky, whose
+career in three-dimensional imaging spans twenty-five years. Since joining the
+University of Kentucky in 2001, he has worked on structured-light 3D imaging --- both
+the algorithms that make real-time, high-accuracy shape measurement possible and the
+instruments that have to carry them --- work that established non-contact 3D
+fingerprint capture as a practical alternative to contact scanning and that has reached
+industry through two companies he co-founded, FlashScan3D and Seikowave. He is also a
+pioneer of digital halftoning, and in 2026 was elected a Fellow of the IEEE for
+contributions to digital printing and 3D imaging.
 
 \vspace{6pt}
 \pressrule
@@ -242,6 +356,19 @@ or availability statement.]
 %     video source.
 %   * On-board sinusoidal fringe generation and a host-uploadable linearization
 %     curve.
+%   * EDID / PASS-THROUGH WINDOW: sourced to edid_builder.v, which is the authority --
+%     F_MIN_10K = 2500 (25.00 MHz) and F_MAX_10K = 9000 (90.00 MHz). The served EDID is
+%     {projector's modes} INTERSECT {25..90 MHz}, monitor name FPGA-PT. The 90 MHz cap
+%     is the recovery MMCM: x15 on this -2 part, VCO <= 1440 MHz -> pixel <= 96 MHz,
+%     set at 90 for margin. The board also owns host HPD and re-pulses it (~500 ms)
+%     when the merged EDID content changes, which is the warm-up placeholder case.
+%     NOTE README.md still says "60 MHz floor" -- that is STALE. The floor was lowered
+%     60.00 -> 25.00 MHz once rx_freq_band.v made the recovery MMCM adaptive. Do not
+%     quote the README figure; quote the RTL.
+%   * The OUTPUT side has a SECOND, different ceiling -- the OSERDES ~600 MHz limit,
+%     i.e. pixel <= ~120 MHz, which is why offline tops out at 1280x1024@60 (108 MHz)
+%     and 1080p60 (148.5 MHz) is unreachable. Do not conflate it with the 90 MHz
+%     receive window above; they are different numbers for different reasons.
 %   * STANDALONE OUTPUT to 120 Hz: the board generates and drives its own video
 %     with no host in the video path. All fourteen curated modes were verified
 %     eyes-on 2026-08-28, including 800x600@120 and 640x480@120. Offline is also
@@ -259,10 +386,39 @@ or availability statement.]
 %     but no multi-camera chain has been built or measured.
 %   * ACTIVE STEREO follows from the above and is likewise not yet demonstrated.
 %
+%   * PRIOR WORK: the four citations in "Background" are verified against SPIE, Optica
+%     and UKnowledge. NOTE the framing is deliberate -- the 2019 SPIE paper PROPOSED
+%     this architecture, so the claim is "built and measured", NOT "first to think of
+%     it". Do not let an editor upgrade it to a novelty claim; the group's own paper
+%     is the prior art.
+%   * Ying Yu's PhD dissertation, "Spatial Augmented Reality Using Structured Light
+%     Illumination" (Univ. of Kentucky), belongs in that list too. It is LEFT OUT only
+%     because the year and the UKnowledge URL could not be confirmed. Add it once
+%     someone checks the record.
+%   * BIO: sourced from the UK ECE department pages (ece.engr.uky.edu/people/daniel-lau
+%     and the IEEE Fellow announcement). CONFIRM THE CHAIR TITLE before release --
+%     the department page says "DataBeam Professor" and also "Director of Graduate
+%     Studies in Electrical Engineering", while other profiles still say "Kentucky
+%     Utilities Professor". One of them is stale; the release uses DataBeam. The
+%     2026 IEEE Fellow citation wording ("for contributions to digital printing and
+%     3D imaging") is quoted from the department's own announcement.
+%   * THE "WHY COMMODITY PROJECTOR" ARGUMENT in the BYOP paragraph (cost of dedicated
+%     light engines vs. luminance / FOV / LED life of mass-market DLP) is the author's
+%     domain assertion, NOT measured or sourced in this repo. It is written
+%     qualitatively on purpose. If comms wants a price or lumen figure attached, it
+%     needs a citable source first -- do not let anyone insert a number here that
+%     nobody can stand behind.
 % STILL TO SETTLE:
-%   * The quote is a placeholder. Do not publish words attributed to a person who
-%     has not written or approved them.
-%   * Contact block, funding acknowledgement, IP/licensing statement.
+%   * QUOTE: supplied by Lau himself, 2026-09-02, and reproduced as given except for
+%     spelling. No further edit should be made to it without his sign-off -- it is his
+%     voice, not the drafter's. (One optional tidy if he wants it: "by making commodity
+%     projector synchronization so easy, I hope it unlocks" dangles slightly; "and I
+%     hope that making commodity projector synchronization this easy unlocks..." fixes
+%     it. Left alone deliberately.)
+%   * Contact block: name, title, affiliation and email are in. NO PHONE NUMBER --
+%     add one if the release is going to wire services, which generally expect a
+%     reachable number. Funding acknowledgement and IP/licensing statement are still
+%     outstanding.
 %   * Whether "BYOP" is being claimed as a name or used descriptively.
 %   * UK communications office review, and the official department/logo lockup.
 %==============================================================================
