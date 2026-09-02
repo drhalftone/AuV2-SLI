@@ -1,0 +1,14 @@
+# NOTHING in this folder is committed. Every file here is a vendor document -- the
+# Pt V2, Ft+ and Hd schematics and STEP models from Alchitry, and Espressif's
+# ESP32-C3-MINI datasheet -- and all of them are downloadable from the URLs listed
+# in ../README.md section 7.
+#
+# They total ~135 MB, against a repository whose .git is 96 MB and whose largest
+# tracked file is 10 MB; FtPlus.step alone is 65 MB, past GitHub's 50 MB warning.
+# Committing them would more than double the repo, permanently, to store documents
+# we did not author and can fetch again in a minute.
+#
+# Every number in ../README.md is sourced to a named sheet, page or table of these
+# documents, so the analysis survives without the files being here.
+*
+!.gitignore
