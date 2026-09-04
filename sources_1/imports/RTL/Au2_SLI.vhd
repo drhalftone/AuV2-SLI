@@ -308,6 +308,9 @@ architecture Behavioral of Au2_SLI is
     signal imp_rgb_w : std_logic_vector(7 downto 0) := x"07";
     signal imp_lvl_w : std_logic_vector(7 downto 0) := x"FF";
     signal imp_lvl_p0, imp_lvl_p1 : std_logic_vector(7 downto 0) := x"FF";
+    signal gl_div_w : std_logic := '0';
+    signal imp_cyc_w : std_logic_vector(7 downto 0) := x"05";
+    signal imp_cyc_p0, imp_cyc_p1 : std_logic_vector(2 downto 0) := "101";
     signal imp_rgb_p0, imp_rgb_p1 : std_logic_vector(2 downto 0) := "111";
     signal imp_r, imp_g, imp_b : std_logic_vector(7 downto 0);
     -- TLP hand-off into the camera module, gated by WITH_TLP (see the generic).
@@ -317,6 +320,7 @@ architecture Behavioral of Au2_SLI is
         generic ( CYCLE : integer );
         port ( pclk : in std_logic; vsync_pos : in std_logic; en : in std_logic;
                lvl : in std_logic_vector(7 downto 0);
+               cyc : in std_logic_vector(2 downto 0);
                level : out std_logic_vector(7 downto 0);
                phase : out std_logic_vector(2 downto 0);
                phase0 : out std_logic );
@@ -570,6 +574,8 @@ architecture Behavioral of Au2_SLI is
                gldly_uart_we  : out STD_LOGIC;
                imp_rgb        : out STD_LOGIC_VECTOR(7 downto 0);
                imp_lvl        : out STD_LOGIC_VECTOR(7 downto 0);
+               gl_div         : out STD_LOGIC;
+               imp_cyc        : out STD_LOGIC_VECTOR(7 downto 0);
                -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
                -- usb_link, so these are the sensor's physical pins.
                cam_sck     : out STD_LOGIC;
@@ -793,6 +799,7 @@ architecture Behavioral of Au2_SLI is
                imp_phase_i    : in  std_logic_vector(2 downto 0) := (others => '0');
                expo_uart_i    : in  std_logic_vector(15 downto 0) := (others => '0');
                expo_uart_we   : in  std_logic := '0';
+               gl_div_i       : in  std_logic := '0';
                gldly_uart_i   : in  std_logic_vector(23 downto 0) := (others => '0');
                gldly_uart_we  : in  std_logic := '0';
                ctl_byte       : out std_logic_vector(7 downto 0);
@@ -1024,6 +1031,7 @@ begin
         expo_uart   => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart  => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
+        gl_div      => gl_div_w, imp_cyc => imp_cyc_w,
         vs_meas     => out_vsync,
         rx_meas     => rx_meas_w,
         rx_pixkhz   => rx_pixkhz_w,
@@ -1385,6 +1393,8 @@ begin
         imp_rgb_p1 <= imp_rgb_p0;
         imp_lvl_p0 <= imp_lvl_w;
         imp_lvl_p1 <= imp_lvl_p0;
+        imp_cyc_p0 <= imp_cyc_w(2 downto 0);
+        imp_cyc_p1 <= imp_cyc_p0;
     end if;
 end process;
 
@@ -1442,7 +1452,7 @@ end process;
 i_impulse: impulse_gen
     generic map ( CYCLE => 5 )
     port map ( pclk => pixel_clk, vsync_pos => vsync_Pos, en => imp_en,
-               lvl => imp_lvl_p1,
+               lvl => imp_lvl_p1, cyc => imp_cyc_p1,
                level => imp_level, phase => imp_phase, phase0 => imp_ph0 );
 
 -- TLP into the camera: the real values in a pass-through build, hard zeros in a
@@ -1537,10 +1547,23 @@ i_cam_frame_ft : cam_frame_ft
         roi_phase_o => roi_phase_w,
         imp_phase_i => imp_ph_s1,
         expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
+        gl_div_i => gl_div_w,
         gldly_uart_i => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         -- G1: the projector's vsync reaches the camera module. Ignored there
         -- for now; only the edge counter proves the wire works.
-        ext_sync => out_vsync,
+        -- TRIGGER ON THE LEADING EDGE OF THE VSYNC PULSE.
+        --
+        -- This used to be the RAW out_vsync. Genlock fires on a RISING edge, and at a
+        -- negative-polarity mode (800x600@120 is VPOL=0) the raw signal idles HIGH and
+        -- pulses LOW -- so its rising edge is the pulse's TRAILING edge. Delay 0 then
+        -- sat 78.6 us (6 lines) after the frame boundary, and worse, the camera and the
+        -- pattern sequencer keyed off DIFFERENT edges of the same pulse: impulse_gen
+        -- advances the phase on vsync_Pos's rising edge, i.e. the LEADING edge.
+        --
+        -- Driving ext_sync from vsync_Pos makes both use the same edge by construction,
+        -- so delay 0 is the frame boundary and the two can no longer disagree. On a
+        -- positive-polarity mode this changes nothing -- the edges already coincided.
+        ext_sync => vsync_Pos,
         -- The top-left pixel of the incoming HDMI frame, and its update toggle,
         -- so the camera can stamp each captured frame with the pattern it saw.
         ext_tlp => tlp_to_cam, ext_tlp_tog => tlp_tog_to_cam,

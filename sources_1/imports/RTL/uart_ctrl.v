@@ -131,6 +131,8 @@ module uart_ctrl #(
     // the timing at 0xFF -- fine for bring-up, not a substitute for real
     // attenuation when the profiling sweeps start.
     output reg  [7:0]  imp_lvl,
+    // 0x11 IMPCYC -- frames per sequence, default 5. Write 2 for BRIGHT,K.
+    output reg  [7:0]  imp_cyc,
     output reg         gldly_uart_we,
     output wire        sli_ctrl_en,      // = sli_ctrl[7]  (USB overrides switches)
     output wire        lut_loaded,       // a table has been uploaded since reset
@@ -443,6 +445,7 @@ case (addr)
             8'h1E:   rd_data  = gldly_uart[23:16];
             8'h1F:   rd_data  = imp_rgb;
             8'h12:   rd_data  = imp_lvl;
+            8'h11:   rd_data  = imp_cyc;
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -666,7 +669,7 @@ case (addr)
             roi_ctl <= 8'h00; roi_col8 <= 8'd80; roi_row8 <= 8'd64;
             expo_uart <= 16'd0; expo_uart_we <= 1'b0;
             gldly_uart <= 24'd0; gldly_uart_we <= 1'b0;
-            imp_rgb <= 8'h07; imp_lvl <= 8'hFF;
+            imp_rgb <= 8'h07; imp_lvl <= 8'hFF; imp_cyc <= 8'd5;
             link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
@@ -770,6 +773,8 @@ case (addr)
                         imp_rgb <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h12) begin    // IMPLVL bright-frame code
                         imp_lvl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h11) begin    // IMPCYC frames per sequence
+                        imp_cyc <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h15) begin    // LINKCTL: self-timed disconnect
                         link_tgt    <= dbyte[1:0];
                         link_secs   <= dbyte[7:2];

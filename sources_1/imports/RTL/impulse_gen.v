@@ -29,11 +29,17 @@ module impulse_gen #(
     input  wire       vsync_pos,          // active-high vsync, already polarity-corrected
     input  wire       en,                 // 0 = pass the incoming video through untouched
     input  wire [7:0] lvl,                // code driven on the bright frame (0x12)
+    // Frames per sequence (0x11). 5 = BRIGHT,K,K,K,K; 2 = BRIGHT,K. A shorter cycle
+    // sweeps far faster: the span to cover is cyc*T and the per-cycle trigger rate is
+    // fps/cyc, so halving the cycle wins on both counts. Clamped to >= 2 -- a cycle of
+    // 1 would be a permanently bright field with no dark reference at all.
+    input  wire [2:0] cyc,
     output reg  [7:0] level,              // 8'hFF on the bright frame, else 8'h00
     output reg  [2:0] phase,              // 0 = the bright frame
     output reg        phase0              // level pulse: high for the whole bright frame
 );
     reg vs_d = 1'b0;
+    wire [2:0] cyc_eff = (cyc < 3'd2) ? CYCLE[2:0] : cyc;
 
     initial begin level = 8'h00; phase = 3'd0; phase0 = 1'b0; end
 
@@ -48,7 +54,7 @@ module impulse_gen #(
             level  <= 8'h00;
             phase0 <= 1'b0;
         end else if (vsync_pos & ~vs_d) begin        // rising edge = new frame
-            if (phase == CYCLE[2:0] - 3'd1) phase <= 3'd0;
+            if (phase >= cyc_eff - 3'd1)    phase <= 3'd0;
             else                            phase <= phase + 3'd1;
         end
 

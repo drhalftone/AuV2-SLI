@@ -98,6 +98,7 @@ architecture rtl of wkkkk_top is
         generic ( CYCLE : integer );
         port ( pclk : in std_logic; vsync_pos : in std_logic; en : in std_logic;
                lvl : in std_logic_vector(7 downto 0);
+               cyc : in std_logic_vector(2 downto 0);
                level : out std_logic_vector(7 downto 0);
                phase : out std_logic_vector(2 downto 0);
                phase0 : out std_logic );
@@ -201,6 +202,7 @@ begin
     i_imp : impulse_gen generic map ( CYCLE => CYCLE )
         port map ( pclk => pixel_clk, vsync_pos => vsync_pos, en => '1',
                    lvl => x"FF",
+                   cyc => "101",
                    level => imp_level, phase => imp_phase, phase0 => imp_ph0 );
 
     ----------------------------------------------------------------------------

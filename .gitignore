@@ -104,3 +104,8 @@ host/frame_timeline.html
 
 # ad-hoc capture logs from host/roi_live.py --log at the repo root
 /*.csv
+
+# sweep artefacts at the repo root -- plots and run logs are regenerable from the
+# scripts, and the raw CSVs they came from are ignored above
+/*.png
+/sweep_*_run.txt

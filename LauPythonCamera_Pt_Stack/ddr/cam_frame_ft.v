@@ -164,6 +164,17 @@ module cam_frame_ft #(
     // saturated sensor reports a clean, plausible, contentless trace.
     input  wire [15:0] expo_uart_i,
     input  wire        expo_uart_we,
+    // gl_div: accept ONE vsync in five -- the one carrying the bright frame -- so a
+    // single trigger per sequence is referenced unambiguously to THAT frame's vsync
+    // and the delay can span all five frames.
+    //
+    // WHY IT MATTERS. Triggering every vsync means each exposure is measured from
+    // its OWN frame's vsync, so once delay + exposure passes a frame period the
+    // window runs off the end of the frame it is supposed to be sampling, and which
+    // frame a sample belongs to stops being well defined. It also makes the reported
+    // phase depend on trigger/frame pairing, which is startup-dependent. One trigger
+    // per sequence removes both problems: there is only ever one reference edge.
+    input  wire        gl_div_i,
     input  wire [23:0] gldly_uart_i,
     input  wire        gldly_uart_we,
 
@@ -501,7 +512,16 @@ module cam_frame_ft #(
     wire [GLQ_AW-1:0] glq_nxt = glq_wr + 1'b1;
     wire glq_full  = (glq_nxt == glq_rd);
     wire glq_empty = (glq_wr  == glq_rd);
-    wire gl_push   = xs_rise && gl_live && !glq_full;
+    // The push is DEFERRED a few cycles: imp_phase_i changes ON the vsync -- the same
+    // instant xs_rise asserts -- so testing it immediately would race the update.
+    // gl_now is captured AT the edge, so the delay is still measured from the vsync
+    // itself and not from the deferred push.
+    reg [23:0] gl_now_edge = 24'd0;
+    reg [7:0]  xs_dly = 8'd0;
+    wire       xs_use  = gl_div_i ? xs_dly[7] : xs_rise;
+    wire       xs_want = gl_div_i ? (imp_phase_i == 3'd0) : 1'b1;
+    wire [23:0] gl_base = gl_div_i ? gl_now_edge : gl_now;
+    wire gl_push   = xs_use && xs_want && gl_live && !glq_full;
     wire gl_pop    = !glq_empty && !gl_late[23];
 
     always @(posedge clk) begin
@@ -513,15 +533,18 @@ module cam_frame_ft #(
             gl_fire <= 1'b0;
             gl_now  <= gl_now + 24'd1;
 
+            xs_dly <= {xs_dly[6:0], xs_rise};
+            if (xs_rise) gl_now_edge <= gl_now;
+
             if (xs_rise)                   xs_age <= 24'd0;
             else if (xs_age != XS_TIMEOUT) xs_age <= xs_age + 24'd1;
 
-            // ---- push one fire-time per projected frame ----
-            if (xs_rise && gl_live) begin
+            // ---- push one fire-time per projected frame (or per sequence) ----
+            if (xs_use && xs_want && gl_live) begin
                 if (glq_full) begin
                     if (gl_ovf != 8'hFF) gl_ovf <= gl_ovf + 8'd1;
                 end else begin
-                    glq[glq_wr] <= gl_now + gl_dly;
+                    glq[glq_wr] <= gl_base + gl_dly;
                     glq_wr      <= glq_nxt;
                 end
             end

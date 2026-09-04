@@ -116,6 +116,8 @@ module usb_link #(
     output wire        gldly_uart_we,
     output wire [7:0]  imp_rgb,
     output wire [7:0]  imp_lvl,
+    output wire [7:0]  imp_cyc,
+    output wire        gl_div,          // ROICTL bit 5: one trigger per sequence
 
     // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
     // The SPI master lives in here, right next to the control plane that drives it,
@@ -332,6 +334,7 @@ module usb_link #(
     // they are 9.6 kB/s against 11.5 kB/s and the ROI stream -- the measurement --
     // would be the one that stalls. So enabling the stream REPLACES telemetry.
     wire       roi_en  = roi_ctl[6];
+    assign     gl_div  = roi_ctl[5];
     wire [7:0] s_data  = roi_en ? rl_data : st_data;
     wire       s_send  = roi_en ? rl_send : st_send;
     wire       s_busy  = roi_en ? rl_busy : st_busy;
@@ -483,7 +486,7 @@ module usb_link #(
         .roi_ctl(roi_ctl), .roi_col8(roi_col8), .roi_row8(roi_row8),
         .expo_uart(expo_uart), .expo_uart_we(expo_uart_we),
         .gldly_uart(gldly_uart), .gldly_uart_we(gldly_uart_we),
-        .imp_rgb(imp_rgb), .imp_lvl(imp_lvl),
+        .imp_rgb(imp_rgb), .imp_lvl(imp_lvl), .imp_cyc(imp_cyc),
         .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
