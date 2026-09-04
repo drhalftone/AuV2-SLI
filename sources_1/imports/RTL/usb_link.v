@@ -100,6 +100,15 @@ module usb_link #(
 
     // reg 0x16 CAMSIM: host-driven camera-ready, {7:rdy_en, 0:rdy_val}
     output wire [7:0]  cam_sim,
+    // ---- projector profiling ------------------------------------------
+    output wire [7:0]  roi_ctl,        // 0x17 {7:imp_en, 6:roi_stream_en}
+    output wire [7:0]  roi_col8,       // 0x18
+    output wire [7:0]  roi_row8,       // 0x19
+    input  wire [9:0]  roi_mean_i,     // from cam_frame_ft, clk100 domain
+    input  wire [8:0]  roi_npx_i,
+    input  wire [15:0] roi_fcnt_i,
+    input  wire        roi_blk_i,
+    input  wire        roi_valid_i,    // 1-cycle pulse, one per camera frame
 
     // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
     // The SPI master lives in here, right next to the control plane that drives it,
@@ -309,7 +318,16 @@ module usb_link #(
     wire [39:0] maxexp_w = {RESERVE_TICKS[15:0], per_ok, mexp_rlim, src_r, 5'd0, mexp};
 
     // ---- producers ----
-    wire [7:0] s_data;  wire s_send, s_busy;        // status_line producer
+    wire [7:0] st_data; wire st_send, st_busy;       // status_line producer
+    wire [7:0] rl_data; wire rl_send, rl_busy;       // roi_line producer
+    // ONE ARBITER SLOT, TWO PRODUCERS. The status line is 62 bytes on a 0.5 s
+    // window; the ROI line is 18 bytes once per camera frame (~120/s). Together
+    // they are 9.6 kB/s against 11.5 kB/s and the ROI stream -- the measurement --
+    // would be the one that stalls. So enabling the stream REPLACES telemetry.
+    wire       roi_en  = roi_ctl[6];
+    wire [7:0] s_data  = roi_en ? rl_data : st_data;
+    wire       s_send  = roi_en ? rl_send : st_send;
+    wire       s_busy  = roi_en ? rl_busy : st_busy;
     wire [7:0] c_data;  wire c_send, c_active;      // uart_ctrl producer
     wire       u_busy;                              // shared uart_tx busy
 
@@ -362,13 +380,21 @@ module usb_link #(
     wire        c_tx_busy = src_ft ? rpl_full : (owner ? u_busy : 1'b1);
     wire [7:0]  tx_data   = owner ? c_data : s_data;
     wire        tx_send   = owner ? (c_send & ~src_ft) : s_send;
-    wire        s_go      = stat_tick & ~c_active & ~owner;   // don't start a line if ctrl is busy
+    wire        s_go      = stat_tick & ~c_active & ~owner & ~roi_en; // ctrl busy, or ROI stream owns the slot
 
     // ---- status line (telemetry) ----
     status_line i_stat (
         .clk(clk100), .go(s_go),
         .led_s(led_s), .dbg_s(dbg_s), .mrg(mrg_s), .tlp(tlp_s), .tcnt(tcnt_s), .olp(olp_s), .vs_lat(vs_lat),
-        .tx_data(s_data), .tx_send(s_send), .tx_busy(s_tx_busy), .busy(s_busy)
+        .tx_data(st_data), .tx_send(st_send), .tx_busy(s_tx_busy), .busy(st_busy)
+    );
+
+    // ---- ROI sample line (one per camera frame) ----
+    roi_line i_roi (
+        .clk(clk100),
+        .go(roi_valid_i & roi_en & ~c_active & ~owner),
+        .mean(roi_mean_i), .fcnt(roi_fcnt_i), .npx(roi_npx_i), .blk(roi_blk_i),
+        .tx_data(rl_data), .tx_send(rl_send), .tx_busy(s_tx_busy), .busy(rl_busy)
     );
 
     // ---- receive + command engine ----
@@ -445,7 +471,9 @@ module usb_link #(
         .tx_data(c_data), .tx_send(c_send), .tx_busy(c_tx_busy), .tx_active(c_active),
         .led(led_s), .pins({esw1, psw1}),
         .sli_ctrl(sli_ctrl),
-        .cam_sim(cam_sim), .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
+        .cam_sim(cam_sim),
+        .roi_ctl(roi_ctl), .roi_col8(roi_col8), .roi_row8(roi_row8),
+        .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
         .lutv_addr(lutv_addr), .lutv_dout(lutv_dout),

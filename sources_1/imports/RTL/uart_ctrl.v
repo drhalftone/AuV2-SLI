@@ -95,6 +95,18 @@ module uart_ctrl #(
     // it in the PYTHON1300 stack, so the pacing logic it feeds was untestable.
     // An untestable fix is an unverified fix.
     output reg  [7:0]  cam_sim,
+    // ---- projector profiling (PROJECTOR_PROFILING_PLAN.md) ----------------
+    // 0x17 ROICTL  {7:imp_en, 6:roi_stream_en}
+    //   imp_en        offline video becomes WHITE,K,K,K,K repeating
+    //   roi_stream_en the UART emits one ROI line per camera frame INSTEAD of
+    //                 the 0.5 s status line. They share one arbiter slot, so
+    //                 this is a swap, not an addition -- 120 lines/s and the
+    //                 62-byte status line do not both fit in 115200 baud.
+    // 0x18 ROICOL8  ROI first column / 8   (default 80 -> column 640)
+    // 0x19 ROIROW8  ROI first row / 8      (default 64 -> row 512)
+    output reg  [7:0]  roi_ctl,
+    output reg  [7:0]  roi_col8,
+    output reg  [7:0]  roi_row8,
     output wire        sli_ctrl_en,      // = sli_ctrl[7]  (USB overrides switches)
     output wire        lut_loaded,       // a table has been uploaded since reset
 
@@ -396,6 +408,9 @@ case (addr)
             8'h14:   rd_data  = mode_force;
             8'h15:   rd_data  = {link_drop_proj, link_drop_host, link_secs};
             8'h16:   rd_data  = cam_sim;
+            8'h17:   rd_data  = roi_ctl;
+            8'h18:   rd_data  = roi_col8;
+            8'h19:   rd_data  = roi_row8;
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -612,6 +627,7 @@ case (addr)
             mode_force <= 8'h00;       // force_en=0 -> EDID pick is in charge
             link_drop_host <= 1'b0; link_drop_proj <= 1'b0;
             cam_sim <= 8'h00;
+            roi_ctl <= 8'h00; roi_col8 <= 8'd80; roi_row8 <= 8'd64;
             link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
@@ -693,6 +709,12 @@ case (addr)
                         mode_force <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h16) begin    // CAMSIM: host-driven rdy
                         cam_sim <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h17) begin    // ROICTL: impulse + stream
+                        roi_ctl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h18) begin    // ROICOL8
+                        roi_col8 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h19) begin    // ROIROW8
+                        roi_row8 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h15) begin    // LINKCTL: self-timed disconnect
                         link_tgt    <= dbyte[1:0];
                         link_secs   <= dbyte[7:2];

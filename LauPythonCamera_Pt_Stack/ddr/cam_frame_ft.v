@@ -126,6 +126,18 @@ module cam_frame_ft #(
     output wire [223:0] cam_stat_o,
     output wire        cam_stat_tog_o,
 
+    // ---- ROI mean for projector profiling (see roi_mean.v) ------------------
+    // Placement in, one scalar per frame out. Everything here is in the `clk`
+    // domain; the wordclk -> clk crossing is done below, once, on a payload that
+    // is stable for a whole frame period.
+    input  wire [7:0]  roi_col8_i,      // ROI first column / 8
+    input  wire [7:0]  roi_row8_i,      // ROI first row / 8
+    output reg  [9:0]  roi_mean_o,
+    output reg  [8:0]  roi_npx_o,       // must read 256 -- see roi_mean.v
+    output reg  [15:0] roi_fcnt_o,
+    output reg         roi_blk_o,
+    output reg         roi_valid_o,     // 1-cycle pulse in `clk`
+
     // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
     // the parent as BYTES in the `clk` domain. See the ctl_* block below for why
     // it rides opcode 0 rather than being packed raw.
@@ -926,6 +938,59 @@ module cam_frame_ft #(
         .kbase(kbase), .kvalid(kvalid), .line_start(line_start),
         .frame_start(frame_start), .frame_end(frame_end), .in_black(in_black)
     );
+    // ---- ROI mean, tapped straight off the decoder ---------------------------
+    // Deliberately parallel to the capture path rather than inside it: it reads the
+    // same wires the DDR writer reads and drives nothing the writer touches, so it
+    // cannot perturb a datapath that is already proven byte-exact. It also keeps
+    // working when the Ft+ is not cabled at all, which is the whole point -- the
+    // profiling experiment runs over the Pt's UART with no USB 3 link present.
+    wire [9:0]  roi_mean_w;
+    wire [8:0]  roi_npx_w;
+    wire [15:0] roi_fcnt_w;
+    wire        roi_blk_w, roi_done_w;
+
+    // Placement registers arrive in `clk` and are quasi-static; 2FF into wordclk.
+    reg [7:0] roi_col8_s0 = 8'd0, roi_col8_s1 = 8'd0;
+    reg [7:0] roi_row8_s0 = 8'd0, roi_row8_s1 = 8'd0;
+    always @(posedge wordclk) begin
+        roi_col8_s0 <= roi_col8_i; roi_col8_s1 <= roi_col8_s0;
+        roi_row8_s0 <= roi_row8_i; roi_row8_s1 <= roi_row8_s0;
+    end
+
+    roi_mean u_roi (
+        .wordclk(wordclk), .rst(wc_rst),
+        .roi_col8(roi_col8_s1), .roi_row8(roi_row8_s1),
+        .kvalid(kvalid), .kbase(kbase),
+        .kp0(kp0), .kp1(kp1), .kp2(kp2), .kp3(kp3),
+        .kp4(kp4), .kp5(kp5), .kp6(kp6), .kp7(kp7),
+        .line_start(line_start), .frame_start(frame_start),
+        .frame_end(frame_end), .in_black(in_black),
+        .mean(roi_mean_w), .npx(roi_npx_w), .fcnt(roi_fcnt_w),
+        .blk(roi_blk_w), .done(roi_done_w)
+    );
+
+    // wordclk -> clk, toggle handshake. The payload is written once per frame and
+    // then held for ~8.3 ms, which is five orders of magnitude longer than the two
+    // sync flops, so the capture below can never see it mid-update.
+    reg [35:0] roi_hold_w = 36'd0;
+    reg        roi_tog_w  = 1'b0;
+    always @(posedge wordclk) if (roi_done_w) begin
+        roi_hold_w <= {roi_blk_w, roi_npx_w, roi_fcnt_w, roi_mean_w};
+        roi_tog_w  <= ~roi_tog_w;
+    end
+
+    reg [2:0] roi_tog_s = 3'b000;
+    always @(posedge clk) begin
+        roi_tog_s   <= {roi_tog_s[1:0], roi_tog_w};
+        roi_valid_o <= roi_tog_s[2] ^ roi_tog_s[1];
+        if (roi_tog_s[2] ^ roi_tog_s[1]) begin
+            roi_mean_o <= roi_hold_w[9:0];
+            roi_fcnt_o <= roi_hold_w[25:10];
+            roi_npx_o  <= roi_hold_w[34:26];
+            roi_blk_o  <= roi_hold_w[35];
+        end
+    end
+
     // ONE KERNEL, PACKED: 8 pixels x 10 bits = 80 bits = 10 bytes.
     //
     // Layout is the conventional packed-10 tiling -- four pixels in five bytes:

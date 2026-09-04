@@ -262,6 +262,29 @@ architecture Behavioral of Au2_SLI is
     signal cam_sim_w    : std_logic_vector(7 downto 0) := (others => '0');
     signal cam_stat_raw : std_logic_vector(223 downto 0);
     signal cam_stat_tog : std_logic;
+    -- projector profiling: ROI mean stream + the WHITE,K,K,K,K sequencer
+    signal roi_ctl_w   : std_logic_vector(7 downto 0) := (others => '0');
+    signal roi_col8_w  : std_logic_vector(7 downto 0) := (others => '0');
+    signal roi_row8_w  : std_logic_vector(7 downto 0) := (others => '0');
+    signal roi_mean_w  : std_logic_vector(9 downto 0) := (others => '0');
+    signal roi_npx_w   : std_logic_vector(8 downto 0) := (others => '0');
+    signal roi_fcnt_w  : std_logic_vector(15 downto 0) := (others => '0');
+    signal roi_blk_w   : std_logic := '0';
+    signal roi_valid_w : std_logic := '0';
+    -- pixel_pipe's colour output, before the impulse override
+    signal pp_red, pp_green, pp_blue : std_logic_vector(7 downto 0);
+    signal imp_level : std_logic_vector(7 downto 0);
+    signal imp_phase : std_logic_vector(2 downto 0);
+    signal imp_ph0   : std_logic;
+    signal imp_en    : std_logic;
+    signal imp_en_p0, imp_en_p1 : std_logic := '0';
+    component impulse_gen is
+        generic ( CYCLE : integer );
+        port ( pclk : in std_logic; vsync_pos : in std_logic; en : in std_logic;
+               level : out std_logic_vector(7 downto 0);
+               phase : out std_logic_vector(2 downto 0);
+               phase0 : out std_logic );
+    end component;
     signal cst_s        : std_logic_vector(2 downto 0) := "000";
     signal cam_stat_q   : std_logic_vector(223 downto 0) := (others => '0');
 
@@ -496,6 +519,14 @@ architecture Behavioral of Au2_SLI is
                link_drop_host : out STD_LOGIC;
                link_drop_proj : out STD_LOGIC;
                cam_sim        : out STD_LOGIC_VECTOR(7 downto 0);
+               roi_ctl        : out STD_LOGIC_VECTOR(7 downto 0);
+               roi_col8       : out STD_LOGIC_VECTOR(7 downto 0);
+               roi_row8       : out STD_LOGIC_VECTOR(7 downto 0);
+               roi_mean_i     : in  STD_LOGIC_VECTOR(9 downto 0);
+               roi_npx_i      : in  STD_LOGIC_VECTOR(8 downto 0);
+               roi_fcnt_i     : in  STD_LOGIC_VECTOR(15 downto 0);
+               roi_blk_i      : in  STD_LOGIC;
+               roi_valid_i    : in  STD_LOGIC;
                -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
                -- usb_link, so these are the sensor's physical pins.
                cam_sck     : out STD_LOGIC;
@@ -707,6 +738,13 @@ architecture Behavioral of Au2_SLI is
                ext_tlp        : in  std_logic_vector(7 downto 0) := (others => '0');
                ext_tlp_tog    : in  std_logic := '0';
                cam_stat_tog_o : out std_logic;
+               roi_col8_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+               roi_row8_i     : in  std_logic_vector(7 downto 0) := (others => '0');
+               roi_mean_o     : out std_logic_vector(9 downto 0);
+               roi_npx_o      : out std_logic_vector(8 downto 0);
+               roi_fcnt_o     : out std_logic_vector(15 downto 0);
+               roi_blk_o      : out std_logic;
+               roi_valid_o    : out std_logic;
                ctl_byte       : out std_logic_vector(7 downto 0);
                ctl_valid      : out std_logic;
                rpl_byte       : in  std_logic_vector(7 downto 0);
@@ -929,6 +967,9 @@ begin
         cam_trigger => open,
         cam_monitor => cam_monitor,
         cam_sim     => cam_sim_w,
+        roi_ctl     => roi_ctl_w,  roi_col8 => roi_col8_w, roi_row8 => roi_row8_w,
+        roi_mean_i  => roi_mean_w, roi_npx_i => roi_npx_w, roi_fcnt_i => roi_fcnt_w,
+        roi_blk_i   => roi_blk_w,  roi_valid_i => roi_valid_w,
         vs_meas     => out_vsync,
         rx_meas     => rx_meas_w,
         rx_pixkhz   => rx_pixkhz_w,
@@ -1283,6 +1324,9 @@ begin
         -- packing, MSB..LSB:  6=sw_en  5=mode_en  4=mode_val  3..0=R,G,B,orient
         sli_sw_p0 <= sli_ctrl_bus(7) & sli_ctrl_bus(6) & sli_ctrl_bus(5) & sli_ctrl_bus(3 downto 0);
         sli_sw_p1 <= sli_sw_p0;
+        -- ROICTL bit 7 (impulse enable) crosses clk100 -> pixel_clk the same way.
+        imp_en_p0 <= roi_ctl_w(7);
+        imp_en_p1 <= imp_en_p0;
     end if;
 end process;
 
@@ -1306,9 +1350,9 @@ i_processing: pixel_pipe Port map (
         out_blank => out_blank,
         out_hsync => out_hsync,
         out_vsync => out_vsync,
-        out_red   => out_red,
-        out_green => out_green,
-        out_blue  => out_blue,
+        out_red   => pp_red,
+        out_green => pp_green,
+        out_blue  => pp_blue,
         tlp_dbg      => tlp_val,
         tlp_tog      => tlp_tog_s,
         olp_dbg      => olp_val,
@@ -1316,6 +1360,26 @@ i_processing: pixel_pipe Port map (
         lut_din  => pat_lut_din,
         lut_dout => pat_lut_dout
     );
+
+-- ---- WHITE, K, K, K, K sequence for projector profiling -------------------
+-- Applied AFTER pixel_pipe on purpose. The pass-through mux, the SLI fringe
+-- generator and the radiometric transfer LUT all sit upstream, and any of them
+-- could reshape the very thing being measured. Past this point the only
+-- consumer is the TMDS encoder, so what is measured is what is emitted.
+--
+-- Blanking, hsync and vsync are untouched: only active-video colour is replaced,
+-- so the frame timing the projector locks to is exactly the timing it saw with
+-- the test pattern.
+imp_en <= imp_en_p1;
+
+i_impulse: impulse_gen
+    generic map ( CYCLE => 5 )
+    port map ( pclk => pixel_clk, vsync_pos => vsync_Pos, en => imp_en,
+               level => imp_level, phase => imp_phase, phase0 => imp_ph0 );
+
+out_red   <= imp_level when imp_en = '1' else pp_red;
+out_green <= imp_level when imp_en = '1' else pp_green;
+out_blue  <= imp_level when imp_en = '1' else pp_blue;
 --Vs  <= out_vsync;
     -- Swap to this if you want to capture the HDMI symbols
     -- and send them up the RS232 port
@@ -1385,6 +1449,9 @@ i_cam_frame_ft : cam_frame_ft
         clk200_ext => clk200, clk100_ext => clk100_g,
         led => open, usb_tx => cam_usb_tx,
         cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
+        roi_col8_i => roi_col8_w, roi_row8_i => roi_row8_w,
+        roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,
+        roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
         -- G1: the projector's vsync reaches the camera module. Ignored there
         -- for now; only the edge counter proves the wire works.
         ext_sync => out_vsync,
@@ -1423,6 +1490,8 @@ gen_nocam: if WITH_CAM = 0 generate
     cam_usb_tx   <= '1';                 -- idle level for a UART line
     cam_stat_raw <= (others => '0');
     cam_stat_tog <= '0';
+    roi_mean_w <= (others => '0'); roi_npx_w <= (others => '0');
+    roi_fcnt_w <= (others => '0'); roi_blk_w <= '0'; roi_valid_w <= '0';
     -- rpl_byte_w / rpl_we_w are OUTPUTS of the control block above; driving them
     -- here too created a second driver. The Ft+ readback path is never gated out.
 end generate gen_nocam;
