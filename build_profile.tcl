@@ -10,6 +10,11 @@
 # slack is set by placement luck: it measured +0.082 ns in one build and
 # -3.262 ns in the next, on an unrelated change.
 #
+# GENLOCK_ON=1: the camera exposes once per projected frame, locked to that frame's
+# vsync with zero delay, from power-up and with no host command. Genlock is normally
+# enabled by camera opcode 7, which arrives only over the FT601 -- so on a rig that
+# runs on the Pt's USB 2.0 port alone it could not be turned on at all.
+#
 # Outputs build_profile/Au2_SLI_profile.{bit,bin} -- it does not touch the
 # merged build's directory or its bitstreams.
 #
@@ -176,7 +181,7 @@ set logf $here/build_profile/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag -generic WITH_TLP=0} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag -generic WITH_TLP=0 -generic GENLOCK_ON=1} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]

@@ -2,15 +2,20 @@
 //==============================================================================
 // roi_line.v -- one short telemetry line per camera frame, carrying the ROI mean.
 //
-//   R=mmm,ffff,nnn,b<CR><LF>          18 bytes
+//   R=mmm,ffff,nnn,b,p<CR><LF>        20 bytes
 //
-//   index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17
-//          R = m m m , f f f f  ,  n  n  n  ,  b CR LF
+//   index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+//          R = m m m , f f f f  ,  n  n  n  ,  b  ,  p CR LF
 //
 //     mmm   ROI mean, 10-bit -> 3 hex digits (000..3FF)
 //     ffff  frame counter, hex -- a gap here is a DROPPED LINE, not a dropped frame
 //     nnn   pixels accumulated, hex; MUST read 100 (= 256)
 //     b     1 = the ROI sat on black-reference rows
+//     p     the projected sequence phase this frame was TRIGGERED at, 0..4
+//           (7 = no trigger recorded: free-running, or the pairing FIFO ran dry).
+//           This is what lets the host put the white frame at bar 0 instead of
+//           guessing from brightness -- and guessing would rotate away the
+//           projector latency, which is the offset worth measuring.
 //
 // WHY NOT REUSE status_line. status_line fires on a 0.5 s window (usb_link WIN =
 // 50e6) and is 62 bytes of mixed ASCII. This needs one sample per camera frame --
@@ -37,19 +42,20 @@ module roi_line (
     input  wire [15:0] fcnt,
     input  wire [8:0]  npx,
     input  wire        blk,
+    input  wire [2:0]  phase,
     output reg  [7:0]  tx_data,
     output reg         tx_send,
     input  wire        tx_busy,
     output reg         busy
 );
-    localparam integer LEN = 18;
+    localparam integer LEN = 20;
     reg [7:0] msg [0:LEN-1];
     integer k;
     initial begin
         for (k = 0; k < LEN; k = k + 1) msg[k] = 8'h20;
         msg[0]  = "R";  msg[1]  = "=";
-        msg[5]  = ",";  msg[10] = ",";  msg[14] = ",";
-        msg[16] = 8'h0D; msg[17] = 8'h0A;
+        msg[5]  = ",";  msg[10] = ",";  msg[14] = ",";  msg[16] = ",";
+        msg[18] = 8'h0D; msg[19] = 8'h0A;
         busy = 1'b0; tx_send = 1'b0;
     end
 
@@ -72,6 +78,7 @@ module roi_line (
                 msg[12] <= h2a(npx[7:4]);
                 msg[13] <= h2a(npx[3:0]);
                 msg[15] <= blk ? "1" : "0";
+                msg[17] <= h2a({1'b0, phase});
                 idx <= 5'd0; st <= 1'b0; busy <= 1'b1;
             end
         end else begin

@@ -107,6 +107,31 @@ module uart_ctrl #(
     output reg  [7:0]  roi_ctl,
     output reg  [7:0]  roi_col8,
     output reg  [7:0]  roi_row8,
+    // 0x1A/0x1B EXPO: camera exposure in 375 ns units. Writing the HIGH byte
+    // (0x1B) commits both and pulses the load, so a 16-bit value always lands
+    // atomically -- writing the low byte alone can never half-apply an exposure.
+    output reg  [15:0] expo_uart,
+    output reg         expo_uart_we,
+    // 0x1C..0x1E GLDLY: vsync -> trigger delay, 10 ns ticks, 24-bit. Like EXPO,
+    // the TOP byte commits, so a delay can never half-apply mid-sweep and put the
+    // exposure somewhere neither the old nor the new value asked for.
+    output reg  [23:0] gldly_uart,
+    // 0x1F IMPRGB {2:R, 1:G, 0:B} -- which channels the impulse frame drives.
+    // Resets to 0x07 (white) so existing behaviour is unchanged; write 0x04 for a
+    // red-only flash. Per-primary flashes are what the profiling plan needs, and a
+    // single primary is also ~3x less light, which matters when the sensor rails.
+    output reg  [7:0]  imp_rgb,
+    // 0x12 IMPLVL -- the 8-bit code the bright frame drives, default 0xFF.
+    //
+    // The obvious attenuator, and it needs no optics. But on a DLP the code is a
+    // PWM DUTY on the mirrors, not an LED brightness: at 0x10 the mirrors are on
+    // for ~6% of each colour slot, scattered through the frame as bit-planes. So
+    // lowering this reduces the integrated energy (which is what unsaturates the
+    // sensor) but ALSO CHANGES THE EMISSION TIMING. Timing measured at 0x10 is not
+    // the timing at 0xFF -- fine for bring-up, not a substitute for real
+    // attenuation when the profiling sweeps start.
+    output reg  [7:0]  imp_lvl,
+    output reg         gldly_uart_we,
     output wire        sli_ctrl_en,      // = sli_ctrl[7]  (USB overrides switches)
     output wire        lut_loaded,       // a table has been uploaded since reset
 
@@ -411,6 +436,13 @@ case (addr)
             8'h17:   rd_data  = roi_ctl;
             8'h18:   rd_data  = roi_col8;
             8'h19:   rd_data  = roi_row8;
+            8'h1A:   rd_data  = expo_uart[7:0];
+            8'h1B:   rd_data  = expo_uart[15:8];
+            8'h1C:   rd_data  = gldly_uart[7:0];
+            8'h1D:   rd_data  = gldly_uart[15:8];
+            8'h1E:   rd_data  = gldly_uart[23:16];
+            8'h1F:   rd_data  = imp_rgb;
+            8'h12:   rd_data  = imp_lvl;
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -620,6 +652,10 @@ case (addr)
 
     integer i;
     always @(posedge clk) begin
+        // ONE-CYCLE PULSE. cam_frame_ft loads the exposure on the edge of this;
+        // left high it would re-request every clock and hold expo_req asserted.
+        expo_uart_we <= 1'b0;
+        gldly_uart_we <= 1'b0;
         if (rst) begin
             state <= S_SYNC; tx_send <= 1'b0; sli_ctrl <= 8'h00;
             rx_idle <= 0; rx_timeout <= 1'b0;
@@ -628,6 +664,9 @@ case (addr)
             link_drop_host <= 1'b0; link_drop_proj <= 1'b0;
             cam_sim <= 8'h00;
             roi_ctl <= 8'h00; roi_col8 <= 8'd80; roi_row8 <= 8'd64;
+            expo_uart <= 16'd0; expo_uart_we <= 1'b0;
+            gldly_uart <= 24'd0; gldly_uart_we <= 1'b0;
+            imp_rgb <= 8'h07; imp_lvl <= 8'hFF;
             link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
@@ -715,6 +754,22 @@ case (addr)
                         roi_col8 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h19) begin    // ROIROW8
                         roi_row8 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1A) begin    // EXPO low byte -- staged
+                        expo_uart[7:0] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1B) begin    // EXPO high byte -- COMMITS
+                        expo_uart[15:8] <= dbyte; expo_uart_we <= 1'b1;
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1C) begin    // GLDLY[7:0]   staged
+                        gldly_uart[7:0] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1D) begin    // GLDLY[15:8]  staged
+                        gldly_uart[15:8] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1E) begin    // GLDLY[23:16] COMMITS
+                        gldly_uart[23:16] <= dbyte; gldly_uart_we <= 1'b1;
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1F) begin    // IMPRGB channel select
+                        imp_rgb <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h12) begin    // IMPLVL bright-frame code
+                        imp_lvl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h15) begin    // LINKCTL: self-timed disconnect
                         link_tgt    <= dbyte[1:0];
                         link_secs   <= dbyte[7:2];

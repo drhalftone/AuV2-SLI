@@ -109,6 +109,13 @@ module usb_link #(
     input  wire [15:0] roi_fcnt_i,
     input  wire        roi_blk_i,
     input  wire        roi_valid_i,    // 1-cycle pulse, one per camera frame
+    input  wire [2:0]  roi_phase_i,    // sequence phase this frame was triggered at
+    output wire [15:0] expo_uart,      // 0x1A/0x1B
+    output wire        expo_uart_we,
+    output wire [23:0] gldly_uart,
+    output wire        gldly_uart_we,
+    output wire [7:0]  imp_rgb,
+    output wire [7:0]  imp_lvl,
 
     // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
     // The SPI master lives in here, right next to the control plane that drives it,
@@ -394,6 +401,7 @@ module usb_link #(
         .clk(clk100),
         .go(roi_valid_i & roi_en & ~c_active & ~owner),
         .mean(roi_mean_i), .fcnt(roi_fcnt_i), .npx(roi_npx_i), .blk(roi_blk_i),
+        .phase(roi_phase_i),
         .tx_data(rl_data), .tx_send(rl_send), .tx_busy(s_tx_busy), .busy(rl_busy)
     );
 
@@ -473,6 +481,9 @@ module usb_link #(
         .sli_ctrl(sli_ctrl),
         .cam_sim(cam_sim),
         .roi_ctl(roi_ctl), .roi_col8(roi_col8), .roi_row8(roi_row8),
+        .expo_uart(expo_uart), .expo_uart_we(expo_uart_we),
+        .gldly_uart(gldly_uart), .gldly_uart_we(gldly_uart_we),
+        .imp_rgb(imp_rgb), .imp_lvl(imp_lvl),
         .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),

@@ -28,6 +28,7 @@ module impulse_gen #(
     input  wire       pclk,               // pixel clock (offline output domain)
     input  wire       vsync_pos,          // active-high vsync, already polarity-corrected
     input  wire       en,                 // 0 = pass the incoming video through untouched
+    input  wire [7:0] lvl,                // code driven on the bright frame (0x12)
     output reg  [7:0] level,              // 8'hFF on the bright frame, else 8'h00
     output reg  [2:0] phase,              // 0 = the bright frame
     output reg        phase0              // level pulse: high for the whole bright frame
@@ -52,7 +53,7 @@ module impulse_gen #(
         end
 
         if (en) begin
-            level  <= (phase == 3'd0) ? 8'hFF : 8'h00;
+            level  <= (phase == 3'd0) ? lvl : 8'h00;
             phase0 <= (phase == 3'd0);
         end
     end

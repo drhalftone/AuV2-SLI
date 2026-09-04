@@ -55,6 +55,10 @@ dict set BOARDS stage6 {xc7a100tfgg484-2 cam_frame_stage6 pt_cam_rx.xdc}
 # Sync-code counters: does FE ever appear on the wire?
 dict set BOARDS syncdbg {xc7a100tfgg484-2 cam_syncdbg pt_cam_rx.xdc}
 
+# stage6 with the frame buffer removed: one 16x16 ROI mean per frame over the
+# UART instead of 80 kB of picture. No BRAM, no DDR3, no FT601.
+dict set BOARDS roi {xc7a100tfgg484-2 cam_roi_top pt_cam_rx.xdc}
+
 # Pins each board's XDC promises. Checked after implementation, because a
 # bring-up bitstream whose pins silently moved would blame the board for a
 # tools problem.
@@ -215,6 +219,17 @@ foreach board $targets {
             lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
             lappend hdl $root/sources_1/imports/RTL/cam_align.v
             lappend hdl $root/sources_1/imports/RTL/cam_sync_decode.v
+        }
+        cam_roi_top {
+            lappend hdl $here/cam_boot_stage1.v
+            lappend hdl $here/cam_lvds_rx_idelay.v
+            lappend hdl $here/cam_eye_scan.v
+            lappend hdl $root/sources_1/imports/RTL/cam_boot_seq.v
+            lappend hdl $root/sources_1/imports/RTL/cam_align.v
+            lappend hdl $root/sources_1/imports/RTL/cam_sync_decode.v
+            lappend hdl $root/sources_1/imports/RTL/roi_mean.v
+            lappend hdl $root/sources_1/imports/RTL/roi_line.v
+            lappend hdl $root/sources_1/imports/RTL/uart_tx.v
         }
         default { error "no HDL dependency list for top '$top'" }
     }

@@ -45,7 +45,11 @@ SYNC, OP_W, OP_R = 0xA5, 0x57, 0x52
 REG_MODEFORCE, REG_ROICTL, REG_ROICOL8, REG_ROIROW8 = 0x14, 0x17, 0x18, 0x19
 MODE_800x600_120 = 0                      # curated index, see mode_table.vh
 
-LINE = re.compile(rb"R=([0-9A-F]{3}),([0-9A-F]{4}),([0-9A-F]{3}),([01])")
+# The trailing \r\n is REQUIRED, not decoration. Without it the fixed-width fields
+# alone will match a line that is still arriving, and the same record is then read
+# again once the rest of it lands -- which shows up as a frame-counter step of 0 and
+# is easily mistaken for the FPGA repeating itself.
+LINE = re.compile(rb"R=([0-9A-F]{3}),([0-9A-F]{4}),([0-9A-F]{3}),([01]),([0-9A-F])\r\n")
 
 
 def ck(s):
@@ -83,6 +87,12 @@ def main():
                     help="leave the output mode alone (default forces 800x600@120)")
     ap.add_argument("--log", help="append every sample to this CSV")
     ap.add_argument("--seconds", type=float, default=0.0, help="stop after N s (0 = forever)")
+    ap.add_argument("--bars", nargs="?", type=int, const=5, metavar="N",
+                    help="fold onto an N-frame cycle (default 5) and show a live bar "
+                         "chart instead of the trace")
+    ap.add_argument("--no-align", dest="align", action="store_false",
+                    help="with --bars, leave the phases in raw fcnt order instead of "
+                         "rotating the brightest to the left")
     a = ap.parse_args()
 
     col8, row8 = a.col // 8, a.row // 8
@@ -99,10 +109,20 @@ def main():
 
     write_reg(ser, REG_ROICOL8, col8)
     write_reg(ser, REG_ROIROW8, row8)
-    ctl = (0x80 if a.impulse else 0x00) | 0x40
+    # READ-MODIFY-WRITE, and remember what was there. --no-impulse means "leave the
+    # video alone", so it must PRESERVE bit 7, not clear it. Writing a whole byte here
+    # switched off a sequence someone else had started (wkkkk.py --on), which looks
+    # exactly like the bitstream dying mid-run.
+    prev_ctl = read_reg(ser, REG_ROICTL)
+    if prev_ctl is None:
+        prev_ctl = 0x00
+    ctl = (prev_ctl | 0x80) if a.impulse else prev_ctl      # bit 7 untouched if not asked
+    ctl |= 0x40                                             # bit 6: the stream is ours
     write_reg(ser, REG_ROICTL, ctl)
     print(f"ROI at column {col8*8}, row {row8*8}, 16x16 = 256 px")
-    print(f"impulse (WHITE,K,K,K,K): {'ON' if a.impulse else 'off'}   stream: ON")
+    print(f"impulse (WHITE,K,K,K,K): "
+          f"{'ON (set here)' if a.impulse else ('already on' if prev_ctl & 0x80 else 'off')}"
+          f"   stream: ON")
     print("status telemetry is suspended while streaming\n")
 
     import matplotlib
@@ -111,12 +131,28 @@ def main():
 
     xs = collections.deque(maxlen=a.depth)
     ys = collections.deque(maxlen=a.depth)
+    NP = a.bars or 0
+    phase_q = [collections.deque(maxlen=max(a.depth // max(NP, 1), 20))
+               for _ in range(max(NP, 1))]
+
     fig, ax = plt.subplots(figsize=(11, 5))
-    (ln,) = ax.plot([], [], lw=1.3, color="#c1322c")
-    ax.set_xlabel("camera frame")
+    if NP:
+        bars = ax.bar(range(NP), [0] * NP, color="#c1322c", width=0.62)
+        labels = [ax.text(i, 0, "", ha="center", va="bottom", fontsize=10)
+                  for i in range(NP)]
+        ax.set_xticks(range(NP))
+        ax.set_xlabel(f"frames after the WHITE frame's vsync "
+                      f"(bar 0 = triggered at it)")
+        ax.axhline(1023, color="#9a6614", lw=1, ls="--")
+        ax.text(NP - 0.5, 1023, " 10-bit rail", color="#9a6614", fontsize=9,
+                va="bottom", ha="right")
+        ln = None
+    else:
+        (ln,) = ax.plot([], [], lw=1.3, color="#c1322c")
+        ax.set_xlabel("camera frame")
     ax.set_ylabel("ROI mean (10-bit ADU)")
     ax.set_title("ROI mean -- live")
-    ax.grid(alpha=0.3)
+    ax.grid(alpha=0.3, axis="y")
     ax.set_ylim(0, 1023)
     fig.canvas.manager.set_window_title("roi_live")
     plt.tight_layout()
@@ -126,13 +162,16 @@ def main():
     if a.log:
         logf = open(a.log, "a", newline="")
         writer = csv.writer(logf)
-        writer.writerow(["host_time", "fcnt", "mean", "npx", "blk"])
+        writer.writerow(["host_time", "fcnt", "mean", "npx", "blk", "phase"])
 
     buf = bytearray()
     n = 0
     bad_npx = 0
     last_fcnt = None
-    gaps = 0
+    gaps = 0        # breaks in the frame counter -- frames genuinely missing
+    lost = 0        # how many frames those breaks account for
+    dups = 0        # the same frame counter seen twice -- a HOST parsing fault
+    unpaired = 0    # phase 7: the frame had no trigger recorded
     t0 = time.time()
     t_draw = 0.0
 
@@ -141,43 +180,90 @@ def main():
             chunk = ser.read(ser.in_waiting or 1)
             if chunk:
                 buf += chunk
+                consumed = 0
                 for m in LINE.finditer(buf):
                     mean = int(m.group(1), 16)
                     fcnt = int(m.group(2), 16)
                     npx = int(m.group(3), 16)
                     blk = int(m.group(4))
+                    phase = int(m.group(5), 16)
+                    consumed = m.end()
                     n += 1
                     if npx != 256:
                         bad_npx += 1
                     if last_fcnt is not None:
+                        # Report what actually happened rather than lumping every
+                        # non-1 step together: a repeat and a break are different
+                        # faults with different causes, and calling a duplicate a
+                        # "gap" sends you looking for dropped bytes that never were.
                         d = (fcnt - last_fcnt) & 0xFFFF
-                        if d != 1:
+                        if d == 0:
+                            dups += 1
+                        elif d != 1:
                             gaps += 1
+                            lost += d - 1
                     last_fcnt = fcnt
                     xs.append(fcnt)
                     ys.append(mean)
+                    if NP:
+                        # The FPGA's own phase, not fcnt mod N: it is the sequence
+                        # phase the frame was TRIGGERED at, so bar 0 really is the
+                        # frame triggered on the white frame's vsync. 7 = unpaired.
+                        if phase < NP:
+                            phase_q[phase].append(mean)
+                        else:
+                            unpaired += 1
                     if writer:
-                        writer.writerow([f"{time.time()-t0:.4f}", fcnt, mean, npx, blk])
-                if len(buf) > 4096:
-                    buf = buf[-256:]
-                else:
-                    cut = buf.rfind(b"\n")
-                    if cut >= 0:
-                        buf = buf[cut + 1:]
+                        writer.writerow([f"{time.time()-t0:.4f}", fcnt, mean, npx,
+                                         blk, phase])
+                # Consume EXACTLY what was matched. Trimming on the last newline
+                # instead leaves any already-matched bytes of a partial line in the
+                # buffer to be matched a second time; trimming to a fixed tail is
+                # worse still, because it keeps whole processed lines.
+                if consumed:
+                    buf = buf[consumed:]
+                elif len(buf) > 4096:
+                    # nothing matched in 4 kB: keep only enough for a straddling
+                    # record so genuine garbage cannot grow without bound
+                    buf = buf[-64:]
 
             now = time.time()
-            if now - t_draw > 0.05 and xs:
+            if now - t_draw > 0.10 and xs:
                 t_draw = now
-                ln.set_data(range(len(ys)), list(ys))
-                ax.set_xlim(0, max(len(ys), 10))
-                lo, hi = min(ys), max(ys)
-                pad = max(8, (hi - lo) * 0.15)
-                ax.set_ylim(max(0, lo - pad), min(1023, hi + pad))
                 rate = n / max(now - t0, 1e-6)
-                ax.set_title(f"ROI mean -- {n} samples, {rate:5.1f}/s, "
-                             f"last {ys[-1]}, span {lo}-{hi}"
-                             + (f"   npx BAD x{bad_npx}" if bad_npx else "")
-                             + (f"   gaps {gaps}" if gaps else ""))
+                warn = ((f"   npx BAD x{bad_npx}" if bad_npx else "")
+                        + (f"   gaps {gaps}" if gaps else "")
+                        + (f"   dups {dups}" if dups else ""))
+                if NP:
+                    means = [ (sum(q) / len(q)) if q else 0.0 for q in phase_q ]
+                    # ALIGNMENT IS INFERRED, NOT KNOWN. The FPGA holds the impulse
+                    # phase; the host only sees a camera frame counter, so which bin
+                    # is the white frame has to come from the data. Rotating the
+                    # brightest bin to the left is a convention, not a measurement --
+                    # and it CANNOT show projector latency, because latency is
+                    # exactly the offset being rotated away. Use --no-align to see
+                    # the raw bins.
+                    rot = 0   # phase 0 IS the white frame; nothing to infer
+                    vals = [means[(rot + i) % NP] for i in range(NP)]
+                    cnts = [len(phase_q[(rot + i) % NP]) for i in range(NP)]
+                    for b, lab, v, c in zip(bars, labels, vals, cnts):
+                        b.set_height(v)
+                        b.set_color("#9a6614" if v >= 1015 else "#c1322c")
+                        lab.set_y(v)
+                        lab.set_text(f"{v:.0f}" + ("  RAIL" if v >= 1015 else ""))
+                    hi = max(vals) if vals else 1
+                    ax.set_ylim(0, max(hi * 1.18, 10))
+                    spread = (max(vals) - min(vals)) / max(max(vals), 1) * 100
+                    ax.set_title(f"{NP}-frame fold -- {n} samples, {rate:5.1f}/s, "
+                                 f"contrast {spread:.1f}%" + warn)
+                else:
+                    ln.set_data(range(len(ys)), list(ys))
+                    ax.set_xlim(0, max(len(ys), 10))
+                    lo, hi = min(ys), max(ys)
+                    pad = max(8, (hi - lo) * 0.15)
+                    ax.set_ylim(max(0, lo - pad), min(1023, hi + pad))
+                    ax.set_title(f"ROI mean -- {n} samples, {rate:5.1f}/s, "
+                                 f"last {ys[-1]}, span {lo}-{hi}" + warn)
                 fig.canvas.draw_idle()
                 fig.canvas.flush_events()
 
@@ -188,7 +274,10 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        write_reg(ser, REG_ROICTL, 0x00)     # stream off, impulse off, telemetry back
+        # Restore what we found: drop OUR bit (the stream) and leave the impulse
+        # exactly as it was. Zeroing the byte here is what made the flashing stop
+        # when this tool exited.
+        write_reg(ser, REG_ROICTL, prev_ctl & 0x80)
         ser.close()
         if logf:
             logf.close()
@@ -198,12 +287,23 @@ def main():
             print(f"WARNING: {bad_npx} samples had npx != 256 -- the ROI is off the "
                   f"sensor or past the last row. Those means are meaningless.")
         if gaps:
-            print(f"WARNING: {gaps} breaks in the frame counter -- lines were dropped "
-                  f"on the UART, so the plot has invisible holes in it.")
+            print(f"WARNING: {gaps} break(s) in the frame counter, {lost} frame(s) "
+                  f"missing ({100.0*lost/max(n+lost,1):.2f}%) -- the plot has "
+                  f"invisible holes in it.")
+        if unpaired:
+            print(f"NOTE: {unpaired} frame(s) reported phase 7 -- no trigger paired to "
+                  f"them. Expected while genlock is settling; persistent means the "
+                  f"camera is free-running, not locked.")
+        if dups:
+            print(f"WARNING: {dups} DUPLICATE record(s) -- the same frame counter "
+                  f"arrived twice. That is a host-side parsing fault, not the FPGA "
+                  f"repeating itself.")
         if n == 0:
             print("No samples. Check: is the camera board attached and out of reset, "
                   "and did the bitstream with roi_mean actually get loaded?")
-        print("registers cleared; status telemetry restored")
+        print(f"stream stopped; ROICTL restored to 0x{prev_ctl & 0x80:02X} "
+              f"({'sequence still running' if prev_ctl & 0x80 else 'sequence off'}); "
+              f"status telemetry back")
 
 
 if __name__ == "__main__":

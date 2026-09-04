@@ -94,6 +94,21 @@ module cam_frame_ft #(
     parameter integer LIVE = 0,
     parameter integer NSLOT = 4,          // ring depth; 4 x 2.62 MB = 10.5 MB
     // 1 = step exposure0 across the burst to measure brightness vs exposure.
+    // GENLOCK ON FROM POWER-UP, with zero delay: the camera exposes once per
+    // projected frame, starting at that frame's vsync.
+    //
+    // gl_en is normally set by camera opcode 7, which arrives ONLY over the FT601 --
+    // there is no UART path to it. A profiling rig that runs on the Pt's USB 2.0 port
+    // alone therefore cannot turn genlock on at runtime at all. Since the whole point
+    // here is a zero-delay lock, and gl_dly already resets to 0, the enable is the one
+    // remaining bit -- so it becomes a build-time default rather than a new register
+    // and a new command path.
+    //
+    // This changes NOTHING unless set: the default is 0, exactly as before, and an
+    // opcode 7 still overrides it either way. gl_live also still requires ext_sync
+    // edges to be arriving, so with no display attached this falls back to
+    // free-running on its own.
+    parameter integer GL_EN_DEFAULT = 0,
     parameter integer EXPO_SWEEP = 0,
     // Frames to let pass before arming the capture. The FIRST frame after the
     // trigger train starts is 100% saturated -- it integrated through the idle
@@ -137,6 +152,20 @@ module cam_frame_ft #(
     output reg  [15:0] roi_fcnt_o,
     output reg         roi_blk_o,
     output reg         roi_valid_o,     // 1-cycle pulse in `clk`
+    output reg  [2:0]  roi_phase_o,     // impulse phase THIS frame was triggered at
+    // The projected sequence's phase, already stable in `clk` (see Au2_SLI). Latched
+    // when the trigger is issued and carried with that frame, so the host learns
+    // which camera frame was triggered at the WHITE frame's vsync -- which brightness
+    // alone cannot tell it, because projector latency is exactly the offset in
+    // question.
+    input  wire [2:0]  imp_phase_i,
+    // Exposure over the UART. Camera opcode 1 arrives only on the FT601, so a rig
+    // running on the Pt's USB 2.0 port alone cannot change exposure at all -- and a
+    // saturated sensor reports a clean, plausible, contentless trace.
+    input  wire [15:0] expo_uart_i,
+    input  wire        expo_uart_we,
+    input  wire [23:0] gldly_uart_i,
+    input  wire        gldly_uart_we,
 
     // M6a: the 0xA5 control stream, arriving on the FT601 OUT pipe and handed to
     // the parent as BYTES in the `clk` domain. See the ctl_* block below for why
@@ -457,7 +486,7 @@ module cam_frame_ft #(
     // -- a lost trigger is a lost frame of the scan.
     localparam [23:0] XS_TIMEOUT = 24'd10_000_000;   // 100 ms without a frame edge
     localparam integer GLQ_AW = 5;                   // 32 outstanding triggers
-    reg        gl_en   = 1'b0;
+    reg        gl_en   = (GL_EN_DEFAULT != 0);   // see the parameter's comment
     reg [23:0] gl_dly  = 24'd0;
     reg        gl_fire = 1'b0;      // 1-cycle strobe: start the trigger pulse NOW
     reg [23:0] xs_age  = XS_TIMEOUT;
@@ -883,6 +912,15 @@ module cam_frame_ft #(
             expo_cur <= EXPOSURE;
             trig_per <= TRIG_PER[23:0];
             nframes_r <= NFRAMES[5:0];
+        end else if (gldly_uart_we) begin
+            // Delay only -- gl_en is untouched, so a sweep cannot accidentally
+            // disable the lock it is measuring through.
+            gl_dly <= gldly_uart_i;
+        end else if (expo_uart_we) begin
+            // Same path opcode 1 uses -- one writer, one request mechanism.
+            expo_val <= expo_uart_i;
+            expo_req <= 1'b1;
+            expo_cur <= expo_uart_i;
         end else if ((EXPO_SWEEP != 0) && streaming && fe_pulse) begin
             expo_val <= etab;
             expo_req <= 1'b1;
@@ -979,7 +1017,32 @@ module cam_frame_ft #(
         roi_tog_w  <= ~roi_tog_w;
     end
 
-    reg [2:0] roi_tog_s = 3'b000;
+    // PHASE PAIRING. The trigger for a frame is issued long before that frame's
+    // pixels arrive, so the phase must travel WITH the frame rather than be sampled
+    // when the mean pops out. A short FIFO written at each trigger and read at each
+    // completed frame does that in order, and matches gl_out's trigger-outstanding
+    // offset without having to compute it.
+    //
+    // The write is delayed a few cycles past gl_fire: imp_phase_i changes on the
+    // projected vsync, which is the same instant gl_fire asserts, and reading it
+    // right then would race the update. Eight cycles is 80 ns against an 8.3 ms
+    // frame -- long after it settles, nowhere near the next change.
+    reg [2:0] roi_tog_s = 3'b000;   // declared here: the FIFO below reads it
+    reg [7:0] gf_dly = 8'd0;
+    always @(posedge clk) gf_dly <= {gf_dly[6:0], gl_fire};
+
+    reg [2:0] pfifo [0:7];
+    reg [2:0] pf_wr = 3'd0, pf_rd = 3'd0;
+    always @(posedge clk) begin
+        if (rst) begin pf_wr <= 3'd0; pf_rd <= 3'd0; end
+        else begin
+            if (gf_dly[7]) begin pfifo[pf_wr] <= imp_phase_i; pf_wr <= pf_wr + 3'd1; end
+            if (roi_tog_s[2] ^ roi_tog_s[1]) begin
+                if (pf_rd != pf_wr) pf_rd <= pf_rd + 3'd1;
+            end
+        end
+    end
+
     always @(posedge clk) begin
         roi_tog_s   <= {roi_tog_s[1:0], roi_tog_w};
         roi_valid_o <= roi_tog_s[2] ^ roi_tog_s[1];
@@ -988,6 +1051,9 @@ module cam_frame_ft #(
             roi_fcnt_o <= roi_hold_w[25:10];
             roi_npx_o  <= roi_hold_w[34:26];
             roi_blk_o  <= roi_hold_w[35];
+            // 7 = no trigger recorded for this frame (free-running, or the FIFO ran
+            // dry). Reported rather than faked, so the host can see it happened.
+            roi_phase_o <= (pf_rd != pf_wr) ? pfifo[pf_rd] : 3'd7;
         end
     end
 
