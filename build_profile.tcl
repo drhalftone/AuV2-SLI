@@ -1,5 +1,20 @@
+# build_profile.tcl -- the PROJECTOR-PROFILING bitstream.
+#
+# Derived from build_merged.tcl. One difference that matters: WITH_TLP=0.
+#
+# This build drives the projector from the FPGA's own WHITE,K,K,K,K sequence and
+# reads the camera's ROI mean back over the Pt's UART. There is no PC playing
+# patterns over HDMI, so top-left-pixel detection has nothing to detect -- and
+# dropping it removes the tlp_dbg -> tlp_ui asynchronous crossing entirely rather
+# than constraining it. That crossing is 0 logic levels and 91% route, so its
+# slack is set by placement luck: it measured +0.082 ns in one build and
+# -3.262 ns in the next, on an unrelated change.
+#
+# Outputs build_profile/Au2_SLI_profile.{bit,bin} -- it does not touch the
+# merged build's directory or its bitstreams.
+#
 #-----------------------------------------------------------------------------
-# build_merged.tcl -- MERGED build: HDMI/SLI + camera + Ft+ on one Pt V2.
+# build_profile.tcl -- MERGED build: HDMI/SLI + camera + Ft+ on one Pt V2.
 #
 # MERGE MILESTONE M1 (MERGE_MILESTONES.md): the merged build VEHICLE. Same top
 # and same function as build_pt.tcl, plus the Ft+ pins and their bus timing, so
@@ -31,7 +46,7 @@ set top  Au2_SLI
 set here [file normalize [file dirname [info script]]]
 set rtl  $here/sources_1/imports/RTL
 set ipd  $here/sources_1/ip
-set out  $here/build_merged
+set out  $here/build_profile
 file mkdir $out
 
 create_project -in_memory -part $part
@@ -157,11 +172,11 @@ puts "### CAM_DIAG = $camdiag"
 # the log for this attempt; anything else fails immediately. If the log can't be read (Windows
 # sharing), we fall back to assuming transient so behaviour is never worse than a plain retry.
 # opt/place/route do not load those helpers and need no retry.
-set logf $here/build_merged/vivado.log
+set logf $here/build_profile/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag -generic WITH_TLP=0} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]
@@ -188,7 +203,7 @@ for {set try 1} {$try <= 6} {incr try} {
 #
 # Without this the merged build fails at WNS -2.269 on doe_reg[*] -> ft_data[*],
 # which is how it was found. The standalone camera build had it all along; the
-# HDMI build (build_pt.tcl) that build_merged.tcl was derived from never needed
+# HDMI build (build_pt.tcl) that build_profile.tcl was derived from never needed
 # it, so it was not inherited.
 #
 # Must be applied HERE, after synth_design, because it references netlist pins.
@@ -224,26 +239,16 @@ if {[llength $doe_src] >= 36} {
 # -datapath_only ignores clock skew and uncertainty, both meaningless across
 # asynchronous clocks, and bounds only the data route -- which is the real
 # requirement: land well inside the two destination clocks the handshake buys.
-# A TOGGLE HANDSHAKE HAS TWO CROSSINGS, NOT ONE. Constraining only the data bus
-# left the TOGGLE (tlp_tog -> tlp_s[0], the first flop of the 2FF synchroniser)
-# still timed synchronously, and it simply became the new worst path at -2.778 ns.
-# The synchroniser exists precisely to absorb that arrival, so timing it against an
-# unrelated clock phase is as meaningless for the toggle as it is for the payload.
-set tog_src [get_cells -quiet -hier -regexp {.*tlp_tog_reg}]
-set tog_dst [get_cells -quiet -hier -regexp {.*tlp_s_reg\[0\]}]
-if {[llength $tog_src] >= 1 && [llength $tog_dst] >= 1} {
-    set_max_delay -datapath_only -from $tog_src -to $tog_dst 10.000
-    puts "### TLP toggle CDC max_delay applied ([llength $tog_src] -> [llength $tog_dst])"
-} else {
-    error "TLP TOGGLE CDC matched [llength $tog_src] src / [llength $tog_dst] dst cells.           Refusing to build: the data bus would be constrained while the toggle that           gates it is not -- which is exactly how this was missed the first time."
-}
 set tlp_src [get_cells -quiet -hier -regexp {.*tlp_dbg_reg\[[0-9]+\]}]
 set tlp_dst [get_cells -quiet -hier -regexp {.*tlp_ui_reg\[[0-9]+\]}]
+# WITH_TLP=0 in this build, so the crossing is expected to be ABSENT. Applying the
+# constraint if the cells happen to survive is harmless; not finding them is the
+# intended outcome here, NOT the silent-failure trap it would be in build_merged.tcl.
 if {[llength $tlp_src] >= 8 && [llength $tlp_dst] >= 8} {
     set_max_delay -datapath_only -from $tlp_src -to $tlp_dst 10.000
     puts "### TLP CDC max_delay applied ([llength $tlp_src] src -> [llength $tlp_dst] dst)"
 } else {
-    error "TLP CDC constraint matched [llength $tlp_src] src / [llength $tlp_dst] dst cells.           Refusing to build: the crossing would be timed synchronously again and           would pass or fail on placement luck."
+    puts "### TLP crossing absent, as intended (WITH_TLP=0): [llength $tlp_src] src / [llength $tlp_dst] dst"
 }
 
 # ---- the ROI mean crossing: same structure, constrained BEFORE it bites -------
@@ -292,16 +297,16 @@ if {[get_property SLACK [get_timing_paths -delay_type min_max]] < 0} {
 # is the expensive part and it has already succeeded by this point, so a crash at
 # bitstream time can be recovered with open_checkpoint + write_bitstream instead
 # of a full rebuild.
-write_checkpoint -force $out/Au2_SLI_merged_routed.dcp
+write_checkpoint -force $out/Au2_SLI_profile_routed.dcp
 
-write_bitstream -force $out/Au2_SLI_merged.bit
+write_bitstream -force $out/Au2_SLI_profile.bit
 write_cfgmem -force -format bin -interface spix4 -size 16 \
-    -loadbit "up 0x0 $out/Au2_SLI_merged.bit" $out/Au2_SLI_merged.bin
+    -loadbit "up 0x0 $out/Au2_SLI_profile.bit" $out/Au2_SLI_profile.bin
 report_utilization    -file $out/util.rpt
 report_timing_summary -file $out/timing.rpt
 
 set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
 puts "=== TIMING: setup WNS = $wns ns ==="
-puts "==== AuV2-SLI MERGED (M1) BUILD DONE ===="
-puts "bit : $out/Au2_SLI_merged.bit"
-puts "bin : $out/Au2_SLI_merged.bin"
+puts "==== AuV2-SLI PROJECTOR-PROFILING BUILD DONE ===="
+puts "bit : $out/Au2_SLI_profile.bit"
+puts "bin : $out/Au2_SLI_profile.bin"

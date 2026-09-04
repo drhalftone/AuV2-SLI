@@ -33,7 +33,22 @@ entity Au2_SLI is
               -- here and not in the merged build, the merge is implicated directly.
               -- It also builds far faster, which matters when half the runs on this
               -- host die for unrelated reasons.
-              WITH_CAM : integer := 1 );
+              WITH_CAM : integer := 1;
+              -- WITH_TLP = 0 drops the top-left-pixel hand-off from the pixel
+              -- clock into the camera module.
+              --
+              -- TLP exists to trigger the camera when a PC, playing the patterns
+              -- over HDMI, changes the frame. A PROFILING BUILD HAS NO PC IN THE
+              -- LOOP: the FPGA generates the WHITE,K,K,K,K sequence itself and
+              -- knows exactly which frame is which, so TLP has nothing to detect.
+              --
+              -- Dropping it also removes a real timing hazard rather than merely
+              -- masking one. tlp_dbg -> tlp_ui is an asynchronous crossing at ZERO
+              -- logic levels and 91% route, so its slack is decided by placement
+              -- luck; it went from +0.082 ns to -3.262 ns on an unrelated change.
+              -- A constraint makes that safe. Not building the path at all makes
+              -- it absent, which is better.
+              WITH_TLP : integer := 1 );
     Port ( 
         clk100    : in STD_LOGIC;
         usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
@@ -278,6 +293,9 @@ architecture Behavioral of Au2_SLI is
     signal imp_ph0   : std_logic;
     signal imp_en    : std_logic;
     signal imp_en_p0, imp_en_p1 : std_logic := '0';
+    -- TLP hand-off into the camera module, gated by WITH_TLP (see the generic).
+    signal tlp_to_cam     : std_logic_vector(7 downto 0);
+    signal tlp_tog_to_cam : std_logic;
     component impulse_gen is
         generic ( CYCLE : integer );
         port ( pclk : in std_logic; vsync_pos : in std_logic; en : in std_logic;
@@ -1377,6 +1395,12 @@ i_impulse: impulse_gen
     port map ( pclk => pixel_clk, vsync_pos => vsync_Pos, en => imp_en,
                level => imp_level, phase => imp_phase, phase0 => imp_ph0 );
 
+-- TLP into the camera: the real values in a pass-through build, hard zeros in a
+-- profiling build. WITH_TLP is a generic, so the unused branch is folded away at
+-- elaboration and the clock-domain crossing simply does not exist.
+tlp_to_cam     <= tlp_val   when WITH_TLP = 1 else (others => '0');
+tlp_tog_to_cam <= tlp_tog_s when WITH_TLP = 1 else '0';
+
 out_red   <= imp_level when imp_en = '1' else pp_red;
 out_green <= imp_level when imp_en = '1' else pp_green;
 out_blue  <= imp_level when imp_en = '1' else pp_blue;
@@ -1457,7 +1481,7 @@ i_cam_frame_ft : cam_frame_ft
         ext_sync => out_vsync,
         -- The top-left pixel of the incoming HDMI frame, and its update toggle,
         -- so the camera can stamp each captured frame with the pattern it saw.
-        ext_tlp => tlp_val, ext_tlp_tog => tlp_tog_s,
+        ext_tlp => tlp_to_cam, ext_tlp_tog => tlp_tog_to_cam,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 
