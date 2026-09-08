@@ -2,25 +2,34 @@
 //==============================================================================
 // roi_line.v -- one short telemetry line per camera frame, carrying the ROI mean.
 //
-//   R=mmm,ffff,nnn,b,p<CR><LF>        20 bytes
+//   R=mmm,ffff,nnn,b,p,tt<CR><LF>     23 bytes
 //
-//   index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
-//          R = m m m , f f f f  ,  n  n  n  ,  b  ,  p CR LF
+//   index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
+//          R = m m m , f f f f  ,  n  n  n  ,  b  ,  p  ,  t  t CR LF
 //
 //     mmm   ROI mean, 10-bit -> 3 hex digits (000..3FF)
 //     ffff  frame counter, hex -- a gap here is a DROPPED LINE, not a dropped frame
 //     nnn   pixels accumulated, hex; MUST read 100 (= 256)
 //     b     1 = the ROI sat on black-reference rows
-//     p     the projected sequence phase this frame was TRIGGERED at, 0..4
-//           (7 = no trigger recorded: free-running, or the pairing FIFO ran dry).
-//           This is what lets the host put the white frame at bar 0 instead of
-//           guessing from brightness -- and guessing would rotate away the
-//           projector latency, which is the offset worth measuring.
+//     tt    TOP-LEFT PIXEL AS TRANSMITTED for this frame, 2 hex digits. This is
+//           CONTENT, not a counter, and it is what the phase field cannot be: a
+//           projector whose latency exceeds the sequence length makes any
+//           free-running phase alias -- five frames late reads identically to none.
+//           The transmitted pixel says what was actually on the wire, so the
+//           correspondence between "white was sent" and "light was seen" is
+//           measured rather than assumed. 255 = the bright frame.
+//     p     the projected sequence phase, sampled in the pixel stream at this
+//           frame's own frame_start. A CONSTANT offset from the phase at trigger
+//           (exposure + sensor latency), so it orders frames reliably but does not
+//           by itself say which projected frame the LIGHT came from -- use tt for
+//           that. The trigger-time pairing FIFO that used to feed this field is
+//           gone; its depth was startup-dependent and one missed trigger rotated
+//           every later label permanently.
 //
 // WHY NOT REUSE status_line. status_line fires on a 0.5 s window (usb_link WIN =
 // 50e6) and is 62 bytes of mixed ASCII. This needs one sample per camera frame --
 // 120 per second -- so it needs its own trigger and a line short enough to fit:
-// 18 B x 120/s = 2160 B/s against 11520 B/s at 115200 8N1, about 19%.
+// 23 B x 120/s = 2760 B/s against 11520 B/s at 115200 8N1, about 24%.
 //
 // WHY ASCII AND NOT BINARY. Every other telemetry path in this design is readable in
 // a terminal, and that has repeatedly been what separated "the link is dead" from
@@ -43,25 +52,31 @@ module roi_line (
     input  wire [8:0]  npx,
     input  wire        blk,
     input  wire [2:0]  phase,
+    input  wire [7:0]  tlp,
     output reg  [7:0]  tx_data,
     output reg         tx_send,
     input  wire        tx_busy,
     output reg         busy
 );
-    localparam integer LEN = 20;
+    localparam integer LEN = 23;
     reg [7:0] msg [0:LEN-1];
     integer k;
     initial begin
         for (k = 0; k < LEN; k = k + 1) msg[k] = 8'h20;
         msg[0]  = "R";  msg[1]  = "=";
         msg[5]  = ",";  msg[10] = ",";  msg[14] = ",";  msg[16] = ",";
-        msg[18] = 8'h0D; msg[19] = 8'h0A;
+        msg[18] = ",";
+        msg[21] = 8'h0D; msg[22] = 8'h0A;
         busy = 1'b0; tx_send = 1'b0;
     end
 
     function [7:0] h2a; input [3:0] n; h2a = (n < 10) ? (8'h30 + n) : (8'h41 + n - 4'd10); endfunction
 
-    reg [4:0] idx;
+    // Six bits for a 23-byte message: it only needs five today, but roi_block was
+    // truncated silently by exactly this -- LEN grew past 32 while the index stayed
+    // 5 bits, and the stream looked healthy while every line was cut short. The margin
+    // costs one flip-flop.
+    reg [5:0] idx;
     reg       st;
     always @(posedge clk) begin
         tx_send <= 1'b0;
@@ -79,7 +94,9 @@ module roi_line (
                 msg[13] <= h2a(npx[3:0]);
                 msg[15] <= blk ? "1" : "0";
                 msg[17] <= h2a({1'b0, phase});
-                idx <= 5'd0; st <= 1'b0; busy <= 1'b1;
+                msg[19] <= h2a(tlp[7:4]);
+                msg[20] <= h2a(tlp[3:0]);
+                idx <= 6'd0; st <= 1'b0; busy <= 1'b1;
             end
         end else begin
             case (st)
@@ -87,7 +104,7 @@ module roi_line (
                           tx_data <= msg[idx]; tx_send <= 1'b1; st <= 1'b1;
                       end
                 1'b1: if (idx == LEN-1) busy <= 1'b0;
-                      else begin idx <= idx + 5'd1; st <= 1'b0; end
+                      else begin idx <= idx + 6'd1; st <= 1'b0; end
             endcase
         end
     end

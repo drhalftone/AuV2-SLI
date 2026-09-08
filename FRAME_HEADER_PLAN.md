@@ -4,6 +4,10 @@ _Drafted 2026-08-31. Field set agreed: frame index, exposure, trigger delay, and
 vsync-derived timestamp with a host-commanded epoch reset. Two items in §7 are still
 my recommendation rather than your decision._
 
+_Updated 2026-09-08: the ROI mean now ships in word 1 — see §1a. That was not part of
+the format-4 plan below and did not need to be: it fits in redundancy that already
+existed, so the header is still 32 bytes and format is still 3._
+
 ## 1. What exists today
 
 Every packet on the Ft+ IN pipe is already **32 bytes of header + payload**, as two
@@ -48,6 +52,51 @@ Two of its choices are principles worth preserving, not just details:
   convincing-looking wrong image."
 * **`ldrop` is in the header, not only on the status UART**, so a bad frame can be
   *attributed* to a real drop instead of guessed at.
+
+### 1a. The ROI mean now rides in word 1 — IMPLEMENTED 2026-09-08
+
+`FBYTES/4` is gone; its 24 bits carry the fabric's ROI measurement for **this
+packet's own pixels**:
+
+| bits (word 1) | field | notes |
+|---|---|---|
+| `[55:46]` | `roi_mean` | 10-bit average of the 16×16 patch |
+| `[45:37]` | `roi_npx` | pixels accumulated — **must read 256** |
+| `[36]` | `roi_blk` | the ROI sat on black-reference rows |
+| `[35:33]` | `roi_phase` | projected sequence phase (7 = no trigger recorded) |
+| `[32]` | `roi_valid` | 0 = no measurement paired with this frame |
+
+**Spending redundancy keeps the header 32 bytes**, so no host tool's payload offset
+moves. `campack.parse_header` was the only reader of that field and it took the top
+byte (`tlp`) only; the count itself was pure duplication of word 4.
+
+**Why it is stored per ring slot.** The writer fills a ring of `NSLOT = 4` slots
+while the reader streams an *earlier* slot out of DDR, so at the instant a header is
+assembled the newest ROI result belongs to a frame one or more slots ahead of the
+pixels being sent. Latching "the latest mean" would reintroduce exactly the pairing
+drift the phase FIFO was added to remove — and would look correct whenever the ring
+happened to be shallow, which is the worst way for it to be wrong. `roi_mean` is
+therefore written into `roi_meta[w_slot]` as each slot closes and read back with
+`roi_meta[r_slot]`.
+
+**Why a FIFO in front of that.** `roi_mean` publishes at `frame_end` in `wordclk`;
+the writer closes that frame's slot later, once the async FIFO tail has drained. The
+order is fixed but the lag is not, so results queue and the writer pops one per
+completed frame — the same shape as `pfifo`, for the same reason. A frame the writer
+**discards still pops**, or the queue slips by one and stays wrong forever. A frame
+whose result has not crossed yet gets `roi_valid = 0` rather than the previous
+frame's mean, which would plot as a genuine reading.
+
+**This does not replace `roi_line` on the UART.** The two now carry the same number
+by independent routes, which makes them a cross-check on each other.
+
+**The host must average the same pixels.** `uart_ctrl.v` resets `roi_col8/roi_row8`
+to 80/64, which *anchors* the patch at the centre pixel (columns 640–655, rows
+512–527) rather than centring it on that pixel (79/63). Eight pixels is optically
+nothing and is fatal to the comparison: it yields a plausible, permanently non-zero
+delta that reads as a fabric arithmetic bug. `campack.ROI_*_DEFAULT` tracks the
+fabric's reset values, and `cam_live.py --roi-col8/--roi-row8` follows the registers
+if the ROI is moved.
 
 ## 2. Why extend it
 

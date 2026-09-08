@@ -110,6 +110,7 @@ module usb_link #(
     input  wire        roi_blk_i,
     input  wire        roi_valid_i,    // 1-cycle pulse, one per camera frame
     input  wire [2:0]  roi_phase_i,    // sequence phase this frame was triggered at
+    input  wire [7:0]  roi_tlp_i,      // top-left pixel AS TRANSMITTED, same frame
     output wire [15:0] expo_uart,      // 0x1A/0x1B
     output wire        expo_uart_we,
     output wire [23:0] gldly_uart,
@@ -329,15 +330,23 @@ module usb_link #(
     // ---- producers ----
     wire [7:0] st_data; wire st_send, st_busy;       // status_line producer
     wire [7:0] rl_data; wire rl_send, rl_busy;       // roi_line producer
+    wire [7:0] rb_data; wire rb_send, rb_busy;       // roi_block producer
     // ONE ARBITER SLOT, TWO PRODUCERS. The status line is 62 bytes on a 0.5 s
     // window; the ROI line is 18 bytes once per camera frame (~120/s). Together
     // they are 9.6 kB/s against 11.5 kB/s and the ROI stream -- the measurement --
     // would be the one that stalls. So enabling the stream REPLACES telemetry.
-    wire       roi_en  = roi_ctl[6];
+    //
+    // roi_ctl[4] selects the BLOCK format instead: one line per five-frame sequence,
+    // already ordered by the FPGA, rather than five separate per-frame lines the host
+    // then has to group. It is 30 bytes at 24 blocks/s = 720 B/s, an order of magnitude
+    // below the per-frame line, because the sequence -- not the frame -- is the unit
+    // the measurement is actually made in.
+    wire       blk_en  = roi_ctl[4];
+    wire       roi_en  = roi_ctl[6] | blk_en;
     assign     gl_div  = roi_ctl[5];
-    wire [7:0] s_data  = roi_en ? rl_data : st_data;
-    wire       s_send  = roi_en ? rl_send : st_send;
-    wire       s_busy  = roi_en ? rl_busy : st_busy;
+    wire [7:0] s_data  = blk_en ? rb_data : (roi_en ? rl_data : st_data);
+    wire       s_send  = blk_en ? rb_send : (roi_en ? rl_send : st_send);
+    wire       s_busy  = blk_en ? rb_busy : (roi_en ? rl_busy : st_busy);
     wire [7:0] c_data;  wire c_send, c_active;      // uart_ctrl producer
     wire       u_busy;                              // shared uart_tx busy
 
@@ -402,10 +411,20 @@ module usb_link #(
     // ---- ROI sample line (one per camera frame) ----
     roi_line i_roi (
         .clk(clk100),
-        .go(roi_valid_i & roi_en & ~c_active & ~owner),
+        .go(roi_valid_i & roi_en & ~blk_en & ~c_active & ~owner),
         .mean(roi_mean_i), .fcnt(roi_fcnt_i), .npx(roi_npx_i), .blk(roi_blk_i),
-        .phase(roi_phase_i),
+        .phase(roi_phase_i), .tlp(roi_tlp_i),
         .tx_data(rl_data), .tx_send(rl_send), .tx_busy(s_tx_busy), .busy(rl_busy)
+    );
+
+    // ---- ROI block line (one per five-frame sequence, grouped in fabric) ----
+    roi_block #(.NF(5)) i_roiblk (
+        .clk(clk100),
+        .go(roi_valid_i & blk_en & ~c_active & ~owner),
+        .mean(roi_mean_i), .fcnt(roi_fcnt_i), .npx(roi_npx_i), .tlp(roi_tlp_i),
+        .dly(gldly_uart), .dly_we(gldly_uart_we),
+        .tx_data(rb_data), .tx_send(rb_send), .tx_busy(s_tx_busy), .busy(rb_busy),
+        .dropped()
     );
 
     // ---- receive + command engine ----

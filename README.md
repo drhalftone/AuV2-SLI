@@ -49,7 +49,7 @@ can still answer in that state is the one worth having.
 |---|---|
 | [`USB_COMMAND_REFERENCE.md`](USB_COMMAND_REFERENCE.md) | **Every get and put** — 11 writable registers, ~120 readable, 6 table targets, the Ft+ opcodes |
 | [`FTPLUS_API.md`](FTPLUS_API.md) | The Ft+ control API, marked R / W / R-W |
-| [`FRAME_HEADER_PLAN.md`](FRAME_HEADER_PLAN.md) | Per-frame header design (format 3 → 4): pairing, timestamps, `pat_period` |
+| [`FRAME_HEADER_PLAN.md`](FRAME_HEADER_PLAN.md) | Per-frame header design (format 3 → 4): pairing, timestamps, `pat_period`. **§1a: the ROI mean now rides in word 1** |
 | [`GENLOCK_MILESTONES.md`](GENLOCK_MILESTONES.md) | Locking exposure to the projected frame — G0…G3 |
 | [`MERGE_MILESTONES.md`](MERGE_MILESTONES.md) | How HDMI and camera were merged onto one FPGA — M0…M7 |
 | [`PT_PASSTHROUGH_DEBUG.md`](PT_PASSTHROUGH_DEBUG.md) | Pass-through bring-up on the Pt, and the bug that broke 640×480 for 16 months |
@@ -506,7 +506,7 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 
 | Tool | Does |
 |---|---|
-| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate |
+| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate. Draws the **ROI box** and shows the fabric's ROI mean beside the host's own mean of the same 16×16 pixels — the box goes red when they disagree. `--roi-col8/--roi-row8` if the ROI has been moved off its default |
 | `cam_ctl.py` | Exposure, frame rate and re-arm from the command line |
 | `campack.py` | Frame geometry, header parsing and 10-bit unpacking — **shared** by the other tools |
 | `cam_rate_bench.py` | Frame rate over repeated 24-frame runs |

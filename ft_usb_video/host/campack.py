@@ -59,7 +59,55 @@ def parse_header(buf, off):
         # Reads 0 when nothing is driving the HDMI input, and on the standalone
         # camera build where the TLP wire does not exist.
         "tlp": (h[5] >> 24) & 0xFF,
+        # ROI MEAN OF THIS FRAME'S OWN PIXELS, in the low 24 bits of word 5 (which
+        # used to hold FBYTES/4 -- redundant, since FBYTES is word 4). The fabric
+        # stores it per ring slot and reads it back with the slot being streamed, so
+        # it describes the image in THIS packet rather than whichever frame the
+        # camera happened to finish most recently.
+        #
+        # roi_valid == 0 means no measurement was paired with this frame -- reported
+        # rather than faked, because a fabricated 0 plots as a real dark reading.
+        # roi_npx MUST be 256; anything else means the ROI is off the sensor and the
+        # mean beside it is meaningless however plausible it looks.
+        "roi_mean": (h[5] >> 14) & 0x3FF,
+        "roi_npx": (h[5] >> 5) & 0x1FF,
+        "roi_blk": (h[5] >> 4) & 1,
+        "roi_phase": (h[5] >> 1) & 7,
+        "roi_valid": h[5] & 1,
     }
+
+
+# The ROI the fabric averages: 16x16, placed by roi_col8/roi_row8 (each x8).
+#
+# THESE MUST TRACK uart_ctrl.v's RESET VALUES, NOT AN IDEA OF WHERE THE CENTRE IS.
+# The fabric resets them to 80/64, which ANCHORS the patch at the centre pixel --
+# columns 640..655, rows 512..527 -- rather than centring it on that pixel (which
+# would be 79/63). The 8-pixel difference is optically nothing on a 1280-wide
+# sensor, but it is everything to the cross-check: computing the host mean over a
+# patch shifted by 8 px yields a plausible, permanently non-zero delta that reads
+# as a fabric arithmetic bug. The host validates the fabric, so the host matches it.
+#
+# If the ROI is moved at runtime (UART regs 0x18/0x19), pass the new values through
+# -- cam_live.py takes --roi-col8/--roi-row8 for exactly that.
+ROI_N = 16
+ROI_COL8_DEFAULT = 80        # uart_ctrl.v: roi_col8 <= 8'd80  -> first column 640
+ROI_ROW8_DEFAULT = 64        # uart_ctrl.v: roi_row8 <= 8'd64  -> first row    512
+
+
+def roi_mean_host(img, col8=ROI_COL8_DEFAULT, row8=ROI_ROW8_DEFAULT):
+    """Mean of the same 16x16 patch the fabric averages, computed on the host.
+
+    THE POINT OF THIS IS DISAGREEMENT. The fabric's mean and this one are computed
+    from the same pixels by two independent routes, so if they differ the ROI logic
+    is wrong -- and that is a question no amount of staring at a single number can
+    settle. Truncates like the hardware (sum >> 8), so an exact match is expected,
+    not a match to within rounding.
+    """
+    r0, c0 = row8 * 8, col8 * 8
+    patch = img[r0:r0 + ROI_N, c0:c0 + ROI_N]
+    if patch.shape != (ROI_N, ROI_N):
+        return None
+    return int(patch.astype(np.uint32).sum()) >> 8
 
 
 def unpack10_flat(raw):

@@ -153,6 +153,10 @@ module cam_frame_ft #(
     output reg         roi_blk_o,
     output reg         roi_valid_o,     // 1-cycle pulse in `clk`
     output reg  [2:0]  roi_phase_o,     // impulse phase THIS frame was triggered at
+    // TOP-LEFT PIXEL AS TRANSMITTED, paired with this frame. Content, not a counter:
+    // a projector whose latency exceeds the sequence length makes the phase alias,
+    // and this says what was actually on the wire.
+    output reg  [7:0]  roi_tlp_o,
     // The projected sequence's phase, already stable in `clk` (see Au2_SLI). Latched
     // when the trigger is issued and carried with that frame, so the host learns
     // which camera frame was triggered at the WHITE frame's vsync -- which brightness
@@ -871,29 +875,20 @@ module cam_frame_ft #(
     always @(posedge ui_clk) fs_s <= {fs_s[1:0], fs_tog};
     wire fs_pulse = fs_s[2] ^ fs_s[1];      // frame_start, in ui_clk
 
-    //------------------------------------------- TLP capture (HDMI -> ui_clk)
-    // Same toggle + 3FF + edge-detect shape as fs_tog above, and for the same
-    // reason: ext_tlp is EIGHT bits crossing from the HDMI pixel clock, whose
-    // frequency changes with the video mode. A plain 2FF on the bus would let
-    // the byte tear on the one cycle it changes -- and a torn TLP is worse than
-    // no TLP, because the host would silently match a frame to the wrong
-    // pattern instead of noticing a gap. Sampling the bus only on the synced
-    // toggle edge is safe: pixel_pipe holds ext_tlp stable for a whole frame
-    // either side of the flip.
-    // EXACTLY 24 BITS, and it must stay that way. FBYTES is a `localparam integer`,
-    // so `FBYTES/4` is 32 bits wide and masking it with 24'hFFFFFF does NOT narrow
-    // it -- the width of `a & b` is max(width(a), width(b)). Concatenating that with
-    // tlp_ui gave a 40-bit field inside a 128-bit word, which silently truncated the
-    // top of ~MAGIC and shifted every field: the host would have rejected every
-    // frame. Naming the width here is what keeps the header word exactly 128 bits.
-    wire [23:0] fb4 = FBYTES / 4;           // 409,600 -- fits 24 bits with room
-
-    reg [2:0] tlp_s   = 3'b000;
-    reg [7:0] tlp_ui  = 8'd0;
-    always @(posedge ui_clk) begin
-        tlp_s <= {tlp_s[1:0], ext_tlp_tog};
-        if (tlp_s[2] ^ tlp_s[1]) tlp_ui <= ext_tlp;
-    end
+    //------------------------------------------- TLP capture: NOW IN WORDCLK
+    // The pixel-clock -> ui_clk capture that used to live here is GONE. The TLP is
+    // taken in the wordclk domain instead (see tlp_w, further down), latched at the
+    // sensor's frame_start and carried in the same payload as the mean. Two reasons,
+    // and the second is the one that mattered:
+    //
+    //   * ONE PAIRING, NOT TWO. Both the UART line and the frame header now read the
+    //     same captured byte, so they cannot disagree about what was transmitted.
+    //   * A value sampled in ui_clk could only be read when the HEADER was assembled,
+    //     which is one or more ring slots after the frame it would have labelled --
+    //     the same mistake the mean itself made this morning.
+    //
+    // Deleting it also removes an asynchronous crossing rather than leaving one
+    // unconstrained; fb4 went with it, since word 5 now carries the ROI payload.
 
     reg  fe_tog = 1'b0;
     always @(posedge wordclk) if (frame_end) fe_tog <= ~fe_tog;
@@ -1033,38 +1028,84 @@ module cam_frame_ft #(
     // wordclk -> clk, toggle handshake. The payload is written once per frame and
     // then held for ~8.3 ms, which is five orders of magnitude longer than the two
     // sync flops, so the capture below can never see it mid-update.
-    reg [35:0] roi_hold_w = 36'd0;
+    // ---- the projected phase, SAMPLED IN THE PIXEL STREAM ----------------------
+    //
+    // imp_phase changes once per projected frame (8.3 ms) and is read here once per
+    // sensor frame, so a 2FF sync is ample -- this is a quasi-static value, not a bus
+    // that can tear meaningfully.
+    reg [2:0] imp_ph_w0 = 3'd0, imp_ph_w1 = 3'd0;
+    always @(posedge wordclk) begin
+        imp_ph_w0 <= imp_phase_i;
+        imp_ph_w1 <= imp_ph_w0;
+    end
+
+    // ---- the TRANSMITTED top-left pixel, into the same wordclk payload ---------
+    //
+    // ext_tlp is 8 bits from the HDMI PIXEL CLOCK and ext_tlp_tog flips in the same
+    // cycle the value changes, so the data is taken only on a synchronised toggle
+    // edge -- by then it has been stable for a whole projected frame. Sampled here in
+    // WORDCLK rather than ui_clk so that the UART line and the frame header get the
+    // SAME paired byte: two copies of one value cannot disagree.
+    reg [2:0] tlp_ws  = 3'b000;
+    reg [7:0] tlp_w   = 8'd0;
+    always @(posedge wordclk) begin
+        tlp_ws <= {tlp_ws[1:0], ext_tlp_tog};
+        if (tlp_ws[2] ^ tlp_ws[1]) tlp_w <= ext_tlp;
+    end
+
+    // Latched at the sensor's OWN frame_start, so they ride with that frame's pixels
+    // all the way to the mean. This replaces a trigger-time FIFO -- see the note below.
+    reg [2:0] roi_ph_w  = 3'd0;
+    reg [7:0] roi_tlp_w = 8'd0;
+    always @(posedge wordclk) if (frame_start) begin
+        roi_ph_w  <= imp_ph_w1;
+        roi_tlp_w <= tlp_w;
+    end
+
+    reg [46:0] roi_hold_w = 47'd0;
     reg        roi_tog_w  = 1'b0;
     always @(posedge wordclk) if (roi_done_w) begin
-        roi_hold_w <= {roi_blk_w, roi_npx_w, roi_fcnt_w, roi_mean_w};
+        roi_hold_w <= {roi_tlp_w, roi_ph_w, roi_blk_w, roi_npx_w, roi_fcnt_w, roi_mean_w};
         roi_tog_w  <= ~roi_tog_w;
     end
 
-    // PHASE PAIRING. The trigger for a frame is issued long before that frame's
-    // pixels arrive, so the phase must travel WITH the frame rather than be sampled
-    // when the mean pops out. A short FIFO written at each trigger and read at each
-    // completed frame does that in order, and matches gl_out's trigger-outstanding
-    // offset without having to compute it.
+    // PHASE PAIRING -- WHY THE TRIGGER-TIME FIFO IS GONE.
     //
-    // The write is delayed a few cycles past gl_fire: imp_phase_i changes on the
-    // projected vsync, which is the same instant gl_fire asserts, and reading it
-    // right then would race the update. Eight cycles is 80 ns against an 8.3 ms
-    // frame -- long after it settles, nowhere near the next change.
-    reg [2:0] roi_tog_s = 3'b000;   // declared here: the FIFO below reads it
-    reg [7:0] gf_dly = 8'd0;
-    always @(posedge clk) gf_dly <= {gf_dly[6:0], gl_fire};
-
-    reg [2:0] pfifo [0:7];
-    reg [2:0] pf_wr = 3'd0, pf_rd = 3'd0;
-    always @(posedge clk) begin
-        if (rst) begin pf_wr <= 3'd0; pf_rd <= 3'd0; end
-        else begin
-            if (gf_dly[7]) begin pfifo[pf_wr] <= imp_phase_i; pf_wr <= pf_wr + 3'd1; end
-            if (roi_tog_s[2] ^ roi_tog_s[1]) begin
-                if (pf_rd != pf_wr) pf_rd <= pf_rd + 3'd1;
-            end
-        end
-    end
+    // The phase used to be captured at gl_fire and queued in an 8-entry FIFO, popped
+    // once per completed frame, so that a trigger issued long before its pixels
+    // arrived met them again in order. That is correct only while pushes and pops stay
+    // exactly 1:1 forever, and they do not:
+    //
+    //   * IT WAS ARMED FROM POWER-UP. gl_en resets to GL_EN_DEFAULT and offline video
+    //     runs the moment the FPGA configures, so triggers fired at 120 Hz while the
+    //     sensor was still in cam_boot_seq and LVDS alignment. Every one of those
+    //     pushed with no matching pop, and the labels came up rotated by however many
+    //     frames the boot happened to take.
+    //   * 8 ENTRIES, 3-BIT POINTERS. At 8 outstanding, pf_wr == pf_rd, so the read side
+    //     could not tell FULL from EMPTY: it reported phase 7 and stopped advancing
+    //     while the write side ran on. The boot overrun above guaranteed this happened
+    //     on every power-up, so it was the normal path, not a corner case.
+    //   * NO RESYNCHRONISATION, EVER. Alignment was (#triggers - #frames) mod 8 summed
+    //     since reset, so a SINGLE trigger the sensor did not answer rotated every
+    //     later label permanently. Exposures past the ~8280 us cliff and gl_div's
+    //     halved trigger rate both produce exactly that, which is why the bright frame
+    //     landed on a different phase in consecutive sweeps of identical hardware.
+    //
+    // None of that is fixable by sizing the FIFO, because the fault is the pairing
+    // model: a queue can only stay aligned if nothing is ever lost at either end.
+    //
+    // THE PHASE IS NOW SAMPLED IN THE PIXEL STREAM (see roi_ph_w above), latched at
+    // the sensor's own frame_start and carried in the same payload as the mean. It
+    // travels with the frame by construction, so there is nothing to drift and nothing
+    // to initialise -- the same reasoning that fixed roi_meta's slot pairing.
+    //
+    // THE COST, STATED PLAINLY: frame_start is the READOUT boundary, not the trigger,
+    // so this labels each frame with the phase in flight when its pixels began
+    // arriving -- a CONSTANT offset from the phase at trigger, set by exposure plus
+    // sensor latency. Constant and repeatable is the point: it is a calibration, where
+    // the FIFO gave a rotation that changed between runs. Use --percycle, which needs
+    // no phase at all, to pin the absolute origin once.
+    reg [2:0] roi_tog_s = 3'b000;
 
     always @(posedge clk) begin
         roi_tog_s   <= {roi_tog_s[1:0], roi_tog_w};
@@ -1074,11 +1115,134 @@ module cam_frame_ft #(
             roi_fcnt_o <= roi_hold_w[25:10];
             roi_npx_o  <= roi_hold_w[34:26];
             roi_blk_o  <= roi_hold_w[35];
-            // 7 = no trigger recorded for this frame (free-running, or the FIFO ran
-            // dry). Reported rather than faked, so the host can see it happened.
-            roi_phase_o <= (pf_rd != pf_wr) ? pfifo[pf_rd] : 3'd7;
+            // Carried with the frame, not looked up. There is no longer a "FIFO ran
+            // dry" case to report, so phase 7 no longer occurs from this path.
+            roi_phase_o <= roi_hold_w[38:36];
+            roi_tlp_o   <= roi_hold_w[46:39];
+
+            // Same result, packed for the FRAME HEADER. See roim_* below.
+            roim_hold_c <= { roi_hold_w[9:0],                          // mean
+                             roi_hold_w[34:26],                        // npx
+                             roi_hold_w[35],                           // blk
+                             roi_hold_w[38:36],                        // phase
+                             1'b1 };                                   // valid
+            roim_tlp_c  <= roi_hold_w[46:39];
+            roim_tog_c  <= ~roim_tog_c;
         end
     end
+
+    //--------------------------------------------------------------------------
+    // ROI MEAN INTO THE FRAME HEADER -- so the number travels WITH its own pixels.
+    //
+    // The mean already leaves on the UART (roi_line). That is a different transport
+    // from the Ft+ frame, so the host can only pair the two by frame counter and has
+    // to trust that neither stream slipped. Pairing is precisely what has been
+    // unreliable here, and a viewer that draws a mean beside a picture it does not
+    // actually belong to is worse than one that draws no mean at all.
+    //
+    // WHY A PER-SLOT ARRAY AND NOT ONE REGISTER. The writer fills a ring of NSLOT
+    // frame slots while the reader streams an EARLIER slot out of DDR, so at the
+    // instant a header is assembled the newest ROI result belongs to a frame one or
+    // more slots ahead of the pixels being sent. Latching "the latest mean" would
+    // reintroduce exactly the drift this is meant to remove -- and would look right
+    // whenever the ring happened to be shallow. The value is therefore stored per
+    // slot and read back with r_slot.
+    //
+    // WHY A FIFO IN FRONT OF IT. roi_mean publishes at frame_end in wordclk; the
+    // writer finishes that frame's slot later, once the async FIFO tail has drained.
+    // The order is fixed but the lag is not, so results queue and the writer pops one
+    // per completed frame. A frame the writer DISCARDS still pops, or the queue would
+    // slip by one and stay wrong forever.
+    //
+    // THIS QUEUE IS SAFE WHERE THE OLD PHASE FIFO WAS NOT, and the difference is worth
+    // stating because they look alike. Both ends here are driven by the SAME event --
+    // one sensor frame decoded, one slot closed -- so they cannot diverge. The phase
+    // FIFO's ends were a TRIGGER and a FRAME, which are only 1:1 while the sensor
+    // answers every trigger; one that it misses desynchronised it for good. That queue
+    // is gone (see above); this one additionally arms, flushes at each frame start,
+    // and uses a pointer wider than its index so full can never read as empty.
+    //
+    // A SECOND CROSSING, DELIBERATELY. This takes the clk-domain result (which has
+    // already been paired with its trigger phase) rather than re-deriving from
+    // wordclk, so there is one pairing rule in this file, not two.
+    //--------------------------------------------------------------------------
+    reg [23:0] roim_hold_c = 24'd0;         // clk domain, packed for the header
+    reg [7:0]  roim_tlp_c  = 8'd0;          // transmitted TLP for the same frame
+    reg        roim_tog_c  = 1'b0;
+
+    reg [2:0]  roim_s      = 3'b000;        // -> ui_clk
+    wire       roim_pulse  = roim_s[2] ^ roim_s[1];
+    always @(posedge ui_clk) roim_s <= {roim_s[1:0], roim_tog_c};
+
+    // roim_wr is driven HERE; roim_rd is driven by the writer FSM alone, where the
+    // pop happens. Split that way because one reg may have one driver, and the pop
+    // must sit in the state that knows which slot just closed.
+    //
+    // NAMED roim_*, NOT rf_*. `rf_rd` is ALREADY TAKEN, 600 lines below, as the 1-bit
+    // read-enable of the M6b control-reply FIFO. Verilog does not stop you: the first
+    // declaration wins, the second is dropped with a critical warning, and the two
+    // uses silently become ONE register -- this queue's pointer would have popped
+    // reply bytes and the reply logic's rf_rd <= 1'b1 would have corrupted this
+    // pointer. It built, met timing, and would have failed on hardware as something
+    // else entirely.
+    // THE STARTING DEPTH IS THE WHOLE PROBLEM, AND IT WAS MEASURED WRONG FIRST TIME.
+    //
+    // The writer sits in W_WAIT until init_calib_complete -- MIG calibration -- while
+    // the camera is ALREADY streaming and publishing a mean per frame. Left alone, the
+    // queue fills during that window and every later pop returns a mean from N frames
+    // ago, N being however many frames fitted before calibration finished. On hardware
+    // this showed as a small, wandering FPGA-vs-host delta with no fixed lag: the mean
+    // was real and the pixels were real, they just came from different frames.
+    // Compare the same failure in the phase FIFO -- "startup-dependent" -- in the
+    // one-trigger-per-sequence commit. Two fixes, because one alone is not enough:
+    //
+    //   1. DON'T PUSH WHILE THE WRITER IS NOT CAPTURING (stw == W_WAIT). Nothing will
+    //      pop those entries, so queueing them only builds the offset.
+    //   2. FLUSH ON THE W_WAIT -> W_RUN TRANSITION (roim_rd <= roim_wr, below), so the
+    //      queue starts empty no matter what raced in.
+    //
+    // AND THE POINTERS ARE ONE BIT WIDER THAN THE INDEX. With 3-bit pointers on 8
+    // entries, a full queue has wr == rd and is indistinguishable from an empty one --
+    // so an overflow silently reads as "no data" and then mispairs everything after
+    // it. The extra MSB separates the two. 16 deep against a steady-state depth of
+    // about one is margin, not need.
+    reg [31:0] roim_fifo [0:15];
+    reg [4:0]  roim_wr = 5'd0, roim_rd = 5'd0;
+    wire roim_empty = (roim_wr == roim_rd);
+    wire roim_full  = (roim_wr[3:0] == roim_rd[3:0]) && (roim_wr[4] != roim_rd[4]);
+    // Armed by the writer as it leaves W_WAIT. A FLAG RATHER THAN `stw != W_WAIT`
+    // BECAUSE stw AND ITS localparams ARE DECLARED 400 LINES BELOW THIS POINT, and a
+    // localparam used before its declaration is not something to rely on a tool
+    // tolerating. The flag is declared here and only assigned in the writer's block,
+    // so it reads in declaration order both ways.
+    reg roim_arm = 1'b0;
+    // How long W_NEXT will wait for this frame's ROI result to finish crossing.
+    // 255 ui_clk cycles = 2.55 us, against a 44 us inter-frame gap and a CDC that
+    // takes under ten -- generous margin, and still far too short to put a kernel
+    // at risk. It is a BOUND, not a timeout that is expected to fire.
+    localparam [7:0] ROIM_WAIT_MAX = 8'd255;
+    reg [7:0] roim_wait = 8'd0;
+    always @(posedge ui_clk) begin
+        if (ui_rst) roim_wr <= 5'd0;
+        else if (roim_pulse && roim_arm && !roim_full) begin
+            roim_fifo[roim_wr[3:0]] <= {roim_tlp_c, roim_hold_c};
+            roim_wr <= roim_wr + 5'd1;
+        end
+    end
+
+    // One entry per slot. Reset to 0 -- valid bit clear -- so a header emitted
+    // before any ROI result has landed says "no measurement" instead of 0 counts,
+    // which would plot as a real dark reading.
+    // 32 bits: the TOP BYTE is the transmitted top-left pixel, captured at the same
+    // instant as the ROI result so the two describe the same moment. It is taken from
+    // the wordclk capture -- paired at the sensor's frame_start -- rather than read when
+    // the header is assembled, which would have reported whatever was on the wire one
+    // ring-slot later. Same reasoning as the mean itself: a value that is not captured
+    // WITH its frame is not about that frame. It arrives here already paired, from the
+    // wordclk capture, so this array only has to store it.
+    reg [31:0] roi_meta [0:7];
+    integer rmi;
+    initial for (rmi = 0; rmi < 8; rmi = rmi + 1) roi_meta[rmi] = 32'd0;
 
     // ONE KERNEL, PACKED: 8 pixels x 10 bits = 80 bits = 10 bytes.
     //
@@ -1723,6 +1887,7 @@ module cam_frame_ft #(
             wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0; rf <= 6'd0;
             nf_run <= 6'd0; cmd_done <= 1'b0; dat_done <= 1'b0; hw <= 3'd0;
             frame_idx <= 32'd0; rd_iss <= 18'd0; rd_got <= 18'd0; outst <= 5'd0;
+            roim_rd <= 5'd0; roim_arm <= 1'b0; roim_wait <= 8'd0;  // ROI queue
             rpl_pend <= 1'b0; rpl_seq <= 32'd0;
             // M6b: a reset mid-drain must not leave rf_rd asserted or a half-built
             // word queued to flush.
@@ -1754,6 +1919,11 @@ module cam_frame_ft #(
                         wfw <= 18'd0; wf <= 6'd0; wf_done <= 6'd0;
                         nf_run <= nf_u2;
                         w_slot <= 3'd0; w_acc <= 1'b1;
+                        // START THE ROI QUEUE EMPTY, then let it fill. Anything queued
+                        // before the first slot exists belongs to a frame no slot ever
+                        // held, and every later pop would be offset by that many.
+                        roim_rd  <= roim_wr;
+                        roim_arm <= 1'b1;
                     end
             // ONE KERNEL, ONE DDR WORD, ONE CYCLE. app_wdf_data comes straight
             // off the FIFO head and cfifo_rd asserts combinationally on the
@@ -1778,6 +1948,15 @@ module cam_frame_ft #(
                     else       stw <= W_NEXT;   // nothing was written; move on
                 end else if (w_fire) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
+                    // FIRST WORD OF A FRAME: DROP ANY ROI RESULT STILL QUEUED.
+                    // Nothing published before this frame began can belong to it.
+                    // At steady state the queue is already empty here (the previous
+                    // frame's result was popped at its W_NEXT), so this is a no-op --
+                    // it exists for the START, where the writer's first slot begins
+                    // on the first SOF it sees while roi_mean has already published
+                    // for the partial frame before it. Without this, every pop is
+                    // one frame behind for as long as the design runs.
+                    if (wfw == 18'd0) roim_rd <= roim_wr;
                     if (w_ddr)
                         waddr <= (wfw == NWORDS[17:0] - 18'd1) ? 28'd0
                                                               : waddr + ASTEP;
@@ -1820,7 +1999,48 @@ module cam_frame_ft #(
             // Choose the next slot and decide whether to keep the frame. The
             // ONLY rule that matters: never write the slot the reader is
             // currently streaming out of. Everything else is bookkeeping.
-            W_NEXT: begin
+            // WAIT FOR THIS FRAME'S OWN ROI RESULT BEFORE CLOSING THE SLOT.
+            //
+            // roi_mean publishes at frame_end in wordclk, and the value then crosses
+            // wordclk -> clk -> ui_clk, about 6-10 ui_clk cycles. The writer can reach
+            // W_NEXT sooner than that, because it is draining the tail of the very same
+            // frame out of a shallow FIFO. Popping immediately therefore returned the
+            // PREVIOUS frame's mean -- a consistent one-frame lag, which on hardware
+            // looked like a small wandering error rather than an offset, because
+            // neighbouring frames differ by little when the light is steady and by a
+            // lot when it is not. Measured: exact agreement at 1000-4000 us exposure
+            // (where consecutive frames are alike, so the lag is invisible) and a
+            // +/-1 residual at 500 us (where they are not). That asymmetry is the
+            // signature of a lag, not of bad arithmetic.
+            //
+            // Waiting costs at most ROIM_WAIT_MAX cycles of a 44 us inter-frame gap,
+            // and the bound is what stops a stalled or disabled roi_mean from hanging
+            // capture altogether -- it gives up and reports no measurement instead.
+            W_NEXT: if (roim_empty && (roim_wait != ROIM_WAIT_MAX)) begin
+                roim_wait <= roim_wait + 8'd1;
+            end else begin
+                roim_wait <= 8'd0;
+                // ---- pair this slot with the ROI mean of the frame just put in it.
+                // w_slot is still the slot that closed (w_next lands next cycle).
+                //
+                // POP EVEN WHEN THE FRAME WAS DISCARDED. roi_mean runs off the
+                // decoder and publishes for every frame the sensor delivers,
+                // whether or not the writer kept it, so skipping the pop would
+                // offset the queue by one permanently.
+                //
+                // STORE ONLY WHEN THE FRAME REACHED DDR. If it did not, this slot
+                // still holds the PREVIOUS frame's pixels -- and its existing meta
+                // still describes those pixels, so leaving it alone is what keeps
+                // header and image agreeing.
+                if (!roim_empty) begin
+                    if (w_ddr) roi_meta[w_slot] <= roim_fifo[roim_rd[3:0]];
+                    roim_rd <= roim_rd + 5'd1;
+                end else if (w_ddr) begin
+                    // Queue empty: the result has not crossed yet. Say so with a
+                    // clear valid bit rather than repeating the last frame's mean,
+                    // which would read as a genuine measurement.
+                    roi_meta[w_slot] <= 32'd0;
+                end
                 w_slot <= w_next;
                 // THE RULE: never write the slot the reader is streaming from.
                 // w_acc was declared and read but never assigned in the first
@@ -2012,10 +2232,25 @@ module cam_frame_ft #(
                     // FBYTES/4, which is pure redundancy -- the host can divide.
                     // It goes here rather than in the format word because several
                     // host tools compare word 6 with == or `in (1,3)`, and rather
-                    // than in word 3 because that has only two spare bits. FBYTES/4
-                    // is 409,600, so 24 bits is ample and the low field is unchanged
-                    // for any reader that masks.
-                    ufifo_din <= { ~MAGIC, 32'd3, {tlp_ui, fb4}, FBYTES };
+                    // than in word 3 because that has only two spare bits.
+                    //
+                    // AND ITS LOW 24 BITS NOW CARRY THE ROI MEASUREMENT, replacing
+                    // FBYTES/4 outright. campack.parse_header was the only reader of
+                    // that field and it took the top byte only; nothing consumed the
+                    // count itself, because FBYTES sits in word 4 and dividing it is
+                    // free. Spending redundancy is what keeps the header 32 bytes,
+                    // so every host tool's payload offset is unchanged.
+                    //
+                    //   [23:14] mean   10-bit ROI average of THIS frame's pixels
+                    //   [13:5]  npx    pixels accumulated; MUST read 256
+                    //   [4]     blk    the ROI sat on black-reference rows
+                    //   [3:1]   phase  projected sequence phase (7 = no trigger)
+                    //   [0]     valid  0 = no measurement paired with this frame
+                    //
+                    // npx TRAVELS WITH THE MEAN ON PURPOSE. A mis-set ROI produces a
+                    // perfectly plausible mean and no other symptom; npx is what
+                    // separates a dark patch from a patch that is off the sensor.
+                    ufifo_din <= { ~MAGIC, 32'd3, roi_meta[r_slot], FBYTES };
                 if (hw == 3'd1) begin
                     hw <= 3'd0;
                     rd_iss <= 18'd0; rd_got <= 18'd0;

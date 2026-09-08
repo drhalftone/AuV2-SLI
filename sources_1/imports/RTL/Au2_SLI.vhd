@@ -291,6 +291,7 @@ architecture Behavioral of Au2_SLI is
     signal roi_blk_w   : std_logic := '0';
     signal roi_valid_w : std_logic := '0';
     signal roi_phase_w : std_logic_vector(2 downto 0) := (others => '0');
+    signal roi_tlp_w   : std_logic_vector(7 downto 0) := (others => '0');
     signal expo_uart_w    : std_logic_vector(15 downto 0) := (others => '0');
     signal expo_uart_we_w : std_logic := '0';
     signal gldly_uart_w    : std_logic_vector(23 downto 0) := (others => '0');
@@ -493,6 +494,14 @@ architecture Behavioral of Au2_SLI is
                pix_khz   : out STD_LOGIC_VECTOR(17 downto 0) );
     end component;
     signal tlp_val   : std_logic_vector(7 downto 0);  -- sampled top-left red, pipe INPUT (diagnostic)
+    -- TOP-LEFT PIXEL AS TRANSMITTED, i.e. sampled AFTER the impulse mux. tlp_val
+    -- above samples the pipe INPUT, which in an offline build is not what leaves the
+    -- board at all -- out_red is taken from imp_r whenever the sequence is running, so
+    -- the input-side sample never sees the W/K values being projected.
+    signal tlp_tx     : std_logic_vector(7 downto 0) := (others => '0');
+    signal tlp_tx_tog : std_logic := '0';
+    signal vsp_d      : std_logic := '0';
+    signal tlp_arm    : std_logic := '0';
     -- Flips once per HDMI frame, with tlp_val. Carries the TLP across to the
     -- camera's frame header; see cam_frame_ft's "TLP capture" CDC.
     signal tlp_tog_s : std_logic;
@@ -568,6 +577,7 @@ architecture Behavioral of Au2_SLI is
                roi_blk_i      : in  STD_LOGIC;
                roi_valid_i    : in  STD_LOGIC;
                roi_phase_i    : in  STD_LOGIC_VECTOR(2 downto 0);
+               roi_tlp_i      : in  STD_LOGIC_VECTOR(7 downto 0);
                expo_uart      : out STD_LOGIC_VECTOR(15 downto 0);
                expo_uart_we   : out STD_LOGIC;
                gldly_uart     : out STD_LOGIC_VECTOR(23 downto 0);
@@ -796,6 +806,7 @@ architecture Behavioral of Au2_SLI is
                roi_blk_o      : out std_logic;
                roi_valid_o    : out std_logic;
                roi_phase_o    : out std_logic_vector(2 downto 0);
+               roi_tlp_o      : out std_logic_vector(7 downto 0);
                imp_phase_i    : in  std_logic_vector(2 downto 0) := (others => '0');
                expo_uart_i    : in  std_logic_vector(15 downto 0) := (others => '0');
                expo_uart_we   : in  std_logic := '0';
@@ -1027,7 +1038,7 @@ begin
         roi_ctl     => roi_ctl_w,  roi_col8 => roi_col8_w, roi_row8 => roi_row8_w,
         roi_mean_i  => roi_mean_w, roi_npx_i => roi_npx_w, roi_fcnt_i => roi_fcnt_w,
         roi_blk_i   => roi_blk_w,  roi_valid_i => roi_valid_w,
-        roi_phase_i => roi_phase_w,
+        roi_phase_i => roi_phase_w, roi_tlp_i => roi_tlp_w,
         expo_uart   => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart  => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
@@ -1458,8 +1469,33 @@ i_impulse: impulse_gen
 -- TLP into the camera: the real values in a pass-through build, hard zeros in a
 -- profiling build. WITH_TLP is a generic, so the unused branch is folded away at
 -- elaboration and the clock-domain crossing simply does not exist.
-tlp_to_cam     <= tlp_val   when WITH_TLP = 1 else (others => '0');
-tlp_tog_to_cam <= tlp_tog_s when WITH_TLP = 1 else '0';
+-- ---- top-left pixel of the TRANSMITTED frame ------------------------------
+-- Armed on the leading edge of vsync_Pos -- the same edge impulse_gen advances the
+-- sequence on and ext_sync triggers the camera on -- then latched on the first
+-- non-blank pixel of that frame. The handshake toggles in the SAME cycle as the
+-- value, which is what lets the camera side sample it safely.
+tlp_tx_proc : process(pixel_clk)
+begin
+    if rising_edge(pixel_clk) then
+        vsp_d <= vsync_Pos;
+        if (vsync_Pos = '1') and (vsp_d = '0') then
+            tlp_arm <= '1';
+        elsif (tlp_arm = '1') and (out_blank = '0') then
+            tlp_tx     <= out_red;
+            tlp_tx_tog <= not tlp_tx_tog;
+            tlp_arm    <= '0';
+        end if;
+    end if;
+end process;
+
+-- ALWAYS the transmitted pixel now, in every build. WITH_TLP used to select between
+-- the input-side sample and hard zeros; zeros made the field useless in exactly the
+-- build that needs it most, because a projector's latency can exceed the sequence
+-- length and a free-running phase counter then ALIASES -- five frames late is
+-- indistinguishable from zero. A value sampled off the wire says what was actually
+-- sent, so the correspondence is measured rather than assumed.
+tlp_to_cam     <= tlp_tx;
+tlp_tog_to_cam <= tlp_tx_tog;
 
 -- IMPRGB (0x1F) picks which primaries the bright frame drives: 0x07 = white,
 -- 0x04 = red only, 0x02 = green, 0x01 = blue. The dark frames are black either way,
@@ -1544,7 +1580,7 @@ i_cam_frame_ft : cam_frame_ft
         roi_col8_i => roi_col8_w, roi_row8_i => roi_row8_w,
         roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,
         roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
-        roi_phase_o => roi_phase_w,
+        roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w,
         imp_phase_i => imp_ph_s1,
         expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gl_div_i => gl_div_w,
@@ -1601,7 +1637,7 @@ gen_nocam: if WITH_CAM = 0 generate
     cam_stat_tog <= '0';
     roi_mean_w <= (others => '0'); roi_npx_w <= (others => '0');
     roi_fcnt_w <= (others => '0'); roi_blk_w <= '0'; roi_valid_w <= '0';
-    roi_phase_w <= (others => '0');
+    roi_phase_w <= (others => '0'); roi_tlp_w <= (others => '0');
     -- rpl_byte_w / rpl_we_w are OUTPUTS of the control block above; driving them
     -- here too created a second driver. The Ft+ readback path is never gated out.
 end generate gen_nocam;

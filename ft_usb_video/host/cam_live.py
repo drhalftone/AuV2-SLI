@@ -24,7 +24,7 @@ from tkinter import filedialog, ttk
 
 import ctypes
 import numpy as np
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageTk
 
 import ftd3xx
 from ftd3xx.defines import FT_OPEN_BY_INDEX
@@ -78,6 +78,18 @@ EXPO_RESERVE_US = 54.1
 EXPO_REG_MAX_US = 65535 * 0.375  # 24576 us -- the 16-bit exposure register itself
 SAT_LEVEL = 1020                 # 10-bit full scale is 1023
 CAPTURE_DIR = "captures"         # created on demand, next to the script
+
+# ROI PLACEMENT THE HOST WILL AVERAGE OVER. Defaults to the fabric's own reset
+# values; override when the ROI has been moved with UART regs 0x18/0x19, or the
+# host would be averaging different pixels from the FPGA and reporting the
+# difference as an error.
+ROI_COL8 = campack.ROI_COL8_DEFAULT
+ROI_ROW8 = campack.ROI_ROW8_DEFAULT
+for _i, _a in enumerate(sys.argv):
+    if _a == "--roi-col8" and _i + 1 < len(sys.argv):
+        ROI_COL8 = int(sys.argv[_i + 1])
+    elif _a == "--roi-row8" and _i + 1 < len(sys.argv):
+        ROI_ROW8 = int(sys.argv[_i + 1])
 
 
 class Cam:
@@ -151,7 +163,7 @@ class Reader(threading.Thread):
         self.cam = cam
         self.stop = threading.Event()
         self.lock = threading.Lock()
-        self.latest = None            # (slot, frame_idx, bytes, fmt, ldrop)
+        self.latest = None            # (slot, frame_idx, bytes, fmt, ldrop, roiw)
         self.bytes_total = 0
         self.frames_seen = 0
         self.frames_shown = 0
@@ -182,9 +194,13 @@ class Reader(threading.Thread):
                         # pad because kernels went missing. A RISING ldrop is the
                         # signal that the camera->DDR FIFO is overflowing, which
                         # is invisible in the picture until it is severe.
+                        # h[5] low 24 bits carry the fabric's ROI measurement for
+                        # THESE pixels (see campack.parse_header). Carried raw and
+                        # decoded in the GUI so the reader thread stays a pure
+                        # byte pump.
                         last = (h[3] & 0x3F, h[1],
                                 bytes(acc[pos + HDR: pos + HDR + FBYTES]), h[6],
-                                (h[3] >> 14) & 0xFFFF)
+                                (h[3] >> 14) & 0xFFFF, h[5])
                         break
                 pos = acc.rfind(magic, 0, pos)
 
@@ -213,7 +229,14 @@ class App:
         self.last_bytes = 0
         self.last_frames = 0
         self.shown = 0
-        self.auto = tk.BooleanVar(value=True)
+        # OFF BY DEFAULT. Auto contrast rescales the display to the frame's own 1st
+        # and 99th percentiles, which is what you want for looking at a scene and
+        # exactly wrong for judging light output: it hides both the absolute level
+        # and any change in it, because a dimming field is renormalised straight back
+        # to full scale. With it off the mapping is a fixed 10-bit -> 8-bit divide, so
+        # what is on screen is proportional to sensor counts and two frames can be
+        # compared by eye. Tick the box when the picture matters more than the level.
+        self.auto = tk.BooleanVar(value=False)
         self.slo = None
         self.shi = None
 
@@ -226,6 +249,13 @@ class App:
         self.rate_t0 = 0.0
         self.expo_ceil = None
         self.sat = 0.0
+        # ROI state, defaulted so the status line renders before the first frame.
+        self.roi_valid = 0
+        self.roi_mean = 0
+        self.roi_npx = 0
+        self.roi_blk = 0
+        self.roi_phase = 7
+        self.roi_host = None
 
         root.title("PYTHON1300 live -- Ft+")
         # Open at a defined size instead of letting the first frame decide it.
@@ -242,6 +272,12 @@ class App:
         self.stats = ttk.Label(root, text="starting...", font=("Consolas", 9),
                                anchor="w")
         self.stats.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 4))
+
+        # The ROI line gets its own row rather than being appended to the stats
+        # string: it is the thing being scrutinised, and it changes colour.
+        self.roi_stats = ttk.Label(root, text="ROI  waiting for a frame...",
+                                   font=("Consolas", 9), anchor="w")
+        self.roi_stats.pack(side=tk.BOTTOM, fill=tk.X, padx=6, pady=(0, 2))
 
         bar = ttk.Frame(root)
         bar2 = ttk.Frame(root)
@@ -489,8 +525,19 @@ class App:
     def tick(self):
         f = self.reader.take()
         if f is not None:
-            slot, idx, raw, fmt, ldrop = f
+            slot, idx, raw, fmt, ldrop, roiw = f
             a = campack.to_frame(raw, fmt)
+            # ---- the fabric's ROI mean, and OUR OWN mean of the same pixels ----
+            # These come from one set of pixels by two independent routes, so the
+            # DIFFERENCE is the measurement being validated, not the mean itself.
+            # The fabric truncates (sum >> 8) and campack.roi_mean_host does too, so
+            # anything other than delta == 0 is a real disagreement, not rounding.
+            self.roi_valid = roiw & 1
+            self.roi_mean = (roiw >> 14) & 0x3FF
+            self.roi_npx = (roiw >> 5) & 0x1FF
+            self.roi_blk = (roiw >> 4) & 1
+            self.roi_phase = (roiw >> 1) & 7
+            self.roi_host = campack.roi_mean_host(a, ROI_COL8, ROI_ROW8)
             # ldrop is free-running since power-up, so the useful quantity is its
             # GROWTH over this session, not its absolute value.
             if self.ldrop0 is None:
@@ -534,6 +581,26 @@ class App:
             tw = max(1, int(NCOL * scale))
             th = max(1, int(NROW * scale))
             im = Image.fromarray(img).resize((tw, th), RESAMPLE)
+            # ---- SHOW WHERE THE ROI ACTUALLY IS -------------------------------
+            # 16x16 out of 1280x1024 is a tenth of a percent of the frame, and at
+            # preview scale it is smaller than one screen pixel. The whole reason
+            # for putting a live picture behind this number is to see whether the
+            # patch is on the projected spot at all, so the box is drawn OUTSIDE
+            # the patch and deliberately oversized -- a marker, not a rectangle
+            # you are meant to read pixel values out of. Green when the fabric
+            # agrees with the host, red when it does not.
+            if im.mode != "RGB":
+                im = im.convert("RGB")
+            d = ImageDraw.Draw(im)
+            agree = (self.roi_valid and self.roi_host is not None
+                     and self.roi_mean == self.roi_host)
+            x0 = ROI_COL8 * 8 * scale
+            y0 = ROI_ROW8 * 8 * scale
+            x1 = x0 + campack.ROI_N * scale
+            y1 = y0 + campack.ROI_N * scale
+            pad = 6
+            d.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad],
+                        outline=(0, 255, 0) if agree else (255, 40, 40), width=2)
             self.photo = ImageTk.PhotoImage(im)
             self.canvas.configure(image=self.photo)
             self.shown += 1
@@ -577,6 +644,32 @@ class App:
                          "+" if self.ldrop else " ", self.ldrop, self.sat,
                          getattr(self, "slot", "-"), getattr(self, "idx", "-"),
                          getattr(self, "lo", "-"), getattr(self, "hi", "-"))))
+            # ---- the ROI line: fabric vs host, and the two witnesses -----------
+            # npx and the FPGA/host delta are the whole point. A mean on its own
+            # cannot tell a dark patch from a patch that is off the sensor, and it
+            # cannot tell correct fabric arithmetic from plausible wrong arithmetic.
+            # Both failures are silent without these, and both are cheap to show.
+            if not getattr(self, "roi_valid", 0):
+                self.roi_stats.configure(
+                    text="ROI  no measurement paired with this frame (roi_valid=0)",
+                    foreground="#a06000")
+            else:
+                hostm = self.roi_host
+                delta = None if hostm is None else self.roi_mean - hostm
+                bad = (self.roi_npx != 256) or (delta not in (0, None))
+                self.roi_stats.configure(
+                    text=("ROI 16x16 @ col %d row %d    FPGA %4d    host %s    delta %s"
+                          "    npx %d%s    phase %s%s"
+                          % (ROI_COL8 * 8, ROI_ROW8 * 8,
+                             self.roi_mean,
+                             "----" if hostm is None else "%4d" % hostm,
+                             "--" if delta is None else "%+d" % delta,
+                             self.roi_npx,
+                             "" if self.roi_npx == 256 else "  <- MUST BE 256",
+                             self.roi_phase,
+                             "  (no trigger)" if self.roi_phase == 7 else
+                             ("  BLACK ROWS" if self.roi_blk else ""))),
+                    foreground="#c00000" if bad else "#006000")
         self.root.after(16, self.tick)          # ~60 Hz GUI poll
 
     def quit(self):
