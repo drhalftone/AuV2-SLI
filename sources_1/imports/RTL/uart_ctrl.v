@@ -121,6 +121,20 @@ module uart_ctrl #(
     // red-only flash. Per-primary flashes are what the profiling plan needs, and a
     // single primary is also ~3x less light, which matters when the sensor rails.
     output reg  [7:0]  imp_rgb,
+    // THE SECOND COLOUR OF THE SEQUENCE, host-writable like the first.
+    //
+    // The generator used to have ONE level and ONE colour mask, so a sequence
+    // could only ever be "this colour" against black -- KKRKK, or its inverse
+    // RRKRR. Anything with two real colours in it, RRWRR being the case that
+    // forced this, needed a rebuild to express.
+    //
+    // With a second pair the sequence is fully described from the host: the
+    // frame at bpos takes (imp_lvl2, imp_rgb2), every other frame takes
+    // (imp_lvl, imp_rgb). KKRKK, RRKRR, RRWRR and a solid field are all just
+    // register values now, and the invert bit is no longer needed to express
+    // any of them.
+    output reg  [7:0]  imp_rgb2,   // 0x08
+    output reg  [7:0]  imp_lvl2,   // 0x07
     // 0x12 IMPLVL -- the 8-bit code the bright frame drives, default 0xFF.
     //
     // The obvious attenuator, and it needs no optics. But on a DLP the code is a
@@ -444,6 +458,8 @@ case (addr)
             8'h1D:   rd_data  = gldly_uart[15:8];
             8'h1E:   rd_data  = gldly_uart[23:16];
             8'h1F:   rd_data  = imp_rgb;
+            8'h07:   rd_data  = imp_lvl2;
+            8'h08:   rd_data  = imp_rgb2;
             8'h12:   rd_data  = imp_lvl;
             8'h11:   rd_data  = imp_cyc;
             // ---- offline mode decision (read-only) ----
@@ -670,6 +686,9 @@ case (addr)
             expo_uart <= 16'd0; expo_uart_we <= 1'b0;
             gldly_uart <= 24'd0; gldly_uart_we <= 1'b0;
             imp_rgb <= 8'h07; imp_lvl <= 8'hFF; imp_cyc <= 8'd5;
+            // default: the odd frame is full white, so an unwritten
+            // second colour reproduces the old KKWKK behaviour exactly.
+            imp_rgb2 <= 8'h07; imp_lvl2 <= 8'hFF;
             link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
@@ -771,6 +790,10 @@ case (addr)
                         resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h1F) begin    // IMPRGB channel select
                         imp_rgb <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h07) begin    // IMPLVL2 odd-frame level
+                        imp_lvl2 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h08) begin    // IMPRGB2 odd-frame colour
+                        imp_rgb2 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h12) begin    // IMPLVL bright-frame code
                         imp_lvl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h11) begin    // IMPCYC frames per sequence

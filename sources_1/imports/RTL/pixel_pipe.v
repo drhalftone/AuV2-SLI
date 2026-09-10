@@ -33,6 +33,13 @@ module pixel_pipe(
     output reg trig,
      output wire f_frm,
      input mode, rdy,
+     // Hold the sequence inside ONE octet: fra still walks 0..7 every
+     // frame, but the wrap no longer carries frq forward. Set it after
+     // advancing to the octet you want and that octet repeats forever --
+     // which is the only way to keep a pattern set's own history constant,
+     // since the only other route back to a given frq is a mode toggle and
+     // that blanks the display.
+     input frq_hold,
      input vid_valid,   // 1 = HDMI input validly decoding; gates the passthrough TLP trigger
 
     output [7:0] out_red,
@@ -199,7 +206,7 @@ module pixel_pipe(
             if (ori ^ ori_reg) begin frq<=2'd0; fra<=3'd0; hold<=1'b1; end
             else if  (rdy_cnt!= 4'h0)   begin //when edge counter is non-zero
                      fra<=fra+3'd1; hold<=1'b0;
-                     if(fra==3'd7) begin
+                     if(fra==3'd7 && ~frq_hold) begin
                         frq<=frq+2'd1;
                      end
             end
@@ -321,6 +328,40 @@ module pixel_pipe(
         vs_dl <= {vs_dl[0], vsync};
         bl_dl <= {bl_dl[0], in_blank};
     end
-    assign out_red = pg_r; assign out_green = pg_g; assign out_blue = pg_b;
+    // ---- FRAME POSITION IN THE TOP-LEFT PIXEL, SLI MODE ONLY ------------------
+    // The sequence index written into the FIRST ACTIVE PIXEL of the frame and
+    // into nothing else. The camera already reports that pixel with every ROI
+    // mean, so a measurement arrives carrying the identity of the pattern that
+    // produced it -- no counting, and no assumption that a host on a 115200 line
+    // stayed in step with a 120 Hz projector.
+    //
+    // WHY THE PATTERN CANNOT LABEL ITSELF. At x=0 a fringe is cos(phase), which
+    // does not depend on the period, so all three frequencies put the SAME eight
+    // values in this pixel -- and cosine being even, those eight collapse to five
+    // distinct ones. 24 patterns, 5 labels. The trigger ordinal gives ordering
+    // and a changing pixel gives an anchor, which is enough for five uniform
+    // fields; it is not enough here.
+    //
+    // {frq,fra} is 0..31: 0..23 the three fringe octets in order, 24..31 the
+    // flash block. Written to all three channels, so a valid label is three
+    // equal bytes below 32 and a mis-sampled pixel does not look like one.
+    //
+    // GATED ON display_mode. Passthrough video is untouched, and so is every
+    // impulse-profiling build -- those override these outputs further downstream
+    // anyway, so the "every transmitted pixel is 0 or 255" invariant still holds
+    // exactly where it applies.
+    reg [1:0] iv_dl   = 2'b00;
+    reg       tag_arm = 1'b0;
+    always@(posedge clk) begin
+        iv_dl <= {iv_dl[0], in_vsync};
+        if (iv_dl[1])       tag_arm <= 1'b1;   // vsync: arm for this frame
+        else if (~bl_dl[1]) tag_arm <= 1'b0;   // first active pixel: fires once
+    end
+    wire       tag_now = tag_arm & ~bl_dl[1] & display_mode;
+    wire [7:0] tag     = {3'b000, frq, fra};
+
+    assign out_red   = tag_now ? tag : pg_r;
+    assign out_green = tag_now ? tag : pg_g;
+    assign out_blue  = tag_now ? tag : pg_b;
     assign out_hsync = hs_dl[1]; assign out_vsync = vs_dl[1]; assign out_blank = bl_dl[1];
 endmodule

@@ -291,7 +291,8 @@ architecture Behavioral of Au2_SLI is
     signal roi_blk_w   : std_logic := '0';
     signal roi_valid_w : std_logic := '0';
     signal roi_phase_w : std_logic_vector(2 downto 0) := (others => '0');
-    signal roi_tlp_w   : std_logic_vector(7 downto 0) := (others => '0');
+    signal roi_tlp_w   : std_logic_vector(23 downto 0) := (others => '0');
+    signal roi_tcnt_w  : std_logic_vector(7 downto 0) := (others => '0');
     signal expo_uart_w    : std_logic_vector(15 downto 0) := (others => '0');
     signal expo_uart_we_w : std_logic := '0';
     signal gldly_uart_w    : std_logic_vector(23 downto 0) := (others => '0');
@@ -308,20 +309,39 @@ architecture Behavioral of Au2_SLI is
     signal imp_en_p0, imp_en_p1 : std_logic := '0';
     signal imp_rgb_w : std_logic_vector(7 downto 0) := x"07";
     signal imp_lvl_w : std_logic_vector(7 downto 0) := x"FF";
+    -- THE SECOND COLOUR OF THE SEQUENCE (regs 0x07 / 0x08), host-writable.
+    -- The frame at bpos takes these; every other frame takes imp_lvl/imp_rgb.
+    signal imp_lvl2_w : std_logic_vector(7 downto 0) := x"FF";
+    signal imp_rgb2_w : std_logic_vector(7 downto 0) := x"07";
+    signal imp_lvl2_p0, imp_lvl2_p1 : std_logic_vector(7 downto 0) := x"FF";
+    signal imp_rgb2_p0, imp_rgb2_p1 : std_logic_vector(2 downto 0) := "111";
+    signal imp_lvl_now : std_logic_vector(7 downto 0);
+    signal imp_rgb_now : std_logic_vector(2 downto 0);
     signal imp_lvl_p0, imp_lvl_p1 : std_logic_vector(7 downto 0) := x"FF";
     signal gl_div_w : std_logic := '0';
     signal imp_cyc_w : std_logic_vector(7 downto 0) := x"05";
     signal imp_cyc_p0, imp_cyc_p1 : std_logic_vector(2 downto 0) := "101";
+    -- IMPCYC (0x11) bits [6:4]: which position in the sequence carries the flash.
+    -- The register only ever used its low three bits for the cycle length, so this
+    -- needs no new address: write 0x11 = 0x15 for "5 frames, flash on position 1".
+    signal imp_bp_p0, imp_bp_p1   : std_logic_vector(2 downto 0) := "000";
+    -- IMPCYC (0x11) bit 7: invert the sequence. 0x11 already carries the cycle
+    -- length in [2:0] and the flash position in [6:4]; bit 7 was spare, so
+    -- RRKRR needs no new register address -- write 0x11 = 0xA5 for "5 frames,
+    -- dark frame at position 2, inverted".
+    signal imp_inv_p0, imp_inv_p1 : std_logic := '0';
     signal imp_rgb_p0, imp_rgb_p1 : std_logic_vector(2 downto 0) := "111";
     signal imp_r, imp_g, imp_b : std_logic_vector(7 downto 0);
     -- TLP hand-off into the camera module, gated by WITH_TLP (see the generic).
-    signal tlp_to_cam     : std_logic_vector(7 downto 0);
+    signal tlp_to_cam     : std_logic_vector(23 downto 0);
     signal tlp_tog_to_cam : std_logic;
     component impulse_gen is
         generic ( CYCLE : integer );
         port ( pclk : in std_logic; vsync_pos : in std_logic; en : in std_logic;
                lvl : in std_logic_vector(7 downto 0);
                cyc : in std_logic_vector(2 downto 0);
+               bpos : in std_logic_vector(2 downto 0);
+               inv : in std_logic;
                level : out std_logic_vector(7 downto 0);
                phase : out std_logic_vector(2 downto 0);
                phase0 : out std_logic );
@@ -376,6 +396,7 @@ architecture Behavioral of Au2_SLI is
         sw : in std_logic_vector(3 downto 0); -- switches
         trig    : out STD_LOGIC;  f_frm   : out STD_LOGIC; 
         mode    : in STD_LOGIC;  rdy   : in STD_LOGIC;
+        frq_hold : in STD_LOGIC;
         vid_valid : in STD_LOGIC;
             ------------------
             in_blank  : in std_logic;
@@ -498,10 +519,10 @@ architecture Behavioral of Au2_SLI is
     -- above samples the pipe INPUT, which in an offline build is not what leaves the
     -- board at all -- out_red is taken from imp_r whenever the sequence is running, so
     -- the input-side sample never sees the W/K values being projected.
-    signal tlp_tx     : std_logic_vector(7 downto 0) := (others => '0');
+    signal tlp_tx     : std_logic_vector(23 downto 0) := (others => '0');
     signal tlp_tx_tog : std_logic := '0';
     signal vsp_d      : std_logic := '0';
-    signal tlp_arm    : std_logic := '0';
+    signal tlp_arm    : std_logic := '0';            -- waiting for the first active pixel
     -- Flips once per HDMI frame, with tlp_val. Carries the TLP across to the
     -- camera's frame header; see cam_frame_ft's "TLP capture" CDC.
     signal tlp_tog_s : std_logic;
@@ -577,13 +598,16 @@ architecture Behavioral of Au2_SLI is
                roi_blk_i      : in  STD_LOGIC;
                roi_valid_i    : in  STD_LOGIC;
                roi_phase_i    : in  STD_LOGIC_VECTOR(2 downto 0);
-               roi_tlp_i      : in  STD_LOGIC_VECTOR(7 downto 0);
+               roi_tlp_i      : in  STD_LOGIC_VECTOR(23 downto 0);
+               roi_tcnt_i     : in  STD_LOGIC_VECTOR(7 downto 0);
                expo_uart      : out STD_LOGIC_VECTOR(15 downto 0);
                expo_uart_we   : out STD_LOGIC;
                gldly_uart     : out STD_LOGIC_VECTOR(23 downto 0);
                gldly_uart_we  : out STD_LOGIC;
                imp_rgb        : out STD_LOGIC_VECTOR(7 downto 0);
                imp_lvl        : out STD_LOGIC_VECTOR(7 downto 0);
+               imp_rgb2       : out STD_LOGIC_VECTOR(7 downto 0);
+               imp_lvl2       : out STD_LOGIC_VECTOR(7 downto 0);
                gl_div         : out STD_LOGIC;
                imp_cyc        : out STD_LOGIC_VECTOR(7 downto 0);
                -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
@@ -675,6 +699,8 @@ architecture Behavioral of Au2_SLI is
     signal sli_ctrl_en_w : std_logic;                      -- = sli_ctrl_bus(7)
     -- 2FF sync -> pixel_clk: {sw_en, mode_en, mode_val, R,G,B, orient} (reg 0x13 bits 7,6,5,3..0)
     signal sli_sw_p0, sli_sw_p1 : std_logic_vector(6 downto 0);
+    -- SLICTL bit 4 was the one bit of 0x13 the packing above threw away.
+    signal frq_hold_p0, frq_hold_p1 : std_logic := '0';
     signal effective_sw  : std_logic_vector(3 downto 0);   -- USB override or physical newSW
     signal por        : std_logic := '1';
     signal por_cnt    : integer range 0 to 15 := 0;
@@ -844,6 +870,48 @@ architecture Behavioral of Au2_SLI is
                ddr3_ck_p, ddr3_ck_n, ddr3_cke, ddr3_cs_n : out std_logic_vector(0 downto 0);
                ddr3_dm      : out   std_logic_vector(1 downto 0);
                ddr3_odt     : out   std_logic_vector(0 downto 0) );
+    end component;
+
+    -- WITH_CAM = 2 selects this instead of cam_frame_ft: the camera reduced to
+    -- one mean per frame, paired with the pixel that was transmitted. No DDR3,
+    -- no Ft+, no frame buffer. See cam_roi_min.v's header for why the pairing
+    -- is done by INDEX rather than by latching the pixel value at the trigger.
+    component cam_roi_min is
+        generic ( CLK_HZ : integer; TRIGGERED : integer; GL_EN_DEFAULT : integer;
+                  TRIG_CY : integer; EXPOSURE : integer; EXT_CLK : integer );
+        port ( clk : in std_logic; rst_n : in std_logic;
+               clk200_ext : in std_logic; clk100_ext : in std_logic;
+               led    : out std_logic_vector(7 downto 0);
+               usb_tx : out std_logic;
+               usb_rx : in  std_logic;
+               ext_sync       : in  std_logic;
+               ext_tlp        : in  std_logic_vector(23 downto 0);
+               ext_tlp_tog    : in  std_logic;
+               imp_phase_i    : in  std_logic_vector(2 downto 0);
+               roi_col8_i     : in  std_logic_vector(7 downto 0);
+               roi_row8_i     : in  std_logic_vector(7 downto 0);
+               expo_uart_i    : in  std_logic_vector(15 downto 0);
+               expo_uart_we   : in  std_logic;
+               gldly_uart_i   : in  std_logic_vector(23 downto 0);
+               gldly_uart_we  : in  std_logic;
+               roi_mean_o     : out std_logic_vector(9 downto 0);
+               roi_npx_o      : out std_logic_vector(8 downto 0);
+               roi_fcnt_o     : out std_logic_vector(15 downto 0);
+               roi_blk_o      : out std_logic;
+               roi_valid_o    : out std_logic;
+               roi_phase_o    : out std_logic_vector(2 downto 0);
+               roi_tlp_o      : out std_logic_vector(23 downto 0);
+               roi_tcnt_o     : out std_logic_vector(7 downto 0);
+               cam_stat_o     : out std_logic_vector(223 downto 0);
+               cam_stat_tog_o : out std_logic;
+               cam_clkout_p, cam_clkout_n : in  std_logic;
+               cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
+               cam_sync_p, cam_sync_n     : in  std_logic;
+               cam_sck, cam_mosi, cam_ss_n : out std_logic;
+               cam_miso                   : in  std_logic;
+               cam_reset_n, cam_clk_pll   : out std_logic;
+               cam_trigger                : out std_logic_vector(2 downto 0);
+               cam_monitor                : in  std_logic_vector(1 downto 0) );
     end component;
 
     component cam_lvds_rx is
@@ -1039,9 +1107,11 @@ begin
         roi_mean_i  => roi_mean_w, roi_npx_i => roi_npx_w, roi_fcnt_i => roi_fcnt_w,
         roi_blk_i   => roi_blk_w,  roi_valid_i => roi_valid_w,
         roi_phase_i => roi_phase_w, roi_tlp_i => roi_tlp_w,
+        roi_tcnt_i => roi_tcnt_w,
         expo_uart   => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart  => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
+        imp_rgb2    => imp_rgb2_w, imp_lvl2 => imp_lvl2_w,
         gl_div      => gl_div_w, imp_cyc => imp_cyc_w,
         vs_meas     => out_vsync,
         rx_meas     => rx_meas_w,
@@ -1397,6 +1467,9 @@ begin
         -- packing, MSB..LSB:  6=sw_en  5=mode_en  4=mode_val  3..0=R,G,B,orient
         sli_sw_p0 <= sli_ctrl_bus(7) & sli_ctrl_bus(6) & sli_ctrl_bus(5) & sli_ctrl_bus(3 downto 0);
         sli_sw_p1 <= sli_sw_p0;
+        -- bit 4 = freeze the fringe frequency, so one octet repeats
+        frq_hold_p0 <= sli_ctrl_bus(4);
+        frq_hold_p1 <= frq_hold_p0;
         -- ROICTL bit 7 (impulse enable) crosses clk100 -> pixel_clk the same way.
         imp_en_p0 <= roi_ctl_w(7);
         imp_en_p1 <= imp_en_p0;
@@ -1404,8 +1477,16 @@ begin
         imp_rgb_p1 <= imp_rgb_p0;
         imp_lvl_p0 <= imp_lvl_w;
         imp_lvl_p1 <= imp_lvl_p0;
+        imp_lvl2_p0 <= imp_lvl2_w;
+        imp_lvl2_p1 <= imp_lvl2_p0;
+        imp_rgb2_p0 <= imp_rgb2_w(2 downto 0);
+        imp_rgb2_p1 <= imp_rgb2_p0;
         imp_cyc_p0 <= imp_cyc_w(2 downto 0);
         imp_cyc_p1 <= imp_cyc_p0;
+        imp_bp_p0  <= imp_cyc_w(6 downto 4);
+        imp_bp_p1  <= imp_bp_p0;
+        imp_inv_p0 <= imp_cyc_w(7);
+        imp_inv_p1 <= imp_inv_p0;
     end if;
 end process;
 
@@ -1416,7 +1497,7 @@ i_processing: pixel_pipe Port map (
         clk => pixel_clk, clk10 => clk10,
         sw =>effective_sw,
         trig =>trig, f_frm=> f_frm, 
-        mode=>mode_buf, rdy=> rdy_buf ,
+        mode=>mode_buf, rdy=> rdy_buf , frq_hold => frq_hold_p1,
         vid_valid => vid_valid,
         --
         in_blank        => blank,
@@ -1463,7 +1544,8 @@ end process;
 i_impulse: impulse_gen
     generic map ( CYCLE => 5 )
     port map ( pclk => pixel_clk, vsync_pos => vsync_Pos, en => imp_en,
-               lvl => imp_lvl_p1, cyc => imp_cyc_p1,
+               lvl => imp_lvl_p1, cyc => imp_cyc_p1, bpos => imp_bp_p1,
+               inv => imp_inv_p1,
                level => imp_level, phase => imp_phase, phase0 => imp_ph0 );
 
 -- TLP into the camera: the real values in a pass-through build, hard zeros in a
@@ -1474,6 +1556,35 @@ i_impulse: impulse_gen
 -- sequence on and ext_sync triggers the camera on -- then latched on the first
 -- non-blank pixel of that frame. The handshake toggles in the SAME cycle as the
 -- value, which is what lets the camera side sample it safely.
+-- ---- THE TRANSMITTED TOP-LEFT PIXEL, SAMPLED AND NOTHING MORE -----------------
+--
+-- Arm at the vsync, capture the FIRST NON-BLANK PIXEL, all three channels. That
+-- pixel is whatever the design is already sending -- the impulse sequence, an SLI
+-- fringe, the offline colour chart, or a passed-through HDMI frame -- and it is
+-- not modified, overridden or synthesised here.
+--
+-- IT USED TO BE OVERRIDDEN, AND THAT WAS A MISTAKE WORTH RECORDING. A frame
+-- identity of {sequence, position} was written into this pixel so every frame
+-- could name itself: first as one pixel carrying the byte as a GREY LEVEL, which
+-- broke the "every transmitted pixel is 0 or 255" invariant; then as eight binary
+-- pixels, which kept the invariant but corrupted eight pixels of every projected
+-- frame to carry data the design already had elsewhere.
+--
+-- Both were solving a problem that the trigger ordinal had already solved. The
+-- ordinal increments once per trigger, never drifts, and a gap in it is visible.
+-- Ordering comes from the ordinal; the anchor comes from this pixel changing.
+-- Nothing has to be encoded into the image at all.
+--
+-- THAT STILL HOLDS FOR THE IMPULSE SEQUENCE, AND FAILS FOR THE SLI SCAN. A five
+-- frame sequence of uniform fields has five distinguishable top-left values, so
+-- ordinal + anchor is enough. A 24-frame fringe scan does not: at x=0 a fringe is
+-- cos(phase), independent of the period, so all three frequencies write the same
+-- eight values here and cosine being even they collapse to five. 24 patterns, 5
+-- labels -- the anchor cannot be recovered from the image. So pixel_pipe now
+-- writes {frq,fra} into the first active pixel WHEN THE FRINGE GENERATOR IS
+-- ENABLED, and only then. This sampler is unchanged and still records what was
+-- actually sent; with imp_en set, the impulse sequence overrides pixel_pipe
+-- entirely and the 0-or-255 invariant is exactly as it was.
 tlp_tx_proc : process(pixel_clk)
 begin
     if rising_edge(pixel_clk) then
@@ -1481,7 +1592,7 @@ begin
         if (vsync_Pos = '1') and (vsp_d = '0') then
             tlp_arm <= '1';
         elsif (tlp_arm = '1') and (out_blank = '0') then
-            tlp_tx     <= out_red;
+            tlp_tx     <= out_red & out_green & out_blue;
             tlp_tx_tog <= not tlp_tx_tog;
             tlp_arm    <= '0';
         end if;
@@ -1500,10 +1611,27 @@ tlp_tog_to_cam <= tlp_tx_tog;
 -- IMPRGB (0x1F) picks which primaries the bright frame drives: 0x07 = white,
 -- 0x04 = red only, 0x02 = green, 0x01 = blue. The dark frames are black either way,
 -- so this changes the flash colour without touching the sequence or its timing.
-imp_r <= imp_level when imp_rgb_p1(2) = '1' else x"00";
-imp_g <= imp_level when imp_rgb_p1(1) = '1' else x"00";
-imp_b <= imp_level when imp_rgb_p1(0) = '1' else x"00";
+-- ---- TWO COLOURS PER SEQUENCE ------------------------------------------------
+-- imp_ph0 is high on the frame at bpos and low on the other four, so it selects
+-- which (level, mask) pair drives this frame. Everything the sequence can be is
+-- now a register value:
+--
+--   KKRKK   lvl=0   rgb=any    lvl2=255 rgb2=red
+--   RRKRR   lvl=255 rgb=red    lvl2=0   rgb2=any
+--   RRWRR   lvl=16  rgb=red    lvl2=255 rgb2=white
+--   solid   lvl=lvl2 and rgb=rgb2
+--
+-- impulse_gen's own `level` output is no longer used for the colour -- it
+-- encoded a single-level scheme that could not express two colours at once.
+imp_lvl_now <= imp_lvl2_p1 when imp_ph0 = '1' else imp_lvl_p1;
+imp_rgb_now <= imp_rgb2_p1 when imp_ph0 = '1' else imp_rgb_p1;
+imp_r <= imp_lvl_now when imp_rgb_now(2) = '1' else x"00";
+imp_g <= imp_lvl_now when imp_rgb_now(1) = '1' else x"00";
+imp_b <= imp_lvl_now when imp_rgb_now(0) = '1' else x"00";
 
+-- The impulse sequence replaces active-video colour only; blanking, hsync and
+-- vsync are untouched. Nothing is written into the top-left pixel -- it carries
+-- whatever this mux produces, and tlp_tx_proc above reads it back.
 out_red   <= imp_r when imp_en = '1' else pp_red;
 out_green <= imp_g when imp_en = '1' else pp_green;
 out_blue  <= imp_b when imp_en = '1' else pp_blue;
@@ -1626,7 +1754,96 @@ i_cam_frame_ft : cam_frame_ft
         ddr3_ck_p  => ddr3_ck_p,  ddr3_ck_n  => ddr3_ck_n,
         ddr3_cke   => ddr3_cke,   ddr3_cs_n  => ddr3_cs_n,
         ddr3_dm    => ddr3_dm,    ddr3_odt   => ddr3_odt );
+
+    -- cam_frame_ft does not count triggers -- its queue can have several in
+    -- flight, so there is no single ordinal to report. Zero here is not a
+    -- measurement and the host must not read it as one: the trigger-ordinal
+    -- check is a WITH_CAM=2 feature.
+    roi_tcnt_w <= (others => '0');
 end generate gen_cam;
+
+-- ===================================================================
+--  WITH_CAM = 2: THE MINIMAL CAMERA -- ONE MEAN PER FRAME
+-- ===================================================================
+-- Same sensor, same LVDS receiver, same eye scan, same aligner, same decoder.
+-- What is gone is everything that existed to move PICTURES: the DDR3 ring, the
+-- Ft+ reader, the frame header, the per-slot ROI array and the 32-entry trigger
+-- queue. The profiling measurement is a scalar and a label, and every one of
+-- those mechanisms has at some point put the scalar and the label out of step.
+--
+-- The DDR3 and Ft+ top-level pins are left undriven here, exactly as gen_nocam
+-- leaves them: they are package pins with no consumer inside this build.
+gen_cammin: if WITH_CAM = 2 generate
+i_cam_roi_min : cam_roi_min
+    generic map (
+        CLK_HZ    => 100_000_000,
+        TRIGGERED => 1,
+        GL_EN_DEFAULT => GENLOCK_ON,
+        TRIG_CY   => 1000,        -- 10 us: marks the frame start, not the exposure
+        EXPOSURE  => 13,          -- 13 x 375 ns = 4.88 us, overwritten at runtime
+        EXT_CLK   => 1 )
+    port map (
+        clk => clk100_g, rst_n => not por,
+        clk200_ext => clk200, clk100_ext => clk100_g,
+        led => open, usb_tx => cam_usb_tx, usb_rx => '1',
+        -- The LEADING edge of the vsync pulse -- the same edge impulse_gen
+        -- advances its phase on, so delay 0 is the frame boundary for both.
+        ext_sync    => vsync_Pos,
+        ext_tlp     => tlp_to_cam,
+        ext_tlp_tog => tlp_tog_to_cam,
+        imp_phase_i => imp_ph_s1,
+        roi_col8_i  => roi_col8_w, roi_row8_i => roi_row8_w,
+        expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
+        gldly_uart_i => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
+        roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,
+        roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
+        roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w,
+        roi_tcnt_o => roi_tcnt_w,
+        cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
+        cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
+        cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,
+        cam_sync_p   => cam_sync_p,   cam_sync_n   => cam_sync_n,
+        cam_sck      => cam_sck,      cam_mosi     => cam_mosi,
+        cam_ss_n     => cam_ss_n,     cam_miso     => cam_miso,
+        cam_reset_n  => cam_reset_n,  cam_clk_pll  => cam_clk_pll,
+        cam_trigger  => cam_trigger,  cam_monitor  => cam_monitor );
+
+    -- cam_roi_min has no sensor-register control channel: the boot sequencer
+    -- owns the SPI outright. usb_link's second RX port is therefore idle, and
+    -- saying so explicitly beats leaving it at 'U' the way gen_nocam does.
+    ctl_byte_w  <= (others => '0');
+    ctl_valid_w <= '0';
+    -- NOT '1'. rpl_full is backpressure, and stuck-full would STALL usb_link's
+    -- command path rather than merely disable it. There is no Ft+ reply route in
+    -- this build, so the honest value is "never blocking".
+    rpl_full_w  <= '0';
+
+    -- ---- THE DDR3 PINS ARE PARKED, NOT LEFT UNDRIVEN --------------------------
+    -- There is no MIG in this build, but the pins are real and there is a real
+    -- DRAM on the other side of them. An undriven output is tied to whatever the
+    -- tool picks; these are chosen so the device is held quiescent:
+    --   reset asserted (low), CKE low so nothing is clocked in, CS deselected,
+    --   and every command line at its inactive high level.
+    ddr3_reset_n <= '0';
+    ddr3_cke     <= "0";
+    ddr3_cs_n    <= "1";
+    ddr3_ras_n   <= '1';
+    ddr3_cas_n   <= '1';
+    ddr3_we_n    <= '1';
+    ddr3_ck_p    <= "0";
+    ddr3_ck_n    <= "1";
+    ddr3_odt     <= "0";
+    ddr3_dm      <= (others => '1');     -- writes masked
+    ddr3_addr    <= (others => '0');
+    ddr3_ba      <= (others => '0');
+    -- dq / dqs_p / dqs_n ARE DELIBERATELY LEFT UNDRIVEN, and that is not an
+    -- oversight. Driving them -- even to 'Z' -- gives them INPUT buffers, and an
+    -- SSTL135 receiver needs a bank reference voltage that only the MIG
+    -- configures. The build then fails DRC BIVRU-1 at place_design. Undriven,
+    -- they are optimised out of the netlist entirely, which is the correct
+    -- outcome for a bus with nothing on either end: the pins float, exactly as
+    -- they do in the WITH_CAM=0 build.
+end generate gen_cammin;
 
 -- HDMI-only: tie off just the signals the rest of the design READS. The camera's
 -- other connections are top-level pins with no consumer here, so they are simply
@@ -1638,6 +1855,7 @@ gen_nocam: if WITH_CAM = 0 generate
     roi_mean_w <= (others => '0'); roi_npx_w <= (others => '0');
     roi_fcnt_w <= (others => '0'); roi_blk_w <= '0'; roi_valid_w <= '0';
     roi_phase_w <= (others => '0'); roi_tlp_w <= (others => '0');
+    roi_tcnt_w <= (others => '0');
     -- rpl_byte_w / rpl_we_w are OUTPUTS of the control block above; driving them
     -- here too created a second driver. The Ft+ readback path is never gated out.
 end generate gen_nocam;

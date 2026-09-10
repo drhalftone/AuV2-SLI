@@ -1053,6 +1053,45 @@ module cam_frame_ft #(
         if (tlp_ws[2] ^ tlp_ws[1]) tlp_w <= ext_tlp;
     end
 
+    // ---- THE TAG, LATCHED AT THE TRIGGER ---------------------------------------
+    //
+    // This is the label that matters, and it is captured when the exposure STARTS.
+    //
+    // Reading it at the sensor's frame_start was wrong: frame_start is
+    // trigger + exposure + L0 (L0 ~ 1121 us, MEASURED), so the instant the label was
+    // read slid with both the delay and the exposure, and at
+    //     delay + exposure + L0 == T
+    // it landed exactly on a projected vsync -- reading the tag at the moment the
+    // digit flips. At 4.9 us exposure that is delay 7200 us, where the label flickered
+    // between two frames and every bin became a blend. Confirmed by moving the
+    // exposure and watching the bad delay move with it: 7200 / 6800 / 5700 us at
+    // 4.9 / 500 / 1500 us exposure.
+    //
+    // A SINGLE REGISTER IS ENOUGH -- no queue, and this is why. Only one exposure is
+    // ever in flight: the trigger fires, readout begins ~1.1 ms later, the ROI result
+    // publishes ~5.7 ms after the trigger, and the next trigger is not until T =
+    // 8.33 ms. So the value latched at gl_fire is still the right one when that
+    // exposure's mean appears, and is overwritten only by the next trigger.
+    //
+    // THE LIMIT, STATED: this holds while exposure + L0 + readout < T. At exposures
+    // approaching the frame period two exposures overlap and one register no longer
+    // distinguishes them. The profiling runs use microseconds, nowhere near it.
+    //
+    // RESIDUAL, AND IT IS NOT REMOVED BY THIS: the tag is the transmitted TOP-LEFT
+    // PIXEL, which does not exist until active video starts ~354 us after the vsync.
+    // For delays inside that back porch the register still holds the PREVIOUS frame's
+    // tag. That is a fixed one-frame offset over a known delay range, not a value that
+    // slides with exposure -- reportable and correctable, where the old behaviour was
+    // neither.
+    reg [2:0] tlp_cs = 3'b000;
+    reg [7:0] tlp_c  = 8'd0;            // transmitted tag, in the clk domain
+    reg [7:0] tlp_trig = 8'd0;          // ...as it was when THIS exposure was triggered
+    always @(posedge clk) begin
+        tlp_cs <= {tlp_cs[1:0], ext_tlp_tog};
+        if (tlp_cs[2] ^ tlp_cs[1]) tlp_c <= ext_tlp;
+        if (gl_fire) tlp_trig <= tlp_c;
+    end
+
     // Latched at the sensor's OWN frame_start, so they ride with that frame's pixels
     // all the way to the mean. This replaces a trigger-time FIFO -- see the note below.
     reg [2:0] roi_ph_w  = 3'd0;
@@ -1118,7 +1157,12 @@ module cam_frame_ft #(
             // Carried with the frame, not looked up. There is no longer a "FIFO ran
             // dry" case to report, so phase 7 no longer occurs from this path.
             roi_phase_o <= roi_hold_w[38:36];
-            roi_tlp_o   <= roi_hold_w[46:39];
+            // FROM THE TRIGGER-TIME REGISTER, not from the frame's payload. The
+            // payload copy (roi_hold_w[46:39]) is sampled at frame_start and is what
+            // produced the boundary artefact; it is left in place for the frame header
+            // so that path is unchanged, but the UART/block label now comes from the
+            // instant the exposure actually began.
+            roi_tlp_o   <= tlp_trig;
 
             // Same result, packed for the FRAME HEADER. See roim_* below.
             roim_hold_c <= { roi_hold_w[9:0],                          // mean

@@ -34,6 +34,29 @@ module impulse_gen #(
     // fps/cyc, so halving the cycle wins on both counts. Clamped to >= 2 -- a cycle of
     // 1 would be a permanently bright field with no dark reference at all.
     input  wire [2:0] cyc,
+    // WHICH POSITION IN THE SEQUENCE IS BRIGHT. Default 0. Moving it is a measurement,
+    // not a convenience: at delay 0 the ROI reads ~245 against a 158 floor, and that
+    // elevation appears at the 4->0 boundary ONLY -- not at 2->3 or 3->4 -- so it is
+    // tied to the bright frame rather than to blanking, stray light or a sensor offset,
+    // all of which would show at every boundary. Putting the bright frame at position 1
+    // moves the boundary that precedes it into the middle of the block, with a dark
+    // frame reported either side. If the elevation follows the bright frame, it is the
+    // projector; if it stays at position 0, it belongs to where the sequence starts.
+    input  wire [2:0] bpos,
+    // INVERT THE SEQUENCE: bright everywhere EXCEPT bpos, so KKRKK becomes RRKRR.
+    //
+    // This is a better instrument than the single flash, not merely its opposite.
+    // A single bright frame measures the projector's emission by how far the
+    // light spreads -- but at any usable level the peak RAILS the sensor, so the
+    // shape between threshold and peak is lost and only the timing survives.
+    //
+    // A single DARK frame in a bright field measures the same edges from the
+    // other side. The notch runs from the rail down towards the floor, so its
+    // width and position are readable even when the surrounding field is fully
+    // saturated: the information is in where the light STOPS, and saturation
+    // does not blur that.
+    input  wire       inv,
+
     output reg  [7:0] level,              // 8'hFF on the bright frame, else 8'h00
     output reg  [2:0] phase,              // 0 = the bright frame
     output reg        phase0              // level pulse: high for the whole bright frame
@@ -54,13 +77,17 @@ module impulse_gen #(
             level  <= 8'h00;
             phase0 <= 1'b0;
         end else if (vsync_pos & ~vs_d) begin        // rising edge = new frame
-            if (phase >= cyc_eff - 3'd1)    phase <= 3'd0;
-            else                            phase <= phase + 3'd1;
+            if (phase >= cyc_eff - 3'd1) phase <= 3'd0;
+            else                         phase <= phase + 3'd1;
         end
 
         if (en) begin
-            level  <= (phase == 3'd0) ? lvl : 8'h00;
-            phase0 <= (phase == 3'd0);
+            // XOR, so one comparator serves both senses.
+            level  <= ((phase == bpos) ^ inv) ? lvl : 8'h00;
+            // phase0 still marks the COMMANDED POSITION, not the bright one --
+            // it names where in the sequence we are, and inverting which frames
+            // are lit does not move that.
+            phase0 <= (phase == bpos);
         end
     end
 endmodule

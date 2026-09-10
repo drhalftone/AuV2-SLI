@@ -1,81 +1,113 @@
 `timescale 1ns / 1ps
 //==============================================================================
-// roi_line.v -- one short telemetry line per camera frame, carrying the ROI mean.
+// roi_line.v -- ONE LINE PER CAMERA FRAME. No grouping, no sequence, no state.
 //
-//   R=mmm,ffff,nnn,b,p,tt<CR><LF>     23 bytes
+//   R=mmm,nnn,rrggbb,cc<CR><LF>    21 bytes
 //
-//   index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22
-//          R = m m m , f f f f  ,  n  n  n  ,  b  ,  p  ,  t  t CR LF
+//   index: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+//          R = m m m , n n n ,  r  r  g  g  b  b  ,  c  c CR LF
 //
-//     mmm   ROI mean, 10-bit -> 3 hex digits (000..3FF)
-//     ffff  frame counter, hex -- a gap here is a DROPPED LINE, not a dropped frame
-//     nnn   pixels accumulated, hex; MUST read 100 (= 256)
-//     b     1 = the ROI sat on black-reference rows
-//     tt    TOP-LEFT PIXEL AS TRANSMITTED for this frame, 2 hex digits. This is
-//           CONTENT, not a counter, and it is what the phase field cannot be: a
-//           projector whose latency exceeds the sequence length makes any
-//           free-running phase alias -- five frames late reads identically to none.
-//           The transmitted pixel says what was actually on the wire, so the
-//           correspondence between "white was sent" and "light was seen" is
-//           measured rather than assumed. 255 = the bright frame.
-//     p     the projected sequence phase, sampled in the pixel stream at this
-//           frame's own frame_start. A CONSTANT offset from the phase at trigger
-//           (exposure + sensor latency), so it orders frames reliably but does not
-//           by itself say which projected frame the LIGHT came from -- use tt for
-//           that. The trigger-time pairing FIFO that used to feed this field is
-//           gone; its depth was startup-dependent and one missed trigger rotated
-//           every later label permanently.
+//     mmm   THE MEASUREMENT. ROI mean of the 16x16 patch at the centre of the
+//           sensor, 10-bit, 000..3FF.
+//     nnn   pixels accumulated. MUST read 100 (= 256).
+//     rrggbb  THE TOP-LEFT PIXEL AS TRANSMITTED, all three channels, on the
+//           projected frame that was on screen when this frame's exposure was
+//           triggered -- not the frame being read out. See cam_roi_min.v for how
+//           that pairing is made.
 //
-// WHY NOT REUSE status_line. status_line fires on a 0.5 s window (usb_link WIN =
-// 50e6) and is 62 bytes of mixed ASCII. This needs one sample per camera frame --
-// 120 per second -- so it needs its own trigger and a line short enough to fit:
-// 23 B x 120/s = 2760 B/s against 11520 B/s at 115200 8N1, about 24%.
+//           IT IS SAMPLED, NOT SYNTHESISED. Whatever the design was already
+//           sending occupies that pixel -- the impulse sequence, an SLI fringe,
+//           the offline colour chart, a passed-through HDMI frame -- and nothing
+//           is written into it. So for a binary pattern it reads FF0000 or
+//           000000, and the "every transmitted pixel is 0 or 255" invariant holds
+//           with no exception for telemetry.
 //
-// WHY ASCII AND NOT BINARY. Every other telemetry path in this design is readable in
-// a terminal, and that has repeatedly been what separated "the link is dead" from
-// "the link is fine and the data is wrong". A binary stream costs half the bytes and
-// all of that.
+//           ALL THREE CHANNELS, because the pixel is a colour. Sampling red alone
+//           made a green- or blue-only sequence read 000000 on every frame with
+//           no way to tell the frames apart -- which is what tempted an earlier
+//           version into overriding the pixel to force an identity onto red.
+//     cc    THE TRIGGER ORDINAL, 8-bit, incremented once per trigger issued.
+//           Consecutive lines differ by exactly one; anything else is a loss.
 //
-// npx AND fcnt ARE NOT OPTIONAL FIELDS. The mean alone cannot distinguish a genuinely
-// dark ROI from an ROI that is off the sensor, and a plot with silently missing
-// samples looks exactly like a plot of a slower phenomenon. Both failures are
-// invisible without these two numbers, and both are cheap to carry.
+// WHY THERE IS NO BLOCK FORMAT ANY MORE.
 //
-// Handshake matches status_line exactly (go / tx_data / tx_send / tx_busy / busy) so
-// it drops into the same arbiter slot.
+// This file used to have a sibling, roi_block.v, that grouped five consecutive
+// frames into one line in fabric -- because the measurement is made in five-frame
+// sequences and it seemed natural for the FPGA to send the sequence. It is out of
+// the design now, and the reasons are worth keeping:
+//
+//   A BLOCK LETS ONE BAD FRAME CORRUPT FOUR GOOD ONES. A malformed sequence
+//   dropped the whole block -- five means discarded because of one -- and a
+//   mis-started block reported four innocent frames in the wrong slots. Here every
+//   frame carries its own label, so a bad frame is one bad line and its
+//   neighbours are untouched.
+//
+//   GROUPING IS FREE ON THE HOST AND EXPENSIVE IN FABRIC. The pixel says when the
+//   flash was transmitted and cc says how far each frame is from it, so a host
+//   that wants sequences bins in one line of Python -- with no partial-block
+//   case, no "the delay changed mid-block" case, and no drop counter.
+//
+//   IT WAS THE LARGEST REMAINING PIECE OF LOGIC THAT COULD BE WRONG. An alignment
+//   rule, a drop rule, a sequence-continuity check and a 43-byte assembler, none
+//   of which is needed to send three numbers.
+//
+// THERE IS NO FRAME TAG ANY MORE. Two versions of this design encoded a
+// {sequence, position} identity into the transmitted top-left pixel so each frame
+// could name itself -- first as a grey level in one pixel, then as eight binary
+// pixels. Both were solving a problem cc had already solved: ordering needs a
+// counter that does not drift, and cc is one. The anchor comes from this pixel
+// changing when the flash arrives, and position is
+// (cc - cc_at_last_change) mod 5, exactly. Nothing needs encoding into the image.
+//
+// WHAT IS DELIBERATELY NOT SENT. The sensor's own frame counter and the impulse
+// phase both used to ride along. The phase was measured racing its clock crossing
+// at short delays -- it reported position 3 as 2, every sequence -- and the pixel
+// plus cc carry the same information correctly. The frame counter duplicated what a gap in cc
+// already says. A field that is redundant or wrong is worse than absent, because
+// it invites someone to trust it.
+//
+// npx IS THE ONE FIELD HERE THAT WAS NOT ASKED FOR, and it stays: without it a
+// genuinely dark ROI and an ROI that has drifted off the sensor produce the same
+// small number, and nothing downstream can tell them apart. Three characters to
+// make the mean falsifiable.
+//
+// WHY ASCII AND NOT BINARY. Every other telemetry path in this design is readable
+// in a terminal, and that has repeatedly been what separated "the link is dead"
+// from "the link is fine and the data is wrong". 21 B x 120/s = 2520 B/s against
+// 11520 B/s at 115200 8N1, about 22%.
+//
+// Handshake matches status_line exactly (go / tx_data / tx_send / tx_busy / busy)
+// so it drops into the same arbiter slot.
 //==============================================================================
 module roi_line (
     input  wire        clk,
     input  wire        go,            // 1-cycle: latch and send
     input  wire [9:0]  mean,
-    input  wire [15:0] fcnt,
     input  wire [8:0]  npx,
-    input  wire        blk,
-    input  wire [2:0]  phase,
-    input  wire [7:0]  tlp,
+    input  wire [23:0] tlp,           // top-left pixel AS TRANSMITTED, {R,G,B}
+    input  wire [7:0]  tcnt,          // trigger ordinal
     output reg  [7:0]  tx_data,
     output reg         tx_send,
     input  wire        tx_busy,
     output reg         busy
 );
-    localparam integer LEN = 23;
+    localparam integer LEN = 21;
     reg [7:0] msg [0:LEN-1];
     integer k;
     initial begin
         for (k = 0; k < LEN; k = k + 1) msg[k] = 8'h20;
-        msg[0]  = "R";  msg[1]  = "=";
-        msg[5]  = ",";  msg[10] = ",";  msg[14] = ",";  msg[16] = ",";
-        msg[18] = ",";
-        msg[21] = 8'h0D; msg[22] = 8'h0A;
+        msg[0]  = "R";  msg[1] = "=";
+        msg[5]  = ",";  msg[9] = ",";  msg[16] = ",";
+        msg[19] = 8'h0D; msg[20] = 8'h0A;
         busy = 1'b0; tx_send = 1'b0;
     end
 
     function [7:0] h2a; input [3:0] n; h2a = (n < 10) ? (8'h30 + n) : (8'h41 + n - 4'd10); endfunction
 
-    // Six bits for a 23-byte message: it only needs five today, but roi_block was
-    // truncated silently by exactly this -- LEN grew past 32 while the index stayed
-    // 5 bits, and the stream looked healthy while every line was cut short. The margin
-    // costs one flip-flop.
+    // Six bits for a 21-byte message. It needs five today, but roi_block was once
+    // truncated silently by exactly this -- its LEN grew past 32 while the index
+    // stayed 5 bits, and the stream looked healthy while every line was cut short
+    // and re-sent forever. The margin costs one flip-flop.
     reg [5:0] idx;
     reg       st;
     always @(posedge clk) begin
@@ -85,17 +117,17 @@ module roi_line (
                 msg[2]  <= h2a({2'b00, mean[9:8]});
                 msg[3]  <= h2a(mean[7:4]);
                 msg[4]  <= h2a(mean[3:0]);
-                msg[6]  <= h2a(fcnt[15:12]);
-                msg[7]  <= h2a(fcnt[11:8]);
-                msg[8]  <= h2a(fcnt[7:4]);
-                msg[9]  <= h2a(fcnt[3:0]);
-                msg[11] <= h2a({3'b000, npx[8]});
-                msg[12] <= h2a(npx[7:4]);
-                msg[13] <= h2a(npx[3:0]);
-                msg[15] <= blk ? "1" : "0";
-                msg[17] <= h2a({1'b0, phase});
-                msg[19] <= h2a(tlp[7:4]);
-                msg[20] <= h2a(tlp[3:0]);
+                msg[6]  <= h2a({3'b000, npx[8]});
+                msg[7]  <= h2a(npx[7:4]);
+                msg[8]  <= h2a(npx[3:0]);
+                msg[10] <= h2a(tlp[23:20]);   // R
+                msg[11] <= h2a(tlp[19:16]);
+                msg[12] <= h2a(tlp[15:12]);   // G
+                msg[13] <= h2a(tlp[11:8]);
+                msg[14] <= h2a(tlp[7:4]);     // B
+                msg[15] <= h2a(tlp[3:0]);
+                msg[17] <= h2a(tcnt[7:4]);
+                msg[18] <= h2a(tcnt[3:0]);
                 idx <= 6'd0; st <= 1'b0; busy <= 1'b1;
             end
         end else begin
