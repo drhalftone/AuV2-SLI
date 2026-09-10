@@ -7,7 +7,7 @@ WHAT THIS DOES NOT DO, WHICH IS THE POINT.
 
 It does not decide which frame is which. The FPGA transmitted the sequence, samples the
 top-left pixel back off its own output, and groups five consecutive ROI means into one
-line that STARTS on the frame carrying TLP 255. Position in the line is the frame index,
+line that STARTS on the frame whose TAG says position 0. Position in the line is the frame index,
 by construction. This script reads five numbers and plots five numbers.
 
 No phase counter, no rotation, no anchor, no majority vote, no re-binning, no rejection
@@ -19,14 +19,19 @@ looked at.
 The only host-side arithmetic is averaging repeats of the same delay, and that is shown
 rather than hidden -- --raw plots every individual block instead.
 
-Line format, 37 bytes:   B=aaa,bbb,ccc,ddd,eee,ffff,v,dddddd<CR><LF>
-    aaa    frame 0 -- the one transmitted with top-left pixel 255
-    bbb..eee   frames 1..4, in order, all transmitted black
-    ffff   frame counter of frame 0
+Line format, 40 bytes:   B=aaa,bbb,ccc,ddd,eee,ffff,v,dddddd,tt<CR><LF>
+    aaa    the frame at POSITION 0 of the sequence -- named by its TAG, not by its
+           brightness, so the block still starts in the right place when --bright
+           moves the flash somewhere else
+    bbb..eee   positions 1..4, in order
+    ffff   frame counter of position 0
     v      1 = all five had npx == 256
     dddddd THE DELAY IN FORCE FOR THIS BLOCK, reported by the FPGA in 10 ns ticks --
            not the value this script wrote. A block spanning a delay change is
            dropped in fabric, so what arrives had one delay for all five frames.
+    tt     THE FRAME TAG that opened the block: {cycle[4:0], position[2:0]}. The low
+           three bits are 0 by construction; the top five count sequences, and a gap in
+           them is a DROPPED SEQUENCE -- counted and reported, not closed up silently.
 """
 import argparse
 import collections
@@ -49,7 +54,8 @@ COLOURS = {"white": 0x07, "red": 0x04, "green": 0x02, "blue": 0x01}
 # is the CRLF the FPGA sends, and REQUIRING it is what stops a half-arrived line from
 # matching on its fixed-width fields and being read twice.
 BLOCK = re.compile(b"B=" + b"([0-9A-F]{3})," * 4
-                   + b"([0-9A-F]{3}),([0-9A-F]{4}),([01]),([0-9A-F]{6})"
+                   + b"([0-9A-F]{3}),([0-9A-F]{4}),([01]),([0-9A-F]{6}),"
+                   + b"([0-9A-F]{2}),([0-9A-F]{2})"
                    + bytes([13, 10]))
 EXPO_UNIT_US = 0.375
 TICK_US = 0.01
@@ -104,7 +110,8 @@ def collect(ser, nblocks, timeout=6.0):
                 out.append((int(m.group(1), 16), int(m.group(2), 16),
                             int(m.group(3), 16), int(m.group(4), 16),
                             int(m.group(5), 16), int(m.group(6), 16),
-                            int(m.group(7)), int(m.group(8), 16) * TICK_US))
+                            int(m.group(7)), int(m.group(8), 16) * TICK_US,
+                            int(m.group(9), 16), int(m.group(10), 16)))
             buf = buf[ms[-1].end():]
         elif len(buf) > 4096:
             buf = buf[-64:]
@@ -112,6 +119,18 @@ def collect(ser, nblocks, timeout=6.0):
 
 
 def main():
+    # OBSOLETE. roi_block.v is no longer instantiated: the FPGA sends one line per
+    # CAMERA FRAME and does not group. This script waits for "B=" lines that will
+    # never arrive, so it would sit at the pre-flight until the timeout and then
+    # report "no blocks arrived" -- a confusing way to learn the format changed.
+    #
+    # Grouping moved to the host because doing it in fabric let one malformed frame
+    # discard or misplace four good ones. host/frame_sweep.py does the same sweep
+    # and bins on the tag position, with no partial-block case to handle.
+    sys.exit("block_sweep.py is obsolete: the FPGA no longer sends 5-frame "
+             "blocks. Use host/frame_sweep.py -- same arguments, one row "
+             "per camera frame.")
+
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("port", nargs="?", default="COM6")
@@ -120,6 +139,10 @@ def main():
     ap.add_argument("--colour", "--color", dest="colour", default="red",
                     choices=sorted(COLOURS))
     ap.add_argument("--level", type=int, default=255)
+    ap.add_argument("--bright", type=int, default=0, choices=range(0, 5), metavar="P",
+                    help="which position in the 5-frame sequence carries the flash "
+                         "(default 0). Moving it to 1 puts a dark frame before the "
+                         "flash INSIDE the reported block.")
     ap.add_argument("--blocks", type=int, default=12,
                     help="blocks captured per delay point (each is 5 frames)")
     ap.add_argument("--settle", type=int, default=2,
@@ -151,7 +174,9 @@ def main():
     if not (gl & 1):
         ser.close(); sys.exit("genlock is not enabled (0x5D bit0 = 0)")
 
-    wr(ser, R_IMPCYC, 5)
+    # IMPCYC (0x11): low 3 bits = frames per sequence, bits [6:4] = which position
+    # carries the flash. --bright moves it without a rebuild.
+    wr(ser, R_IMPCYC, ((a.bright & 7) << 4) | 5)
     wr(ser, R_IMPRGB, COLOURS[a.colour])
     wr(ser, R_IMPLVL, a.level & 0xFF)
     wr(ser, R_EXPO_LO, expo_units & 0xFF)
@@ -180,15 +205,28 @@ def main():
         sys.exit("PRE-FLIGHT FAILED: no blocks arrived at delay 0. Is the impulse "
                  "sequence running (ROICTL bit 7) and the camera streaming?")
     f = [sum(b[k] for b in chk) / len(chk) for k in range(5)]
-    gap = abs(f[0] - f[4])
+    # WHICH TWO FRAMES ARE COMPARED DEPENDS ON WHERE THE FLASH IS.
+    #
+    # This used to be hard-wired to frames 0 and 4, from when the flash was always
+    # on position 0. With --bright it is a false alarm: at --bright 2 the projector
+    # lags by up to two positions, so the light lands on 3 and 4 and the check
+    # compares the flash against the floor and calls it a labelling error.
+    #
+    # The requirement is two frames that are ADJACENT IN THE SEQUENCE -- so no
+    # amount of light can legitimately separate them -- and both far enough from
+    # the flash to be dark. p+3 and p+4 satisfy both for any flash position p,
+    # and reduce to the original 0 and 4 when p is 0.
+    ia, ib = (a.bright + 3) % 5, (a.bright + 4) % 5
+    gap = abs(f[ia] - f[ib])
     tol = max(8.0, 0.02 * max(f))
     print("PRE-FLIGHT at delay 0, %d blocks:" % len(chk))
     print("   frame  0      1      2      3      4")
     print("   mean  %6.1f %6.1f %6.1f %6.1f %6.1f" % tuple(f))
-    print("   |frame0 - frame4| = %.1f ADU   (tolerance %.1f)" % (gap, tol))
+    print("   |frame%d - frame%d| = %.1f ADU   (tolerance %.1f)   "
+          "[the adjacent pair furthest from the flash]" % (ia, ib, gap, tol))
     if gap > tol:
         print("")
-        print("PRE-FLIGHT FAILED. Frame 0 and frame 4 are adjacent in the sequence and")
+        print("PRE-FLIGHT FAILED. Frames %d and %d are adjacent in the sequence and" % (ia, ib))
         print("must agree at delay 0; they differ by %.1f ADU. The five numbers are not" % gap)
         print("in the order the block claims -- do not trust a sweep taken like this.")
         if not a.force:
@@ -204,7 +242,8 @@ def main():
     print(f"exposure       {expo_units} units = {expo_units*EXPO_UNIT_US:.2f} us")
     print(f"delay sweep    0 .. {(npts-1)*a.step:.0f} us in {a.step:.0f} us "
           f"-> {npts} points")
-    print(f"flash          {a.colour} at level {a.level}, 5-frame sequence")
+    print(f"flash          {a.colour} at level {a.level}, 5 frames, flash on "
+          f"position {a.bright}")
     print(f"blocks/point   {a.blocks}  (+{a.settle} discarded)")
     print(f"estimated      {npts*(a.blocks+a.settle)*5/(1e6/T_us)/60:.1f} min\n")
 
@@ -222,7 +261,7 @@ def main():
         fig, ax = plt.subplots(figsize=(13, 6))
         lines = [ax.plot([], [], lw=1.2, marker="." if a.raw else None,
                          ls="none" if a.raw else "-", ms=2, color=COLS[k],
-                         label=f"frame {k}" + ("  (TLP 255)" if k == 0 else ""))[0]
+                         label=f"frame {k}" + ("  (tag 0)" if k == 0 else ""))[0]
                  for k in range(5)]
         ax.axhline(1023, color="#9a6614", lw=1, ls="--")
         if a.endtoend:
@@ -253,6 +292,8 @@ def main():
     rows = []          # (delay_us, frame_index, mean)  -- nothing else
     nbad = 0
     nmismatch = 0
+    nseqgap = 0
+    last_cyc = [None]
     t0 = time.time()
     try:
         for i in range(npts):
@@ -260,10 +301,27 @@ def main():
             set_delay(ser, int(round(d_us / TICK_US)))
             ser.reset_input_buffer()
             collect(ser, a.settle, timeout=8.0)
+            # The discarded settle blocks, and the input buffer flush above, both
+            # break the run of trigger ordinals legitimately. Start the continuity
+            # check afresh at each delay rather than reporting the seam as a fault.
+            last_cyc[0] = None
             for blk in collect(ser, a.blocks, timeout=12.0):
                 if not blk[6]:
                     nbad += 1
                     continue
+                # TRIGGER ORDINAL, not the tag's sequence counter. A block is five
+                # frames, so consecutive blocks must differ by exactly 5; anything
+                # else means triggers were issued whose block never arrived.
+                #
+                # RESET ACROSS A DELAY CHANGE. The counter free-runs while the
+                # settle blocks are being discarded, so a jump there is expected
+                # and is not a fault. Counting it as one reported exactly one gap
+                # per delay point -- 84 of them in an 84-point sweep, which is how
+                # the mistake announced itself.
+                tc = blk[9]
+                if last_cyc[0] is not None and ((last_cyc[0] + 5) & 0xFF) != tc:
+                    nseqgap += 1
+                last_cyc[0] = tc
                 d_rep = blk[7]              # what the FPGA says was in force
                 if abs(d_rep - d_us) > 0.005:
                     nmismatch += 1          # reported != requested: plot what it reports
@@ -306,7 +364,13 @@ def main():
         w = csv.writer(fh)
         w.writerow(["delay_us", "frame", "mean"])
         w.writerows(rows)
-    print(f"\nwrote {a.out}  ({len(rows)//5} blocks, {nbad} rejected for npx != 256)")
+    # EVERY COUNTER THAT WAS KEPT IS REPORTED. nmismatch and nseqgap were being
+    # incremented and then discarded, which is the same as not checking at all: a
+    # sweep that silently dropped a sequence looked exactly like a clean one.
+    print(f"\nwrote {a.out}  ({len(rows)//5} blocks kept)")
+    print(f"   npx != 256            {nbad}")
+    print(f"   delay != requested    {nmismatch}   (plotted at the REPORTED delay)")
+    print(f"   trigger-ordinal gaps  {nseqgap}   (blocks whose triggers went missing)")
 
     if a.plot and live:
         live[1].savefig(a.plot, dpi=130)

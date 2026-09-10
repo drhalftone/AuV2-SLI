@@ -49,7 +49,17 @@ MODE_800x600_120 = 0                      # curated index, see mode_table.vh
 # alone will match a line that is still arriving, and the same record is then read
 # again once the rest of it lands -- which shows up as a frame-counter step of 0 and
 # is easily mistaken for the FPGA repeating itself.
-LINE = re.compile(rb"R=([0-9A-F]{3}),([0-9A-F]{4}),([0-9A-F]{3}),([01]),([0-9A-F])\r\n")
+# R=mmm,ffff,nnn,b,p,tt,cc<CR><LF>  -- 26 bytes.
+#   tt = transmitted top-left pixel, cc = TRIGGER ORDINAL.
+# This regex had drifted: it still described the 5-field line from before tt
+# was added, so it matched NOTHING and the viewer drew an empty plot rather
+# than reporting an error. Requiring the CRLF is what stops a half-arrived
+# line from matching on its fixed-width fields.
+# R=mmm,nnn,tt,cc<CR><LF> -- 17 bytes. The fcnt, blk and phase fields are
+# gone: phase was measured racing its clock crossing, and the other two
+# duplicated what npx and a gap in cc already say. See roi_line.v.
+LINE = re.compile(rb"R=([0-9A-F]{3}),([0-9A-F]{3}),([0-9A-F]{2}),([0-9A-F]{2})"
+                  + bytes([13, 10]))
 
 
 def ck(s):
@@ -183,10 +193,13 @@ def main():
                 consumed = 0
                 for m in LINE.finditer(buf):
                     mean = int(m.group(1), 16)
-                    fcnt = int(m.group(2), 16)
-                    npx = int(m.group(3), 16)
-                    blk = int(m.group(4))
-                    phase = int(m.group(5), 16)
+                    npx = int(m.group(2), 16)
+                    tlp = int(m.group(3), 16)
+                    tcnt = int(m.group(4), 16)
+                    # Derived, not transmitted: the tag IS {seq, position}.
+                    phase = tlp & 7
+                    fcnt = tcnt
+                    blk = 0
                     consumed = m.end()
                     n += 1
                     if npx != 256:
