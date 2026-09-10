@@ -130,6 +130,26 @@ def build(args):
     plate_z1 = args.gap + args.plate_t
     cb_z0 = plate_z1 - args.cb_depth
     skirt_z1 = plate_z1 + args.skirt_depth
+
+    # ---- the filter pocket, if one was asked for ----------------------------
+    # A 50 mm filter cannot pass into a 44.4 bore, and the only space in the beam
+    # is inside that bore, so the skirt is split into three axial bands: root,
+    # pocket, grip. The pocket's cavity is wider than the bore; the root and grip
+    # bands keep the bore, so their annular faces trap the filter axially while
+    # the cradle carries its weight. The skirt LENGTHENS to put the lens face
+    # past the pocket, which moves the sensor the same distance -- reported below,
+    # because it changes absolute readings and nothing else warns about it.
+    fil = None
+    if args.filter_dia > 0:
+        pocket_ir = (args.filter_dia + args.filter_clear) / 2.0
+        pocket_z0 = plate_z1 + args.pocket_root
+        pocket_z1 = pocket_z0 + args.filter_t + args.filter_clear
+        # the barrel tip must sit past the pocket, and the skirt must reach the
+        # projector body, so the skirt grows by however much the pocket added
+        skirt_z1 = pocket_z1 + args.lens_clear + args.barrel_len
+        fil = dict(ir=pocket_ir, orr=pocket_ir + args.pocket_wall,
+                   z0=pocket_z0, z1=pocket_z1,
+                   tip=pocket_z1 + args.lens_clear)
     if args.cb_depth >= args.plate_t - args.min_web:
         sys.exit("COUNTERBORE TOO DEEP: %.2f in a %.2f plate leaves %.2f mm of floor, "
                  "need %.2f" % (args.cb_depth, args.plate_t,
@@ -137,6 +157,15 @@ def build(args):
 
     bore_r = args.bore_dia / 2.0
     skirt_or = bore_r + args.wall
+    # THE BANDS AND THE POCKET MUST SHARE ONE OUTER SHELL. An earlier revision only
+    # grew the wall to 0.5 mm past the cavity's inner radius, so the pocket met the
+    # bands on a 0.5 mm annular ledge -- and across the open top the band that grips
+    # the lens had nothing under it at all. It printed as two loose pieces. The wall
+    # now runs out to the pocket's OUTER radius, so all three bands are the same
+    # tube and only the slot is missing from it.
+    if fil is not None and skirt_or < fil["orr"]:
+        skirt_or = fil["orr"]
+        args.wall = skirt_or - bore_r
     shank_r = args.screw_dia / 2.0
     head_r = args.head_dia / 2.0
     boss_r = head_r + args.min_web
@@ -210,15 +239,17 @@ def build(args):
         th = prof[i][0]
         return (ox + r * math.cos(th), oy + r * math.sin(th))
 
-    if not windows:
-        ring = [at(i, prof[i][1]) for i in range(n)]
-        hole = sw.reverse(sw.circle(ox, oy, bore_r, n))
-        step.prism(ring, plate_z1, skirt_z1, "skirt", COLORS["skirt"], holes=[hole])
-        expected["skirt"] = (abs(sw.signed_area(ring))
-                             - abs(sw.signed_area(hole))) * args.skirt_depth
-        segs = 1
-    else:
-        # walk the circle, cutting it into runs of surviving wall
+    def emit_band(z0, z1, tag):
+        """The skirt profile extruded between two heights, windows and all."""
+        if z1 - z0 <= 1e-9:
+            return 0
+        if not windows:
+            ring = [at(i, prof[i][1]) for i in range(n)]
+            hole = sw.reverse(sw.circle(ox, oy, bore_r, n))
+            step.prism(ring, z0, z1, tag, COLORS["skirt"], holes=[hole])
+            expected[tag] = (abs(sw.signed_area(ring))
+                             - abs(sw.signed_area(hole))) * (z1 - z0)
+            return 1
         runs, cur = [], []
         start = (windows[-1] + 1) % n
         for k in range(n):
@@ -233,21 +264,64 @@ def build(args):
             runs.append(cur)
         if not runs:
             sys.exit("SKIRT HAS NO CONTINUOUS WALL LEFT")
-        segs = len(runs)
         for j, run in enumerate(runs):
-            # out along the run, back along the bore: one closed C-section
             poly = [at(i, prof[i][1]) for i in run]
             poly += [at(i, bore_r) for i in reversed(run)]
-            nm = "skirt%d" % (j + 1)
-            step.prism(poly, plate_z1, skirt_z1, nm, COLORS["skirt"])
-            expected[nm] = abs(sw.signed_area(poly)) * args.skirt_depth
+            nm = "%s%d" % (tag, j + 1)
+            step.prism(poly, z0, z1, nm, COLORS["skirt"])
+            expected[nm] = abs(sw.signed_area(poly)) * (z1 - z0)
+        return len(runs)
+
+    if fil is not None:
+        # root band, then the cradle, then the band that grips the barrel
+        segs = emit_band(plate_z1, fil["z0"], "skirt_root")
+        # THE POCKET BAND IS THE TUBE WITH A LETTERBOX CUT IN ITS TOP. The slot
+        # has to clear |x| < the cavity radius, because a descending disc sweeps
+        # that whole vertical band on its way in -- but NOT the material further
+        # out than that. What survives either side is a full-height web joining
+        # the root band to the band that grips the lens, which is the connection
+        # the first print was missing.
+        #
+        #        outer arc, 180-a .. 360+a          .-"""""-.        slot
+        #        down x=+ir, inner semicircle,     | |     | |   <-- (open)
+        #        up x=-ir                          |  \___/  |
+        #                                           \_______/
+        ir, orr = fil["ir"], fil["orr"]
+        ta = math.acos(min(1.0, ir / orr))          # where x=ir meets the shell
+        h = math.sqrt(max(0.0, orr * orr - ir * ir))
+        m = max(48, args.skirt_segments)
+        a0, a1 = math.pi - ta, 2.0 * math.pi + ta   # CCW, the long way round
+        # the arc already ENDS at (+ir, +h) and STARTS at (-ir, +h) -- repeating
+        # either makes a zero-length edge, which the STEP writer divides by
+        poly = [(ox + orr * math.cos(a0 + (a1 - a0) * k / m),
+                 oy + orr * math.sin(a0 + (a1 - a0) * k / m)) for k in range(m + 1)]
+        poly.append((ox + ir, oy))                  # down the right web's inner face
+        mi = max(24, args.skirt_segments // 2)      # inner semicircle, 0 -> -180
+        poly += [(ox + ir * math.cos(-math.pi * k / mi),
+                  oy + ir * math.sin(-math.pi * k / mi)) for k in range(1, mi)]
+        poly.append((ox - ir, oy))                  # up the left web, closing on
+        if sw.signed_area(poly) < 0:                # the arc's own start point
+            poly = list(reversed(poly))
+        step.prism(poly, fil["z0"], fil["z1"], "pocket", COLORS["skirt"])
+        expected["pocket"] = abs(sw.signed_area(poly)) * (fil["z1"] - fil["z0"])
+        segs += 1
+        segs += emit_band(fil["z1"], skirt_z1, "skirt_grip")
+    elif not windows:
+        segs = emit_band(plate_z1, skirt_z1, "skirt")
+    else:
+        segs = emit_band(plate_z1, skirt_z1, "skirt")
 
     # ---- write ---------------------------------------------------------------
+    # A cap with a filter pocket is a DIFFERENT part, not a new revision of the
+    # plain one: the plain cap is what every measurement so far was taken with,
+    # and it has to stay on disk to go back to.
+    out = OUT if fil is None else os.path.join(
+        os.path.dirname(OUT), "projector_lens_cap_filter.step")
     text = step.dumps()
-    sw.write_verified(OUT, text)
-    stl = os.path.splitext(OUT)[0] + ".stl"
+    sw.write_verified(out, text)
+    stl = os.path.splitext(out)[0] + ".stl"
     w = sys.stdout.write
-    w("wrote %s  (%d entities, %.1f kB)\n" % (OUT, step.entity_count, len(text) / 1024.0))
+    w("wrote %s  (%d entities, %.1f kB)\n" % (out, step.entity_count, len(text) / 1024.0))
     if args.stl:
         ntri, _ = step.write_stl(stl)
         w("wrote %s  (%d triangles)\n" % (stl, ntri))
@@ -257,7 +331,7 @@ def build(args):
     w("\nplate      %.1f x %.1f mm, %.2f thick, aperture %.1f mm square on the axis\n"
       % (span[0], span[1], args.plate_t, args.aperture))
     w("skirt      bore %.2f, wall %.2f (OD %.2f), %.1f mm deep, %d segment(s)\n"
-      % (args.bore_dia, args.wall, 2 * skirt_or, args.skirt_depth, segs))
+      % (args.bore_dia, args.wall, 2 * skirt_or, skirt_z1 - plate_z1, segs))
     w("           %d of %d profile steps windowed (%.1f deg of wall removed)\n"
       % (len(windows), n, 360.0 * len(windows) / n))
     w("optical    axis at model (%.3f, %.3f) = KiCad (%.3f, %.3f)\n"
@@ -276,13 +350,31 @@ def build(args):
       % (worst[0], worst[1], plate_z0 - worst[1]))
     w("optics     lens face sits %.1f mm inside the skirt end, so it is %.2f mm from\n"
       "           the plate and %.2f mm from the image plane\n"
-      % (args.barrel_len, args.skirt_depth - args.barrel_len,
-         args.skirt_depth - args.barrel_len + args.plate_t + (plate_z0 - image_z)))
+      % (args.barrel_len, (skirt_z1 - plate_z1) - args.barrel_len,
+         (skirt_z1 - plate_z1) - args.barrel_len + args.plate_t
+         + (plate_z0 - image_z)))
+    if fil is not None:
+        w("filter     %.1f x %.1f mm in a %.2f dia x %.2f cavity, z %.2f..%.2f\n"
+          % (args.filter_dia, args.filter_t, 2 * fil["ir"],
+             fil["z1"] - fil["z0"], fil["z0"], fil["z1"]))
+        w("           the pocket band is the SAME tube (r %.2f..%.2f) with a letterbox\n"
+          "           cut in its top. The slot clears |x| < %.2f, which is what a\n"
+          "           descending disc sweeps; everything further out survives as a\n"
+          "           full-height web each side, tying the lens grip to the root band.\n"
+          "           The bore either side traps the filter axially, gravity holds it.\n"
+          % (fil["ir"], fil["orr"], fil["ir"]))
+        w("           pocket floor sits %.2f mm above the plate face, clearing the\n"
+          "           proud screw head; a driver still reaches that screw through the\n"
+          "           empty cavity.\n" % args.pocket_root)
+        w("COST       the skirt grew %.2f mm to put the lens face past the pocket, so\n"
+          "           the sensor sits that much further from the lens than with the\n"
+          "           plain cap. Absolute readings WILL shift; ratios and timings\n"
+          "           should not.\n" % ((skirt_z1 - plate_z1) - 25.0))
     w("screws     the cap adds %.2f mm of grip above the PCB top (counterbore floor\n"
       "           at z=%.2f), so add that to whatever length holds the stack today\n"
       % (cb_z0, cb_z0))
 
-    ok = check_step.validate(OUT, expected, out=open(os.devnull, "w"))
+    ok = check_step.validate(out, expected, out=open(os.devnull, "w"))
     w("volumes    %s\n" % ("OK" if ok else "MISMATCH"))
     return 0 if ok else 1
 
@@ -315,6 +407,23 @@ def main():
                    help="thinnest plate web allowed between a bore and anything else, mm")
     p.add_argument("--seat-z", type=float, default=1.0,
                    help="sensor seating plane above the PCB, mm (default 1.0)")
+    # ---- optional drop-in filter pocket -------------------------------------
+    p.add_argument("--filter-dia", type=float, default=0.0,
+                   help="mounted diameter of a filter to carry in the beam, mm. "
+                        "0 (default) builds the plain cap, byte-identical to what "
+                        "it always built. Non-zero writes a SEPARATE step file.")
+    p.add_argument("--filter-t", type=float, default=6.0, help="filter thickness, mm")
+    p.add_argument("--filter-clear", type=float, default=0.60,
+                   help="pocket oversize on both diameter and thickness, mm. Small "
+                        "on purpose: the cavity is what centres the filter on the "
+                        "axis, so slop here is decentring there.")
+    p.add_argument("--pocket-root", type=float, default=2.50,
+                   help="skirt between the plate face and the pocket floor, mm. Must "
+                        "clear any screw head left sitting proud of the plate.")
+    p.add_argument("--pocket-wall", type=float, default=2.70,
+                   help="cradle wall outside the filter, mm")
+    p.add_argument("--lens-clear", type=float, default=0.60,
+                   help="gap from the pocket's outer face to the lens face, mm")
     p.add_argument("--segments", type=int, default=64)
     p.add_argument("--skirt-segments", type=int, default=180)
     p.add_argument("--timestamp", default="2026-09-03T00:00:00")
