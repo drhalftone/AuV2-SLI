@@ -109,3 +109,20 @@ host/frame_timeline.html
 # scripts, and the raw CSVs they came from are ignored above
 /*.png
 /sweep_*_run.txt
+
+# minimal profiling build outputs (bitstream + logs, ~15 MB; rebuild with
+# build_roimin.tcl -- the .bin is never the source of truth, the RTL is)
+build_roimin/
+
+# Vivado xvhdl/xvlog scratch from syntax checks
+xsim.dir/
+*.pb
+_expo_choice.txt
+
+# Playwright MCP session scratch (screenshots, console logs, a11y snapshots)
+.playwright-mcp/
+
+# chart data extracted from the ignored CSVs for the report. The report embeds
+# the same numbers, so these are an intermediate, not a record.
+/*_data.js
+/scan_data.js
