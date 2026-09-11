@@ -350,6 +350,12 @@ each pixel's correction to the *next* pixel — so it synthesises as 256×8 LUTR
 watches the pipe-**output** top-left sample (`O=`) collapse onto that constant while the
 pipe-**input** sample (`P=`) does not move.
 
+> **One table, all three channels.** `pattern_gen` computes `pat_out` once and hands the same value
+> to red, green and blue (`out_red <= rgb_sel[2] ? pat_out : 0`, and the same for the others). It can
+> linearise a grey ramp; it cannot give the three channels *different* values for the same input.
+> Doing that is the point of the plan in [14](#14-planned--per-channel-radiometric-calibration), and
+> it is the one RTL change that plan needs.
+
 > **`LUT` (0x00, 720 B) and `LUT_V` (0x01, 1280 B) have no consumer** — vestigial from the old
 > `indexMap`/ROM design. They upload and read back fine and do nothing.
 
@@ -806,6 +812,81 @@ Camera-wiring guides under `LauCameraTrigger_Alchitry/`: Basler ACE USB 3.0, All
 ├── Lau*_Alchitry*/ , LauPythonCamera_Pt_Stack/   # KiCad boards
 └── LICENSE
 ```
+
+## 14. Planned — per-channel radiometric calibration
+
+**The problem.** The projector does not display the RGB it is sent. It gamut-maps: measured on the
+ML750ST, a pure green command drives the **red** LED at 8-10 % of full red, while a pure red command
+drives green at 0.2 %. A 660 nm interference filter held in the beam while projecting green shows a
+clearly modulated red image — the crosstalk is not subtle and it is not symmetric. So a grey SLI
+fringe does not produce three equal channel intensities on the screen, and the three channels'
+phase maps disagree by however much they differ.
+
+**The goal.** A LUT that takes the 8-bit greyscale fringe value and emits **three different** 8-bit
+values, chosen so that what actually lands on the screen is equal across R, G and B once the
+projector has finished manipulating it.
+
+### 14.1 What has to be built
+
+| | |
+|---|---|
+| Mount | The filter-carrying lens cap (`--filter-dia`, `3dmodels/projector_lens_cap_filter.step`). Drops a 50 mm filter into the beam between projector and sensor, gravity-held. Costs 4.70 mm of extra standoff, so absolute levels shift and every sweep in this campaign must use it. |
+| Filters | Three interference filters near each LED's **peak**, not merely in its band. The 660 nm one on hand may sit on the red LED's tail rather than its peak — that costs signal, not correctness, but check it before trusting small differences. |
+| RTL | `corr` becomes **three** 256-entry tables, or one 256 x 24. Today `pat_out` is a single value fed to all three channels, so this is the blocking change. The lookup must stay combinational (a registered read applies each pixel's correction to the next one). |
+| Host | Upload three tables instead of one; extend `upload_corr.py` and its self-test. |
+
+### 14.2 Measuring the three responses
+
+Nothing here needs full-frame capture — the 16x16 ROI is enough, because the quantity wanted is a
+*transfer curve*, not an image.
+
+1. Fit the mount, insert one filter.
+2. Set the genlock delay and exposure to span the **whole** emission window from
+   [3.1](#31-where-the-light-actually-is--measured-on-an-optoma-ml750st) — 540 us and 6175 us. This
+   is a radiometric measurement: it wants the total light per frame, not a slice of it.
+3. Project white fringes, horizontal (the ROI rides the fringe in that orientation, which is what
+   gives a large signal), and walk the **eight phase steps** with `sli_background.py --octet`.
+   Fitting a sinusoid to those eight readings gives amplitude, offset and phase for that filter.
+4. Repeat over a ramp of commanded grey levels.
+5. Repeat for each filter.
+
+That yields, per channel, intensity against commanded grey — three curves that will not agree in
+gain, in offset, or in shape.
+
+### 14.3 Turning three curves into a LUT
+
+Invert each curve so that a given grey input produces the same *relative* intensity in all three
+channels. Then verify by re-measuring: the three sinusoids should come back with matching amplitude
+and offset, and the residual is the honest error bar on the correction.
+
+> **Equalise shape, not absolute radiance.** Each measurement is scaled by that filter's
+> transmission times the sensor's QE at that wavelength (PYTHON 1300: ~50 / 60 / 57 % at 450 / 550 /
+> 630 nm), and those factors are not known well enough to compare channels absolutely. What matters
+> for SLI is that each channel's intensity is the *same linear function* of the commanded value, so
+> the sinusoid is undistorted and the phase agrees. Absolute colour balance is a separate question
+> and does not affect the phase map.
+
+### 14.4 The limit this approach has
+
+Three independent LUTs correct the **diagonal**. They cannot correct crosstalk, because the moment
+the correction sends R != G != B the input leaves the grey axis and the projector's colour transform
+applies in full — including the green-into-red term. Expect a residual of roughly the crosstalk
+magnitude, order 8-10 %.
+
+Removing that needs the full 3x3: drive R, G and B **one at a time** at several levels, measure all
+three filtered channels each time, and build the matrix that maps commanded RGB to emitted RGB.
+Invert it, apply it ahead of the per-channel LUTs. Worth measuring the residual after 14.3 before
+deciding whether the matrix is needed — if the phase maps agree well enough, it is not.
+
+### 14.5 How we will know it worked
+
+- The three fitted sinusoids agree in amplitude and offset across filters, to a stated tolerance.
+- The per-channel phase maps agree; the spread between them is the figure of merit.
+- The correction is checked at **several grey levels**, not just full scale. The projector's level
+  response has a knee near 79-83 on all three channels, so a correction fitted only at the top will
+  not hold at the bottom.
+
+---
 
 ## Licensing
 
