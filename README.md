@@ -222,8 +222,70 @@ yields a phase map that looks plausible and is wrong everywhere.
 > `raw_vsync`/`raw_hsync` alongside `raw_blank`, so on the 8 of 14 modes with **negative** vsync
 > polarity `ext_sync` fired once per *line*. Sync is now assigned only from `ch0_ctl`.
 
-**Not yet proven:** where the exposure actually lands optically inside the projected frame. Nothing
-on the board sees photons — that measurement is photometric.
+**Now proven, photometrically** — see 3.1. Nothing on the board sees photons, so this was measured
+by sweeping the genlock delay across a whole frame and reading the camera's own ROI mean.
+
+### 3.1 Where the light actually is — measured on an Optoma ML750ST
+
+Swept with `host/sli_frame_sweep.py`: white SLI fringes (finest octet) cycling one per frame, the
+genlock delay walked across the entire frame period in **1 µs steps, 8326 points**, ROI mean at each.
+Projector at **120 Hz**, which on this model forces **3D mode**. Frame period 8325.8 µs.
+
+| | µs |
+|---|---|
+| first light | **573** |
+| last light | **6682** |
+| span | **6109** |
+| floor / peak | 191 / 890 ADU |
+
+**Use these settings to scan:**
+
+| | value |
+|---|---|
+| genlock delay | **540 µs** (`0x5A`–`0x5C`, 10 ns ticks → 54000) |
+| exposure | **6175 µs** → **16467** units of 375 ns (`0x1A`/`0x1B`) |
+
+That window is `573 − 33` to `6682 + 33`. The 33 µs is not timing jitter: the sensor's effective
+exposure floor is somewhere between 20 and 400 µs, so the measured edges are smeared by the sampling
+aperture and the true transitions can sit ~30 µs either side. The window closes at 6715 µs, leaving
+**1611 µs clear** before the next frame, so widening the margin is free.
+
+What the sweep shows, and why each part matters:
+
+- **The edges are sharp.** Moving the detection threshold from 5 % to 20 % of full scale shifts the
+  onset 573 → 576 and the offset 6682 → 6678. These are hard transitions, not ramps, so the delay
+  does not need trimming by eye.
+- **Five dark gaps sit inside the window** — 284, 153, 151, 160 and 285 µs. A single exposure has to
+  span all of them; there is no shorter window that catches the light.
+- **A weak shoulder runs 112–573 µs**, peaking 32 ADU over the floor. It is **0.59 % of the frame's
+  light** and not worth 460 µs of exposure. Everything outside 573–6682 together is under 1.2 %.
+- **Between bursts the signal returns to ~210 ADU over a 191 floor.** Under a *solid* white field the
+  same projector never drops below 722 anywhere in the frame. The high "background" in solid-field
+  measurements belongs to the content on the screen, not to LEDs that cannot switch off — which is
+  why this measurement had to be made with fringes up, not with a flat field.
+
+**Probably true of other Optoma DLP projectors, but do not assume it.** The structure here — bit-plane
+PWM in flat-topped rectangles, field-sequential RGB, sub-field groups separated by ~150–285 µs — comes
+from the DisplayLink/DLP controller family rather than from this chassis, so the shape should carry
+across models. The *numbers* will not: they depend on frame rate, on 3D vs 2D mode, and on the
+brightness/colour mode selected. At 60 Hz the frame is 16.7 ms and none of the above applies.
+
+Re-measuring a different projector is two commands and about 40 minutes:
+
+```bash
+python -u host/sli_frame_sweep.py COM6 --rgb rgb --octet 2 --orient 0 \
+       --step 1 --expo 1 --per 2 --verify-every 50 --live --close \
+       --out sli_frameH_white_1us.csv --plot sli_frameH_white_1us.png
+python host/plot_white_window.py          # recomputes every number and draws the window
+```
+
+`plot_white_window.py` derives the floor, the noise, both onsets, the gaps and the recommended delay
+and exposure from the CSV — nothing is written into it — and prints the register values.
+
+> **Two traps when re-measuring.** Use **fringes, not a solid field**: a solid field lifts the floor by
+> hundreds of ADU and buries the edges. And check `0x5D` reports genlock live before trusting a sweep —
+> a `--ram` bitstream does not survive a power cycle, and the board comes back running its flash image
+> with none of this in it.
 
 ---
 
@@ -553,6 +615,14 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 | `test_3b_cameraidle.py`, `test_3c_camerawedge.py`, `test_3d_modechange.py` | Merge isolation: the camera must not disturb HDMI, and vice versa |
 | `soak.py`, `stress_attack.py`, `usb_speed.py` | Long-run stability, hostile input, USB 3 confirmation |
 | `lauauboard.{h,cpp}` | The C++ host-side implementation of the protocol |
+| **Photometric — needs the `WITH_CAM=2` profiling build** | |
+| `frame_sweep.py` | Sweep the genlock delay across the impulse sequence, one point per camera frame |
+| `level_delay.py` | One solid colour at several levels, swept across the frame |
+| `level_sweep.py`, `light_profile.py` | Level ramp at a fixed delay; where in the frame a level's light appears |
+| `sli_background.py` | LED drive across an SLI scan — `--octet` loops one set of eight, `--scope` shows every reading unaveraged |
+| `sli_frame_sweep.py` | **The projector timing sweep.** A whole frame at 1 µs with the fringes cycling — this is what 3.1 was measured with |
+| `plot_white_window.py` | Draws that sweep with the emission window, gaps and recommended delay/exposure, all recomputed from the CSV |
+| `roi_scope.py`, `tlp_check.py`, `hdmi_ramp.py` | Rolling ROI scope; transmitted-pixel check; drive the projector from the PC's HDMI |
 
 > After a board reset, `edid_merge` needs a few seconds to finish reading the DDC. Until it does,
 > `edid_ok` is 0 and `SUPP` is empty while `MODE` still reads the power-up default — a half-state
