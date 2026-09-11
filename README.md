@@ -888,6 +888,91 @@ deciding whether the matrix is needed — if the phase maps agree well enough, i
 
 ---
 
+## 15. Planned — an EDID filter that generalises to any projector
+
+**The symptom.** Plug a PC into the HDMI input and it is offered nine modes,
+topping out at 75 Hz, even when the projector's own EDID advertises
+800&times;600@120 and 1024&times;768@120. Every 120 Hz measurement in this repo was
+taken through the **offline** path, which reads the sink's EDID directly and never
+consults the merged block — which is why this stayed invisible until a PC was
+plugged in on 2026-09-11.
+
+**The cause is a category error, not a missing mode.** `edid_builder.v` filters
+the two timing sections by different means:
+
+| section | how it is filtered | generalises? |
+|---|---|---|
+| established (B35-37) | three bitmasks, hand-computed from the pixel-clock window | yes — the masks cover the whole established bitmap |
+| standard (B38-53) | membership in `CAND[]`, a hand-typed list of 9 codes | **no** |
+
+The policy is about **pixel clock** — keep what pass-through can carry, a window of
+25.00 to 90.00 MHz measured on hardware. The standard-timing test asks about
+**identity** instead: is this one of the nine codes someone approved. Identity does
+not generalise to a sink nobody has plugged in yet. The module says as much:
+
+> F_MIN_10K does NOT filter this list — it is only used for the max-clock byte at
+> maxclk_byte below. The list is hand-curated, so it has to be pruned to match the
+> floor by hand too.
+
+800&times;600@120 is 73.27 MHz. It satisfies the policy and was dropped anyway,
+because the policy is not enforced on that path. Commit `f754c20` even wrote down
+that it "would be a HEALTHY pass-through mode" while removing the 800&times;600
+60/72/75 entries — and did not add it. It was added by hand on 2026-09-11, which is
+the practice this section exists to end.
+
+### 15.1 The fix: test the clock, not the identity
+
+Replace `CAND[]` with the **whole VESA DMT table** as a ROM of
+`{standard-code, pixel-clock}` — about 40 entries — and change the test from "is
+this code in my list" to "look up its clock, keep it if `F_MIN <= clk <= F_MAX`".
+
+That turns curation into data. A projector nobody has seen advertises
+1360&times;768@60; it is in DMT, its clock is 85.5 MHz, it is in window, it passes.
+Nobody edits anything. And the window is then stated once and enforced identically
+by both timing paths, which is what makes it auditable.
+
+**Why tabulate the clock rather than compute it.** A standard timing code carries
+only resolution, aspect and refresh. The blanking — and so the clock — depends on
+which timing standard the source applies, and the ambiguity is real: `CAND[4]`
+already documents 1280&times;800@60 as 71.00 MHz reduced-blanking against 83.5
+under plain CVT. A formula has to guess which the source will choose; a DMT lookup
+does not. For codes genuinely outside DMT, compute the **non-reduced CVT** clock
+and gate on that: it is the higher figure, so erring toward it errs safe.
+
+**The RTL cost is small.** This runs once per EDID read, not per pixel, so there is
+no timing pressure — a ROM and a sequential compare, which is close to what the
+existing state machine already does, with a magnitude test in place of an equality
+test and more entries to walk.
+
+### 15.2 Two things worth doing with it
+
+**Raise `F_MAX_10K` to what the hardware actually supports.** 90 MHz was margin
+chosen under the old fixed &times;15 recovery MMCM. `rx_freq_band` +
+`rx_drp_recfg` now retune per band — that is what let the floor drop 60 -> 25 — so
+the ceiling deserves the same treatment. The real limit is the output serialiser's
+~600 MHz, about 120 MHz of pixel clock. Every megahertz of window is modes that
+stop needing exclusion at all, 1024&times;768@120 (115.5 MHz) among them.
+
+**Keep the Monitor Range Limits descriptor consistent.** It already derives its
+max-clock byte from `F_MAX_10K`, so it follows automatically — and it is the
+standards-sanctioned backstop for any mode a source synthesises rather than picks
+off the list.
+
+### 15.3 What cannot be automated
+
+The window itself. 25-90 MHz came from eyes-on hardware — black screens at VCO
+600, twitching at 743, solid at 975 and above — and moving it needs the same. But
+that is a number measured occasionally and written down once, not a list
+maintained per projector. That distinction is the whole point of this section.
+
+> **Do not widen the window by arithmetic alone.** Commit `8790569` did exactly
+> that, lowering the floor 60 -> 40 MHz on the reasoning that VCO >= 600 was now
+> reachable, and added three 800&times;600 entries on that basis. They black-screened
+> and had to be removed again in `f754c20`. Its own summary of the lesson: 800&times;600
+> pass-through was "advertised by calculation and never verified, on either board."
+
+---
+
 ## Licensing
 
 The HDMI pass-through foundation is adapted from

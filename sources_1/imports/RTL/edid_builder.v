@@ -107,7 +107,7 @@ module edid_builder #(
     // (pixel clocks are all in [60,120] MHz by construction, so membership in the
     // display's slots is the only runtime test needed.)
     //--------------------------------------------------------------------------
-    localparam integer NCAND = 8;
+    localparam integer NCAND = 9;
     // packed {hi,lo} per candidate - in-window (60-90 MHz) standard timings.
     //
     // F_MIN_10K does NOT filter this list -- it is only used for the max-clock byte
@@ -124,9 +124,23 @@ module edid_builder #(
         CAND[2]  = 16'h454C; // 800x600@72    50.00   VCO 1250  (band 2)
         CAND[3]  = 16'h6140; // 1024x768@60   65.00   VCO  975  (band 4)
         CAND[4]  = 16'h8100; // 1280x800@60   71.00   VCO 1067  (band 4, RB)
-        CAND[5]  = 16'h81C0; // 1280x720@60   74.25   VCO 1114  (band 4)
-        CAND[6]  = 16'h614A; // 1024x768@70   75.00   VCO 1125  (band 4)
-        CAND[7]  = 16'h614F; // 1024x768@75   78.75   VCO 1181  (band 4)
+        // 800x600@120 (DMT, reduced blanking: 960x636 total). The sink advertises
+        // it in a standard slot and it was being dropped only because it was not in
+        // this list. At one resolution the HIGHER refresh is the SAFER pass-through
+        // mode: 73.27 MHz sits mid-window, where 800x600@60's 40.00 MHz is the one
+        // that used to scrape the VCO floor. Added 2026-09-11 so the projector's
+        // 120 Hz mode survives the merge -- every photometric measurement in this
+        // repo was taken at 120 Hz, and pass-through could not reach it.
+        CAND[5]  = 16'h457C; // 800x600@120   73.27   VCO 1099  (band 4)
+        CAND[6]  = 16'h81C0; // 1280x720@60   74.25   VCO 1114  (band 4)
+        CAND[7]  = 16'h614A; // 1024x768@70   75.00   VCO 1125  (band 4)
+        CAND[8]  = 16'h614F; // 1024x768@75   78.75   VCO 1181  (band 4)
+        // NOT ADDED: 1024x768@120 (16'h617C). The sink offers it, but DMT puts it at
+        // 115.50 MHz -- 25 MHz above F_MAX_10K, with no recovery band defined that
+        // high, and x5 on the output serialiser is 577 MHz against its ~600 MHz
+        // ceiling. Advertising it would be exactly the calculation-without-hardware
+        // that cost this file its 800x600 entries in the first place. If it is ever
+        // wanted: raise F_MAX_10K, add the band to rx_freq_band, and MEASURE it.
     end
 
     //--------------------------------------------------------------------------
