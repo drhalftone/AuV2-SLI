@@ -157,15 +157,21 @@ def build(args):
 
     bore_r = args.bore_dia / 2.0
     skirt_or = bore_r + args.wall
-    # THE BANDS AND THE POCKET MUST SHARE ONE OUTER SHELL. An earlier revision only
-    # grew the wall to 0.5 mm past the cavity's inner radius, so the pocket met the
-    # bands on a 0.5 mm annular ledge -- and across the open top the band that grips
-    # the lens had nothing under it at all. It printed as two loose pieces. The wall
-    # now runs out to the pocket's OUTER radius, so all three bands are the same
-    # tube and only the slot is missing from it.
-    if fil is not None and skirt_or < fil["orr"]:
-        skirt_or = fil["orr"]
+    # THE BANDS AND THE POCKET SHARE ONE OUTER SHELL, always. An early revision
+    # grew the wall to only 0.5 mm past the cavity's inner radius, so the pocket met
+    # the bands on a 0.5 mm annular ledge -- and across the open slot the band that
+    # grips the lens had nothing under it at all. It printed as two loose pieces.
+    # Tying the two radii together here means no revision can reintroduce that: the
+    # tube has one outside, and the slot is the only thing missing from it.
+    if fil is not None:
+        skirt_or = max(skirt_or, fil["ir"] + args.pocket_wall)
         args.wall = skirt_or - bore_r
+        fil["orr"] = skirt_or
+        if args.pocket_wall < args.min_wall:
+            sys.exit("POCKET WALL TOO THIN: %.2f mm outside the cavity, need %.2f. "
+                     "That wall is also the web either side of the slot, and those "
+                     "webs are the only thing holding the lens grip on."
+                     % (args.pocket_wall, args.min_wall))
     shank_r = args.screw_dia / 2.0
     head_r = args.head_dia / 2.0
     boss_r = head_r + args.min_web
@@ -300,7 +306,16 @@ def build(args):
         poly += [(ox + ir * math.cos(-math.pi * k / mi),
                   oy + ir * math.sin(-math.pi * k / mi)) for k in range(1, mi)]
         poly.append((ox - ir, oy))                  # up the left web, closing on
-        if sw.signed_area(poly) < 0:                # the arc's own start point
+                                                    # the arc's own start point
+        # Built with the slot facing +y, then rolled to wherever it has to face.
+        # The slot must end up pointing UP with the stack mounted, so this angle
+        # is set by the assembly's roll -- opposite the cable exit.
+        roll = math.radians(args.slot_deg - 90.0)
+        if abs(roll) > 1e-12:
+            ca, sa = math.cos(roll), math.sin(roll)
+            poly = [(ox + (px - ox) * ca - (py - oy) * sa,
+                     oy + (px - ox) * sa + (py - oy) * ca) for px, py in poly]
+        if sw.signed_area(poly) < 0:
             poly = list(reversed(poly))
         step.prism(poly, fil["z0"], fil["z1"], "pocket", COLORS["skirt"])
         expected["pocket"] = abs(sw.signed_area(poly)) * (fil["z1"] - fil["z0"])
@@ -357,12 +372,16 @@ def build(args):
         w("filter     %.1f x %.1f mm in a %.2f dia x %.2f cavity, z %.2f..%.2f\n"
           % (args.filter_dia, args.filter_t, 2 * fil["ir"],
              fil["z1"] - fil["z0"], fil["z0"], fil["z1"]))
+        w("           slot faces %.0f deg CCW from +x in the model frame -- aim it\n"
+          "           OPPOSITE the cable exit so it points up once mounted\n"
+          % args.slot_deg)
         w("           the pocket band is the SAME tube (r %.2f..%.2f) with a letterbox\n"
-          "           cut in its top. The slot clears |x| < %.2f, which is what a\n"
-          "           descending disc sweeps; everything further out survives as a\n"
-          "           full-height web each side, tying the lens grip to the root band.\n"
-          "           The bore either side traps the filter axially, gravity holds it.\n"
-          % (fil["ir"], fil["orr"], fil["ir"]))
+          "           cut in it, clearing %.2f mm either side of the axis, which is\n"
+          "           what a descending disc sweeps. Everything further out survives\n"
+          "           as a %.2f mm full-height web each side, and those webs are what\n"
+          "           tie the lens grip to the root band. The bore either side traps\n"
+          "           the filter axially; gravity holds it down.\n"
+          % (fil["ir"], fil["orr"], fil["ir"], fil["orr"] - fil["ir"]))
         w("           pocket floor sits %.2f mm above the plate face, clearing the\n"
           "           proud screw head; a driver still reaches that screw through the\n"
           "           empty cavity.\n" % args.pocket_root)
@@ -420,8 +439,16 @@ def main():
     p.add_argument("--pocket-root", type=float, default=2.50,
                    help="skirt between the plate face and the pocket floor, mm. Must "
                         "clear any screw head left sitting proud of the plate.")
-    p.add_argument("--pocket-wall", type=float, default=2.70,
-                   help="cradle wall outside the filter, mm")
+    p.add_argument("--pocket-wall", type=float, default=1.60,
+                   help="shell outside the filter cavity, mm. This also sets the "
+                        "skirt wall, because the pocket and the bands either side "
+                        "share ONE outer surface -- a pocket that bulges past its "
+                        "neighbours is what made the first print come apart.")
+    p.add_argument("--slot-deg", type=float, default=90.0,
+                   help="direction the filter slot faces, degrees CCW from +x in "
+                        "the model frame (90 = +y). The slot wants to face UP once "
+                        "the stack is mounted, so this is set by which way the "
+                        "assembly is rolled: point it opposite the cable exit.")
     p.add_argument("--lens-clear", type=float, default=0.60,
                    help="gap from the pocket's outer face to the lens face, mm")
     p.add_argument("--segments", type=int, default=64)
