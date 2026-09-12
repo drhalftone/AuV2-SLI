@@ -99,10 +99,11 @@ Clock domains: `clk100` (control / EDID / USB), the pixel clock and its ×5 (`pi
 
 | Module | Role |
 |---|---|
-| `dvid_output.vhd` | DVI/HDMI output assembly (guard bands, preambles, control codes) |
+| `dvid_output.vhd` | **DVI-D** output assembly: 3 × TMDS encode + 4 × serialise. Control codes only — **no guard bands, preambles or data islands** (those exist on the RX side, not here) |
 | `tmds_encoder.vhd` | 8b → 10b TMDS encode |
 | `serialiser_10_to_1.vhd` | OSERDESE2 10:1 — **the ceiling**: ×5 must stay under ~600 MHz |
-| `video_timing_gen_rt.v` | **Runtime-configurable** timing generator for offline mode |
+| `vga.vhd` | **The live offline timing generator** — runtime H/V geometry in via ports, from `mode_timing_rom` |
+| `video_timing_gen_rt.v` | Cleaner runtime timing generator (gates counters on `mmcm_locked`). **Written but NEVER instantiated** — unfinished Phase-D2 work; `vga.vhd` does this job today |
 | `mode_timing_rom.v` | Per-mode video geometry lookup, keyed by `mode_idx` |
 | `mode_table.vh` | The 14 curated modes (§4) |
 
@@ -125,7 +126,7 @@ Clock domains: `clk100` (control / EDID / USB), the pixel clock and its ×5 (`pi
 |---|---|
 | `pattern_gen.v` | **Resolution-adaptive fringe DDS** (§5) |
 | `pixel_pipe.v` | Pattern/pass-through mux, top-left-pixel trigger detection, the ready-paced GPIO handshake |
-| `vga.vhd` | The offline test pattern — nested colour squares (`h`, `v`, `h xor v`) |
+| `vga.vhd` | The offline test pattern — red = horizontal ramp, green = vertical ramp, blue = `h xor v` (XOR checker reveals geometry / tearing / a dead channel). Also generates the offline video timing — see §1.3 |
 
 ### 1.6 Camera — PYTHON 1300
 
@@ -178,8 +179,8 @@ switches are overridable over USB (`SLICTRL`, reg `0x13`).
 ### 2.3 Offline (EDID-driven) — no HDMI source required
 With nothing on the input, the FPGA generates everything from its own 100 MHz oscillator. The
 output pixel clock **and** the video timing are reconfigured at runtime to match the projector's
-EDID: a dedicated `MMCME2_ADV` is retuned over DRP and `video_timing_gen_rt` is loaded from the
-curated table.
+EDID: a dedicated `MMCME2_ADV` is retuned over DRP and `vga.vhd`'s timing ports are loaded from the
+curated table via `mode_timing_rom`.
 
 > **Boot retune one-shot.** On power-up the DRP retune pulse used to be issued before the MMCM had
 > locked, and was discarded — a blank screen on every cold boot. `Au2_SLI.vhd` now re-issues
