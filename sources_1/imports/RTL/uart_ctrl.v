@@ -25,9 +25,44 @@
 //            256 B; if the display has no extension block, bytes 128..255 are
 //            stale RAM -- byte 0x7E of block 0 is the authoritative ext count.
 //
-// Registers (read any address -> data, undefined reads return 0x00):
+// UNDEFINED ADDRESSES ANSWER 'N', THEY DO NOT READ AS ZERO (VERSION 0x02).
+//   read of an undefined address -> 'N' ADDR CK3  with ('N'+ADDR+CK3)==0
+//   Same three-byte length as a good reply, so byte-stream reassembly on either
+//   port is unaffected. A host tells them apart by the first byte: a good reply
+//   echoes ADDR, this one starts with 'N' (0x4E). 0x4E is a DEFINED register, so a
+//   read OF 0x4E can never produce the 'N' form -- the two cannot be confused.
+//   Before 0x02 an undefined read returned ADDR 00 CK2: a mistyped address looked
+//   exactly like a working register reading zero.
+//
+// Registers:
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
-//   0x01 VERSION = 0x01          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
+//   0x01 VERSION = 0x02          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
+//   0x08..0x0B BUILD_GIT   = {dirty, 3'b0, hash[27:0]}  (RO) -- short git hash of the source
+//                            the bitstream was built from; dirty = uncommitted changes
+//   0x0C..0x0F BUILD_EPOCH = unix seconds at synthesis    (RO)
+//        Both are 0 when the build script did not pass them. Read them to answer "what is
+//        this board running?" -- the same question the SD bitstream library has to ask.
+//
+//   CAMERA SETTINGS ARE READ/WRITE AT THE ADDRESS THAT REPORTS THEM (VERSION 0x02).
+//   Multi-byte values: write the LOW bytes first; they are staged. Writing the
+//   HIGHEST byte commits the whole value and replies 'K' (applied) or 'N' (refused).
+//   Readback is the value the camera is RUNNING, from the ~10 Hz status snapshot, so
+//   it can lag a commit by up to ~100 ms; staged bytes are not visible in readback.
+//   Each commit is issued as the equivalent Ft+ camera opcode, so the camera module
+//   validates it exactly as it validates the opcode.
+//     0x40/0x41       EXPOSURE, 375 ns units         commit 0x41   (opcode 1)
+//                     REFUSED ('N') if it would exceed the frame period minus the
+//                     sensor reserve -- the sensor wedges past that point.
+//     0x5A/0x5B/0x5C  GENLOCK DELAY, 10 ns ticks     staged
+//     0x5D            {bit0 = genlock enable}        commit        (opcode 7)
+//     0x8E/0x8F/0x90  TRIGGER PERIOD, 10 ns ticks    commit 0x90   (opcode 2)
+//                     REFUSED if <= 1000 ticks, or if free-running and the applied
+//                     exposure would no longer fit the new period.
+//     0x91            FRAMES PER SCAN, 1..63         commit        (opcode 4)
+//   Camera commands (write-only, read 0x00):
+//     0x17 CAMCMD     bit0 = re-arm the burst capture                (opcode 3)
+//     0x18/0x19       IDLE duration, ms (0 = latch)  staged, reads back staged
+//     0x1A CAMIDLE    bit0 = 1 idle for 0x18/0x19 ms, 0 = release    (opcode 6)
 //   0x10 PINS    = {eff_sw[3:0], phys_sw[3:0]}  (RO -- active vs physical R/G/B/orient)
 //   0x14 MODEFORCE = {7:force_en, 3..0:idx}  (R/W -- pin the offline mode to idx,
 //        overriding mode_select's EDID pick. For bringing up a new high-clock mode on a
@@ -64,7 +99,17 @@
 //==============================================================================
 module uart_ctrl #(
     parameter [7:0] ID_MAGIC = 8'h48,    // 'H'
-    parameter [7:0] VERSION  = 8'h01,
+    parameter [7:0] VERSION  = 8'h02,         // 0x02: 'N' on undefined reads, camera regs R/W
+    // Build identity (regs 0x08..0x0F), passed down from the build script. Integers,
+    // not vectors, so they cross the VHDL top unchanged: a 7-hex-digit git hash is 28
+    // bits and unix seconds fit 31 bits until 2038 -- both inside a VHDL integer.
+    parameter integer BUILD_GIT   = 0,
+    parameter integer BUILD_DIRTY = 0,
+    parameter integer BUILD_EPOCH = 0,
+    // Sensor reserve subtracted from the frame period before exposure -- MUST match
+    // usb_link's RESERVE_TICKS (44.1 us measured gap + 10 us margin), which computes
+    // the published max exposure from the same number.
+    parameter [23:0] RESERVE_TICKS = 24'd5410,
     parameter integer CLK_HZ = 100_000_000,   // clk rate -> LINKCTL half-second tick
     // camera line-buffer readback length (bytes) and its address width. Default is the real
     // 1280-pixel line; the testbench overrides it small so a full UART read stays fast.
@@ -230,6 +275,17 @@ module uart_ctrl #(
     // usb_link from the measured vsync period and the measured sensor gap.
     // {reserve_ticks[15:0], valid, reg_limited, 6'b0, max_expo[15:0]}
     input  wire [39:0]  maxexp_i,
+    // ---- camera commands issued by register writes (clk domain) ----
+    // One Ft+ opcode word per commit, {opcode[31:28], payload[27:0]}, with a 1-clk
+    // strobe. cam_frame_ft merges it into the decoder the Ft+ opcodes already use.
+    output reg  [31:0] cam_cmd_word,
+    output reg         cam_cmd_valid,
+    // LIVE camera settings, NOT the 10 Hz snapshot: {gl_live, trig_per[23:0],
+    // expo_cur[15:0]}. The exposure/period safety checks must see a commit that
+    // landed a few ms ago -- against the snapshot, "raise exposure, then shorten
+    // the period" inside 100 ms would pass both checks and wedge the sensor.
+    // All zeros with no camera, which refuses every exposure commit.
+    input  wire [40:0]  cam_live_i,
     input  wire        cam_spi_busy,
     input  wire        cam_spi_done,      // 1-clk strobe from cam_spi_master
 
@@ -300,6 +356,27 @@ module uart_ctrl #(
     reg [5:0]  link_secs   = 6'd0;               // remaining half-seconds
     reg [1:0]  link_tgt    = 2'd0;               // {proj, host}
     reg        link_active = 1'b0;
+
+    // ---- camera settings: staged low bytes (see the header) ----
+    reg [7:0]  expo_lo_s = 8'd0;
+    reg [15:0] trig_lo_s = 16'd0;
+    reg [23:0] gl_dly_s  = 24'd0;
+    reg [15:0] idle_ms_s = 16'd0;
+
+    wire        live_gl   = cam_live_i[40];
+    wire [23:0] live_trig = cam_live_i[39:16];
+    wire [15:0] live_expo = cam_live_i[15:0];
+
+    // Exposure units (375 ns) -> 10 ns ticks is x37.5 = (x*75)>>1. Shifts, not a
+    // multiplier: 75 = 64 + 8 + 2 + 1. Floor loses under one tick against the 10 us
+    // margin inside RESERVE_TICKS.
+    function [22:0] expo_ticks(input [15:0] e);
+        reg [22:0] x;
+        begin
+            x = {7'd0, e};
+            expo_ticks = ((x << 6) + (x << 3) + (x << 1) + x) >> 1;
+        end
+    endfunction
 
     // ---- FSM ----
     localparam [3:0]
@@ -384,18 +461,36 @@ module uart_ctrl #(
     // silicon does something else. Written out flat, the sensitivity is unambiguous
     // everywhere.
     reg [7:0] rd_data;
+    reg       rd_def;                 // 0 = no such register -> 'N' reply
+    wire [27:0] build_git   = BUILD_GIT;
+    wire [31:0] build_epoch = BUILD_EPOCH;
     always @* begin
         rd_data = 8'h00;
+        rd_def  = 1'b1;
 case (addr)
             8'h00:   rd_data  = ID_MAGIC;
             8'h01:   rd_data  = VERSION;
             8'h02:   rd_data  = led;
             8'h06:   rd_data  = {6'b0, sli_ctrl[7], (corr_ld | lut_ld | lutv_ld)};
+            // ---- build identity ----
+            8'h08:   rd_data  = build_git[7:0];
+            8'h09:   rd_data  = build_git[15:8];
+            8'h0A:   rd_data  = build_git[23:16];
+            8'h0B:   rd_data  = {(BUILD_DIRTY != 0), 3'b0, build_git[27:24]};
+            8'h0C:   rd_data  = build_epoch[7:0];
+            8'h0D:   rd_data  = build_epoch[15:8];
+            8'h0E:   rd_data  = build_epoch[23:16];
+            8'h0F:   rd_data  = build_epoch[31:24];
             8'h10:   rd_data  = pins;
             8'h13:   rd_data  = sli_ctrl;
             8'h14:   rd_data  = mode_force;
             8'h15:   rd_data  = {link_drop_proj, link_drop_host, link_secs};
             8'h16:   rd_data  = cam_sim;
+            // ---- camera commands: write-only strobes read 0, the staged duration reads back
+            8'h17:   rd_data  = 8'h00;
+            8'h18:   rd_data  = idle_ms_s[7:0];
+            8'h19:   rd_data  = idle_ms_s[15:8];
+            8'h1A:   rd_data  = 8'h00;
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -592,7 +687,9 @@ case (addr)
             8'h8E:   rd_data  = cam_stat_i[199:192];
             8'h8F:   rd_data  = cam_stat_i[207:200];
             8'h90:   rd_data  = cam_stat_i[215:208];
-            default: rd_data  = 8'h00;
+            // 0x91: frames per scan (opcode 4), from the status snapshot's top byte
+            8'h91:   rd_data  = {2'b0, cam_stat_i[221:216]};
+            default: begin rd_data = 8'h00; rd_def = 1'b0; end
         endcase
     end
 
@@ -602,6 +699,20 @@ case (addr)
     wire [7:0] u_sum  = sum8  + rx_data;                // == 0 -> good upload CK
     wire [7:0] rt_sum = OP_LR + dbyte + rx_data;        // == 0 -> good read-table request CK
     wire [7:0] rd_ck = (8'h00 - addr - rd_data);        // -(addr+data) mod 256
+    wire [7:0] nd_ck = (8'h00 - ACK_N - addr);          // -('N'+addr): undefined read
+
+    // Camera commit checks, on the value each commit would apply (dbyte is the top byte).
+    wire [15:0] expo_new = {dbyte, expo_lo_s};
+    wire [23:0] trig_new = {dbyte, trig_lo_s};
+    // Genlocked: the vsync period governs and no register write can change it, so the
+    // max exposure published by usb_link is authoritative. Free-running: the trigger
+    // period governs, checked LIVE here.
+    wire [24:0] expo_need = {2'b0, expo_ticks(expo_new)}  + {1'b0, RESERVE_TICKS};
+    wire [24:0] live_need = {2'b0, expo_ticks(live_expo)} + {1'b0, RESERVE_TICKS};
+    wire expo_ok = live_gl ? (maxexp_i[23] && (expo_new <= maxexp_i[15:0]))
+                           : (expo_need <= {1'b0, live_trig});
+    wire trig_ok = (trig_new > 24'd1000) && (live_gl || (live_need <= {1'b0, trig_new}));
+    wire nfr_ok  = (dbyte[7:6] == 2'b00) && (dbyte[5:0] != 6'd0);
 
     integer i;
     always @(posedge clk) begin
@@ -621,9 +732,12 @@ case (addr)
             cam_spi_start <= 1'b0; cam_gpio <= 8'h00;
             cam_rdata_l <= 16'd0; cam_done_l <= 1'b0;
             cam_boot_go <= 1'b0;
+            cam_cmd_word <= 32'd0; cam_cmd_valid <= 1'b0;
+            expo_lo_s <= 8'd0; trig_lo_s <= 16'd0; gl_dly_s <= 24'd0; idle_ms_s <= 16'd0;
         end else begin
             tx_send       <= 1'b0;                      // default: no TX strobe
             cam_spi_start <= 1'b0;                      // default: no SPI strobe
+            cam_cmd_valid <= 1'b0;                      // default: no camera command
 
             // Inter-byte watchdog. Runs only while a frame is part-received.
             rx_timeout <= 1'b0;
@@ -737,6 +851,59 @@ case (addr)
                             cam_gpio[7] <= 1'b1;
                             resp[0] <= ACK_K; resp_len <= 2'd1;
                         end
+                    // ---- camera settings: stage low bytes, commit on the top byte ----
+                    end else if (addr == 8'h40) begin    // exposure lo (staged)
+                        expo_lo_s <= dbyte;              resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h41) begin    // exposure hi -> COMMIT
+                        if (expo_ok) begin
+                            cam_cmd_word  <= {4'd1, 12'd0, expo_new};
+                            cam_cmd_valid <= 1'b1;
+                            resp[0] <= ACK_K;
+                        end else resp[0] <= ACK_N;       // would wedge the sensor
+                        resp_len <= 2'd1;
+                    end else if (addr == 8'h5A) begin    // genlock delay (staged)
+                        gl_dly_s[7:0]   <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h5B) begin
+                        gl_dly_s[15:8]  <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h5C) begin
+                        gl_dly_s[23:16] <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h5D) begin    // genlock enable -> COMMIT
+                        cam_cmd_word  <= {4'd7, dbyte[0], 3'd0, gl_dly_s};
+                        cam_cmd_valid <= 1'b1;
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h8E) begin    // trigger period lo (staged)
+                        trig_lo_s[7:0]  <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h8F) begin    // trigger period mid (staged)
+                        trig_lo_s[15:8] <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h90) begin    // trigger period hi -> COMMIT
+                        if (trig_ok) begin
+                            cam_cmd_word  <= {4'd2, 4'd0, trig_new};
+                            cam_cmd_valid <= 1'b1;
+                            resp[0] <= ACK_K;
+                        end else resp[0] <= ACK_N;
+                        resp_len <= 2'd1;
+                    end else if (addr == 8'h91) begin    // frames per scan -> COMMIT
+                        if (nfr_ok) begin
+                            cam_cmd_word  <= {4'd4, 22'd0, dbyte[5:0]};
+                            cam_cmd_valid <= 1'b1;
+                            resp[0] <= ACK_K;
+                        end else resp[0] <= ACK_N;       // 0 never terminates a scan
+                        resp_len <= 2'd1;
+                    // ---- camera commands ----
+                    end else if (addr == 8'h17) begin    // CAMCMD: bit0 re-arm
+                        if (dbyte[0]) begin
+                            cam_cmd_word  <= {4'd3, 28'd0};
+                            cam_cmd_valid <= 1'b1;
+                        end
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h18) begin    // idle ms lo (staged)
+                        idle_ms_s[7:0]  <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h19) begin    // idle ms hi (staged)
+                        idle_ms_s[15:8] <= dbyte;        resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h1A) begin    // CAMIDLE -> COMMIT
+                        cam_cmd_word  <= {4'd6, dbyte[0], 11'd0, idle_ms_s};
+                        cam_cmd_valid <= 1'b1;
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else begin                       // RO / undefined
                         resp[0] <= ACK_N; resp_len <= 2'd1;
                     end
@@ -748,6 +915,9 @@ case (addr)
                 S_RCK:   if (rx_valid) begin
                     if (r_sum != 8'h00) begin            // bad request checksum
                         resp[0] <= ACK_E; resp_len <= 2'd1;
+                    end else if (!rd_def) begin          // no such register: 'N' ADDR CK3
+                        resp[0] <= ACK_N; resp[1] <= addr; resp[2] <= nd_ck;
+                        resp_len <= 2'd3;
                     end else begin
                         resp[0] <= addr; resp[1] <= rd_data; resp[2] <= rd_ck;
                         resp_len <= 2'd3;

@@ -19,12 +19,13 @@ Host implementation: [`host/ftlink.py`](host/ftlink.py).
 
 | Parameter | Access | Where | Units / encoding |
 |---|---|---|---|
-| Exposure | **W** | opcode 1 | 375 ns — read back at `0x40`/`0x41` |
-| Trigger period | **W** | opcode 2 | 10 ns — observed at `0x3E`/`0x3F` |
-| Re-arm capture | **W** | opcode 3 | toggle |
-| Frames per scan | **W** | opcode 4 | 1…63 |
+| Exposure | **R/W** | reg `0x40`/`0x41` (commit `0x41`) · opcode 1 | 375 ns — **refused if it does not fit the frame period** |
+| Trigger period | **R/W** | reg `0x8E`–`0x90` (commit `0x90`) · opcode 2 | 10 ns |
+| Genlock delay + enable | **R/W** | reg `0x5A`–`0x5C`, commit `0x5D` · opcode 7 | 10 ns, bit0 enable |
+| Frames per scan | **R/W** | reg `0x91` · opcode 4 | 1…63 |
+| Re-arm capture | **W** | reg `0x17` bit0 · opcode 3 | toggle |
+| Camera idle / reset hold | **W** | reg `0x18`/`0x19` ms, commit `0x1A` · opcode 6 | ms, self-timed — observed at `0x3A` bit 1 |
 | Request status reply | **W** | opcode 5 | toggle |
-| Camera idle / reset hold | **W** | opcode 6 | ms, self-timed — observed at `0x3A` bit 1 |
 | SLI control + switch override | **R/W** | reg `0x13` | bitfield |
 | Offline mode force | **R/W** | reg `0x14` | bitfield |
 | HDMI disconnect pulse | **R/W** | reg `0x15` | half-seconds |
@@ -32,9 +33,14 @@ Host implementation: [`host/ftlink.py`](host/ftlink.py).
 | Column cosine LUT | **R/W** | table `0x01` | 1280 B |
 | Radiometric transfer LUT | **R/W** | table `0x02` | 256 B |
 
-Note the asymmetry: the **camera** is controlled by write-only opcodes with
-readback through *different* registers, while the **HDMI/SLI** side uses genuine
-read/write registers. They are two protocols sharing one pipe.
+**Protocol VERSION `0x02` removed the asymmetry.** Camera settings used to be
+write-only opcodes with readback through *different* registers; they are now
+read/write at the register that reports them, with the HDMI/SLI side's semantics. Low
+bytes are staged, the top byte commits and replies `K` or `N`, and the commit is issued
+as the matching opcode. Unlike the raw opcodes, the register path **refuses** an
+exposure or trigger period that would wedge the sensor. Full rules:
+[`USB_COMMAND_REFERENCE.md`](USB_COMMAND_REFERENCE.md) → "Camera settings and commands".
+The opcodes remain, unclamped, for existing tools.
 
 ---
 
@@ -84,17 +90,21 @@ back at all, it is through a different register — listed below.
 
 ## Registers — `0xA5` protocol
 
-    read   A5 52 ADDR CK            -> ADDR DATA CK2
-    write  A5 57 ADDR DATA CK       -> 'K' ok / 'N' read-only / 'E' bad checksum
+    read   A5 52 ADDR CK            -> ADDR DATA CK2   /  'N' ADDR CK3 no such register
+    write  A5 57 ADDR DATA CK       -> 'K' ok / 'N' read-only or refused / 'E' bad checksum
 
-`CK` sums the payload to 0 mod 256; `A5` is excluded.
+`CK` sums the payload to 0 mod 256; `A5` is excluded. Since VERSION `0x02` an undefined
+read answers `'N' ADDR CK3` instead of `ADDR 00 CK2`; `FtLink.read_reg` raises
+`RegisterUndefined`.
 
 ### Identity and top-level state
 
 | Addr | Access | Parameter | Encoding |
 |---|---|---|---|
 | `0x00` | **R** | ID | `0x48` `'H'` |
-| `0x01` | **R** | Version | `0x01` |
+| `0x01` | **R** | Version | `0x02` |
+| `0x08`–`0x0B` | **R** | Build git hash | `{dirty, 3'b0, hash[27:0]}` — `FtLink.build_id()` |
+| `0x0C`–`0x0F` | **R** | Build time | unix seconds at synthesis |
 | `0x02` | **R** | STATUS | `{vsync, hsync, VPol, sel, mode, rdy, f_frm, trig}` |
 | `0x06` | **R** | FLAGS | `{…, usb_sw_en, lut_loaded}` |
 | `0x10` | **R** | PINS | `{eff_sw[3:0], phys_sw[3:0]}` — active vs physical switches |
@@ -147,7 +157,7 @@ Do not use. Live camera state is at `0x3A`–`0x49`.
 | `0x3B` | **R** | FIFO / FT601 flags | `{cfifo_ovf, ufifo_ovf, ufifo_empty, txe, 0000}` |
 | `0x3C`/`0x3D` | **R** | **ldrop** — frames arriving short and padded | count; **static means none lost** |
 | `0x3E`/`0x3F` | **R** | Camera frame period ÷ 16 | 72 MHz wordclk cycles → µs = `v×16/72` |
-| `0x40`/`0x41` | **R** | Exposure currently applied | 375 ns units |
+| `0x40`/`0x41` | **R/W** | Exposure currently applied — write lo, then hi commits | 375 ns units |
 
 ### Sensor timing, measured in fabric *(added 2026-08-24)*
 
@@ -241,3 +251,23 @@ opcode 6 and a wedged sensor.
 
 Port A remains the independent witness for exactly these cases. M6c's "Port A is
 now TX-only" is retracted until this is fixed.
+
+**Status 2026-09-14 — narrowed, candidate host fix, NOT verified on hardware.**
+
+- **The FPGA side is cleared.** The reader emits the reply from `R_IDLE` and it reaches
+  `ufifo` — that is what `ufifo_EMPTY=0` shows. The stall is at the FT601 handoff:
+  either the chip is refusing data (`txe`), or it took the bytes and never closed the
+  USB transfer.
+- **Two host defects fit the symptom**, and both are fixed in `FtLink._read_in()`.
+  `ftd3xx`'s `readPipe()` raises on `FT_TIMEOUT` and **throws away the bytes that did
+  arrive**. With video flowing, a 1 MB read fills in milliseconds and never times out;
+  with the camera stopped, a small reply can *only* arrive as a timed-out partial read,
+  so every one was discarded. And nothing aborted the pipe after a timeout. The new path
+  calls `FT_ReadPipe` directly, keeps partial bytes, and aborts after a timeout.
+- **One chip-level cause remains possible**: an FT601 option that holds a short transfer
+  open rather than ending it on underrun.
+
+**`host/diag_reply_stall.py` decides between them.** It idles the camera, retries Port B
+replies with the new read path, reads `0x3B` over Port A to see which side of the FT601
+holds the bytes, and prints the chip-configuration bits. Run it before relying on
+Port B with the camera stopped.

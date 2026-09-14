@@ -33,7 +33,13 @@ entity Au2_SLI is
               -- here and not in the merged build, the merge is implicated directly.
               -- It also builds far faster, which matters when half the runs on this
               -- host die for unrelated reasons.
-              WITH_CAM : integer := 1 );
+              WITH_CAM : integer := 1;
+              -- BUILD IDENTITY, served at uart_ctrl regs 0x08..0x0F. The build scripts pass
+              -- the 7-hex-digit git hash as an integer (28 bits), a dirty flag, and unix
+              -- seconds at synthesis. 0 means "not supplied", never a real build.
+              BUILD_GIT   : integer := 0;
+              BUILD_DIRTY : integer := 0;
+              BUILD_EPOCH : integer := 0 );
     Port ( 
         clk100    : in STD_LOGIC;
         usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
@@ -256,6 +262,12 @@ architecture Behavioral of Au2_SLI is
     signal rpl_byte_w  : std_logic_vector(7 downto 0);
     signal rpl_we_w    : std_logic;
     signal rpl_full_w  : std_logic;
+    -- Register-originated camera commands (uart_ctrl -> cam_frame_ft) and the live
+    -- settings coming back. cam_live_w reads zero with no camera, which makes uart_ctrl
+    -- refuse every exposure commit -- the right answer when there is no sensor.
+    signal cam_cmd_word_w  : std_logic_vector(31 downto 0);
+    signal cam_cmd_valid_w : std_logic;
+    signal cam_live_w      : std_logic_vector(40 downto 0) := (others => '0');
 
     -- reg 0x16 CAMSIM: host-driven camera-ready, so the pacing logic in
     -- pixel_pipe can be exercised with no camera board attached.
@@ -450,6 +462,8 @@ architecture Behavioral of Au2_SLI is
     -- 0xA5 host control protocol on usb_rx. Stage-2 taps (sli_ctrl / table read ports)
     -- are defaulted so they may be left open until the pixel datapath is wired up.
     component usb_link is
+        generic ( BUILD_GIT : integer := 0; BUILD_DIRTY : integer := 0;
+                  BUILD_EPOCH : integer := 0 );
         Port ( clk100 : in  STD_LOGIC;
                led    : in  STD_LOGIC_VECTOR(7 downto 0);
                dbg    : in  STD_LOGIC_VECTOR(7 downto 0);
@@ -523,7 +537,12 @@ architecture Behavioral of Au2_SLI is
                rx2_valid   : in  STD_LOGIC := '0';
                rpl_byte    : out STD_LOGIC_VECTOR(7 downto 0);
                rpl_we      : out STD_LOGIC;
-               rpl_full    : in  STD_LOGIC := '0' );
+               rpl_full    : in  STD_LOGIC := '0';
+               -- camera settings written as registers -> cam_frame_ft, and its live
+               -- settings back for the exposure/period safety checks
+               cam_cmd_word  : out STD_LOGIC_VECTOR(31 downto 0);
+               cam_cmd_valid : out STD_LOGIC;
+               cam_live_i    : in  STD_LOGIC_VECTOR(40 downto 0) := (others => '0') );
     end component;
 
     -- host EDID dump: usb_link drives the address, edid_merge returns the byte
@@ -695,7 +714,8 @@ architecture Behavioral of Au2_SLI is
     -- language -- Vivado binds it by name. See the instantiation for why it is taken
     -- wholesale rather than re-plumbed here.
     component cam_frame_ft is
-        generic ( LIVE : integer; CONCURRENT : integer;
+        generic ( REG_CMD_EN : integer := 0;
+                  LIVE : integer; CONCURRENT : integer;
                   TRIGGERED : integer; TRIG_CY : integer;
                   EXT_CLK : integer );
         port ( clk : in std_logic; rst_n : in std_logic;
@@ -712,6 +732,9 @@ architecture Behavioral of Au2_SLI is
                rpl_byte       : in  std_logic_vector(7 downto 0);
                rpl_we         : in  std_logic;
                rpl_full       : out std_logic;
+               reg_cmd_word   : in  std_logic_vector(31 downto 0) := (others => '0');
+               reg_cmd_valid  : in  std_logic := '0';
+               cam_live_o     : out std_logic_vector(40 downto 0);
 
                cam_clkout_p, cam_clkout_n : in  std_logic;
                cam_d_p, cam_d_n           : in  std_logic_vector(3 downto 0);
@@ -871,7 +894,10 @@ begin
 
     -- usb_link replaces edid_reader: identical status telemetry on usb_tx, plus the
     -- 0xA5 host control protocol on usb_rx. Stage-2 control/table taps left open for now.
-    i_usb_link: usb_link port map (
+    i_usb_link: usb_link
+    generic map ( BUILD_GIT => BUILD_GIT, BUILD_DIRTY => BUILD_DIRTY,
+                  BUILD_EPOCH => BUILD_EPOCH )
+    port map (
         clk100 => clk100_g, led => led_i, dbg => debug, mrg => merge_dbg,
         tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
         usb_rx => usb_rx, usb_tx => sli_usb_tx,
@@ -947,7 +973,10 @@ begin
         rx2_valid   => ctl_valid_w,
         rpl_byte    => rpl_byte_w,
         rpl_we      => rpl_we_w,
-        rpl_full    => rpl_full_w );
+        rpl_full    => rpl_full_w,
+        cam_cmd_word  => cam_cmd_word_w,
+        cam_cmd_valid => cam_cmd_valid_w,
+        cam_live_i    => cam_live_w );
 
     -- Dynamic EDID merge: read the HDMI-OUT display's EDID over its DDC, serve the
     -- intersection {display modes} INTERSECT {60-77MHz passthrough window} to the PC,
@@ -1371,6 +1400,7 @@ usb_tx <= cam_usb_tx when CAM_DIAG /= 0 else sli_usb_tx;
 gen_cam: if WITH_CAM = 1 generate
 i_cam_frame_ft : cam_frame_ft
     generic map (
+        REG_CMD_EN => 1,          -- camera settings are registers too (uart_ctrl)
         LIVE       => 1,          -- continuous ring, not one burst
         CONCURRENT => 1,          -- reader runs while the writer captures
         TRIGGERED  => 1,          -- paced, not free-running
@@ -1393,6 +1423,8 @@ i_cam_frame_ft : cam_frame_ft
         ext_tlp => tlp_val, ext_tlp_tog => tlp_tog_s,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
+        reg_cmd_word => cam_cmd_word_w, reg_cmd_valid => cam_cmd_valid_w,
+        cam_live_o => cam_live_w,
 
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
         cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,
@@ -1423,6 +1455,7 @@ gen_nocam: if WITH_CAM = 0 generate
     cam_usb_tx   <= '1';                 -- idle level for a UART line
     cam_stat_raw <= (others => '0');
     cam_stat_tog <= '0';
+    cam_live_w   <= (others => '0');   -- no sensor: every exposure commit is refused
     -- rpl_byte_w / rpl_we_w are OUTPUTS of the control block above; driving them
     -- here too created a second driver. The Ft+ readback path is never gated out.
 end generate gen_nocam;

@@ -17,9 +17,10 @@ genlock counters, and the whole HDMI diagnostic range (`0x60`–`0x8D`).
 | **B** | Ft+ FT601Q → host D3XX, SuperSpeed | only when the Ft+ is stacked |
 
 Port A shares the line with ASCII status telemetry; replies interleave with it and
-the host frame-scans past it. **Port B replies ride the video frame stream**, so with
-the camera idle there are no replies at all — that is a property of the transport,
-not a fault.
+the host frame-scans past it. **Port B replies ride the video frame stream**, and with
+the camera idle they have not been arriving. The FPGA does emit them; see
+`FTPLUS_API.md` "Known limitation" for the candidate host fix and
+`host/diag_reply_stall.py` to test it.
 
 ## Frame formats
 
@@ -29,18 +30,21 @@ its payload to 0 mod 256.
 | Operation | Request | Reply |
 |---|---|---|
 | **Write register** | `A5 57 ADDR DATA CK` | `K` ok · `N` read-only/undefined · `E` bad checksum |
-| **Read register** | `A5 52 ADDR CK` | `ADDR DATA CK2` · `E` on bad request CK |
+| **Read register** | `A5 52 ADDR CK` | `ADDR DATA CK2` · `N ADDR CK3` no such register (VERSION ≥ `0x02`) · `E` on bad request CK |
 | **Upload table** | `A5 5B TGT D[0..N-1] CK` | `K` ok · `E` bad checksum or unknown target |
 | **Read table** | `A5 72 TGT CK` | `TGT D[0..N-1] CK2` · `E` on bad CK or target |
 
-A table is committed only on `K`. Reading an undefined register returns `0x00` — it
-does not error, so a wrong address looks like a working register reading zero.
+A table is committed only on `K`. **Reading an undefined register returns `N ADDR CK3`**
+(`'N' + ADDR + CK3 == 0`), the same three-byte length as a good reply. Tell them apart by
+the first byte: a good reply echoes `ADDR`. `0x4E` is itself a defined register, so a
+read *of* `0x4E` never produces the `N` form. Before VERSION `0x02` an undefined read
+returned `ADDR 00 CK2` and a wrong address looked like a register reading zero.
 
 ---
 
 # PUT — writable registers
 
-Eleven addresses accept writes. Everything else returns `N`.
+Twenty-five addresses accept writes. Everything else returns `N`.
 
 | Addr | Name | Payload |
 |---|---|---|
@@ -55,6 +59,45 @@ Eleven addresses accept writes. Everything else returns `N`.
 | `0x34` | cam SPI **GO** | any value fires the transaction |
 | `0x37` | cam GPIO out | `{reset_n, …, trigger[2:0]}` |
 | `0x39` | cam boot **GO** | any value starts the boot sequencer |
+
+### Camera settings and commands (VERSION `0x02`)
+
+Each camera setting is writable **at the address that reports it**. Write the low bytes
+first — they are staged — and the **highest byte commits** the whole value, replying `K`
+(applied) or `N` (refused). Every commit is issued as the equivalent Ft+ camera opcode, so
+the camera module validates it identically. Both ports can now set the camera.
+
+| Addr | Name | Payload | Commits on | Opcode |
+|---|---|---|---|---|
+| `0x40` `0x41` | **EXPOSURE** | 375 ns units | `0x41` | 1 |
+| `0x5A` `0x5B` `0x5C` | GENLOCK DELAY | 10 ns ticks, staged | — | — |
+| `0x5D` | **GENLOCK ENABLE** | bit0 | `0x5D` | 7 |
+| `0x8E` `0x8F` `0x90` | **TRIGGER PERIOD** | 10 ns ticks | `0x90` | 2 |
+| `0x91` | **FRAMES PER SCAN** | 1–63 | `0x91` | 4 |
+| `0x17` | CAMCMD | bit0 = re-arm the burst capture | `0x17` | 3 |
+| `0x18` `0x19` | IDLE DURATION | ms, 0 = latch — staged, reads back | — | — |
+| `0x1A` | CAMIDLE | bit0 = 1 idle, 0 = release | `0x1A` | 6 |
+
+**The refusals are the point.**
+
+* **Exposure** is refused if it would not fit the frame period minus the 54.1 µs sensor
+  reserve — past that the sensor wedges until the FPGA is reconfigured. Free-running, it
+  is checked against the **live** trigger period; genlocked, against the published max
+  exposure at `0x53`–`0x55`, and refused outright while that is not valid. With no
+  camera, every exposure is refused.
+* **Trigger period** is refused at ≤ 1000 ticks (opcode 2's own floor) and, free-running,
+  if the **live** exposure would no longer fit. Lower the exposure first, then shorten
+  the period.
+* **Frames per scan** is refused at 0 (the scan would never end) and above 63.
+
+The checks use live values rather than the 10 Hz status snapshot, so "raise exposure,
+then shorten the period" cannot slip both past inside 100 ms. **Readback is still the
+snapshot**: allow ~100 ms after a commit before reading back. Staged bytes never appear
+in readback.
+
+> The raw Ft+ opcodes still work and are **not** clamped. Prefer the registers.
+> `host/ftlink.py` wraps them: `set_exposure`, `set_trigger_period`,
+> `set_frames_per_scan`, `set_genlock`, `rearm`, `idle_camera`, `build_id`.
 
 **`0x13` notes.** `sw_en` makes USB drive R/G/B/orient instead of the physical
 `SW[3:0]` pins. `mode_en`+`mode_val` drive the SLI pattern enable instead of the
@@ -82,9 +125,11 @@ leaves whatever was last forced. Logged against genlock G4.
 | Addr | Contents |
 |---|---|
 | `0x00` | **ID** = `0x48` `'H'` — proves the control bitstream is loaded |
-| `0x01` | **VERSION** = `0x01` |
+| `0x01` | **VERSION** = `0x02` — `N` on undefined reads, camera settings writable |
 | `0x02` | **STATUS** — live `led` byte `{vsync, hsync, VPolarity, sel, mode, rdy, f_frm, trig}` |
 | `0x06` | **FLAGS** `{…, usb_sw_en, lut_loaded}` |
+| `0x08`–`0x0B` | **BUILD_GIT** `{dirty, 3'b0, hash[27:0]}` — 7-hex-digit git hash of the source; `dirty` = uncommitted changes |
+| `0x0C`–`0x0F` | **BUILD_EPOCH** — unix seconds at synthesis |
 | `0x10` | **PINS** `{eff_sw[3:0], phys_sw[3:0]}` — active vs physical switches |
 | `0x13` `0x14` `0x15` `0x16` | readback of the control registers above |
 
@@ -226,5 +271,8 @@ are stale RAM. Byte `0x7E` of block 0 is the authoritative extension count.
 * **An abandoned upload used to wedge the control plane** until the remaining bytes
   arrived — Ctrl-C during `upload_corr.py` did it. The same watchdog is the cure, and
   it still fires for that case.
-* **Undefined reads return `0x00`**, so a mistyped address is indistinguishable from
-  a register that legitimately reads zero.
+* **Undefined reads returned `0x00` before VERSION `0x02`**, so a mistyped address was
+  indistinguishable from a register reading zero. They now return `N ADDR CK3`. Tools
+  that frame-scan for an `ADDR`-echo simply time out on an undefined address.
+* **Build identity is 0 when not supplied.** `build_id.tcl` passes it from all four
+  `Au2_SLI` build scripts; a zero hash means the build had no git, not a real hash.

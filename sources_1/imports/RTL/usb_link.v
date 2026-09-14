@@ -17,7 +17,11 @@
 //==============================================================================
 module usb_link #(
     parameter integer CLK_HZ = 100_000_000,
-    parameter integer WIN    = 50_000_000      // ~0.5 s status window
+    parameter integer WIN    = 50_000_000,     // ~0.5 s status window
+    // Build identity, forwarded to uart_ctrl regs 0x08..0x0F. Set by the build script.
+    parameter integer BUILD_GIT   = 0,
+    parameter integer BUILD_DIRTY = 0,
+    parameter integer BUILD_EPOCH = 0
 )(
     input  wire        clk100,
     input  wire [7:0]  led,
@@ -112,7 +116,8 @@ module usb_link #(
     output wire [2:0]  cam_trigger,
     input  wire [1:0]  cam_monitor,
     input  wire [223:0] cam_stat_i,      // M4 0x3A..0x41, G0 timestamps 0x42..0x49,
-                                         // G1 sync count 0x58..0x59, G3 delay 0x5A..0x5D
+                                         // G1 sync count 0x58..0x59, G3 delay 0x5A..0x5D,
+                                         // trigger period 0x8E..0x90, frames per scan 0x91
     // M6a: a SECOND source of 0xA5 bytes, arriving over the FT601 instead of the
     // UART. Merged below rather than muxed: the two are alternative transports
     // for one protocol, never both mid-command at once, and the receiver already
@@ -123,7 +128,13 @@ module usb_link #(
     // it paces uart_ctrl's producer handshake directly.
     output wire [7:0]  rpl_byte,
     output wire        rpl_we,
-    input  wire        rpl_full
+    input  wire        rpl_full,
+    // Camera settings written as REGISTERS (0x17..0x1A, 0x40/0x41, 0x5A..0x5D,
+    // 0x8E..0x91) leave as Ft+ opcode words for cam_frame_ft, and the live
+    // settings come back for the safety checks. See uart_ctrl.v.
+    output wire [31:0] cam_cmd_word,
+    output wire        cam_cmd_valid,
+    input  wire [40:0] cam_live_i
 );
     // ---- power-up reset ----
     reg [3:0] rstcnt = 4'd0;
@@ -439,7 +450,8 @@ module usb_link #(
     assign cam_reset_n = boot_busy ? boot_reset_n : cam_gpio[7];
     assign cam_trigger = cam_gpio[2:0];
 
-    uart_ctrl #(.CLK_HZ(CLK_HZ)) i_ctrl (
+    uart_ctrl #(.CLK_HZ(CLK_HZ), .RESERVE_TICKS(RESERVE_TICKS),
+                .BUILD_GIT(BUILD_GIT), .BUILD_DIRTY(BUILD_DIRTY), .BUILD_EPOCH(BUILD_EPOCH)) i_ctrl (
         .clk(clk100), .rst(rst),
         .rx_data(rx_data), .rx_valid(rx_valid),
         .tx_data(c_data), .tx_send(c_send), .tx_busy(c_tx_busy), .tx_active(c_active),
@@ -477,6 +489,8 @@ module usb_link #(
         .out_meas_i(out_meas),
         .out_pixkhz_i(out_pixkhz),
         .maxexp_i(maxexp_w),
+        .cam_cmd_word(cam_cmd_word), .cam_cmd_valid(cam_cmd_valid),
+        .cam_live_i(cam_live_i),
         .cam_spi_rdata(cam_spi_rdata), .cam_spi_busy(cam_spi_busy),
         .cam_spi_done(cam_spi_done),
         .cam_gpio(cam_gpio), .cam_gpio_in(cam_gpio_in),

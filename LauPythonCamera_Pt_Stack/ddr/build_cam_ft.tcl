@@ -87,6 +87,19 @@ if {[llength [get_ports -quiet {ext_tlp[*] ext_tlp_tog}]] > 0} {
     puts "### UCIO-1 waived for ext_tlp/ext_tlp_tog (merged-build ports)"
 }
 
+# Same case, same scoping: reg_cmd_word/reg_cmd_valid carry register-originated camera
+# commands from uart_ctrl, and cam_live_o feeds its safety checks. uart_ctrl lives in the
+# merged top only, so here the inputs are unused (REG_CMD_EN defaults to 0, so a floating
+# auto-placed pin cannot fire a command) and the output goes nowhere.
+set regport_list [get_ports -quiet {reg_cmd_word[*] reg_cmd_valid cam_live_o[*]}]
+if {[llength $regport_list] > 0} {
+    create_waiver -type DRC -id UCIO-1 -objects $regport_list \
+        -description "merged-build-only register command ports; unused when cam_frame_ft is top"
+    create_waiver -type DRC -id NSTD-1 -objects $regport_list \
+        -description "merged-build-only register command ports; unused when cam_frame_ft is top"
+    puts "### UCIO-1/NSTD-1 waived for reg_cmd_*/cam_live_o (merged-build ports)"
+}
+
 opt_design
 place_design
 # phys_opt_design was never in this flow, which is why small violations kept

@@ -48,6 +48,8 @@
 set part xc7a100tfgg484-2
 set top  Au2_SLI
 set here [file normalize [file dirname [info script]]]
+# Build identity (git hash, dirty, epoch) -> uart_ctrl regs 0x08..0x0F.
+source [file join $here build_id.tcl]
 set rtl  $here/sources_1/imports/RTL
 set ipd  $here/sources_1/ip
 set out  $here/build_pt_hdmi
@@ -192,7 +194,7 @@ set logf $here/build_pt_hdmi/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag -generic WITH_CAM=0} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag {*}$build_id_generics -generic WITH_CAM=0} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]

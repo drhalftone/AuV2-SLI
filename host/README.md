@@ -12,6 +12,7 @@ opcodes over D3XX. Register and opcode reference: [`../FTPLUS_API.md`](../FTPLUS
 |---|---|
 | `ftlink.py` | The transport. `send_bytes` (0xA5 protocol), `send_word` (camera opcodes), register and table read/write |
 | `usb_speed.py` | **Run this first when anything looks slow.** Reports the enumerated USB speed *and* measured throughput — a USB 2 cable in a USB 3 port looks identical from the outside and costs 4x |
+| `diag_reply_stall.py` | **Why Ft+ replies stop when the camera does.** Idles the camera, retries Port B replies, and reads `0x3B` over Port A to say which side of the FT601 holds the bytes |
 | `max_exposure.py` | Asks the FPGA the longest exposure usable at the current frame rate, and optionally applies it |
 | `measure_vsync_period.py` | Display frame period and its jitter, at 10 ns (genlock G0) |
 | `measure_trigger_latency.py` | Trigger to exposure-start delay and its jitter, from the sensor's own monitor pin |

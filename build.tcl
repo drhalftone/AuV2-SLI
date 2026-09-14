@@ -11,6 +11,8 @@
 set part xc7a35tftg256-2
 set top  Au2_SLI
 set here [file normalize [file dirname [info script]]]
+# Build identity (git hash, dirty, epoch) -> uart_ctrl regs 0x08..0x0F.
+source [file join $here build_id.tcl]
 set rtl  $here/sources_1/imports/RTL
 set ipd  $here/sources_1/ip
 set out  $here/build_au2
@@ -48,7 +50,7 @@ read_xdc $here/constrs_1/imports/RTL/Au2.xdc
 read_xdc $here/constrs_1/imports/RTL/cam_au2.xdc
 
 # ---- synth + implement ----
-synth_design -top $top -include_dirs $rtl
+synth_design -top $top -include_dirs $rtl {*}$build_id_generics
 opt_design
 place_design
 route_design

@@ -148,9 +148,16 @@ with serial.Serial(PORT, 115200, timeout=0.3) as s:
     s.flush(); time.sleep(0.5); liveness(s, "A: undefined opcodes")
 
     print("\n[5] Port A: reads/writes to every address 0x00-0xFF")
+    # Protocol 0x02 made camera settings writable. A 0x5A sweep would COMMIT a 59 ms
+    # trigger period (0x90, from the 0x5A bytes staged at 0x8E/0x8F) and disable
+    # genlock (0x5D bit 0 = 0) -- changing the camera every later step runs against.
+    # Reads still cover them; commit bytes are skipped. (0x41 would be refused by the
+    # exposure clamp anyway.)
+    CAM_COMMITS = {0x17, 0x1A, 0x41, 0x5D, 0x90, 0x91}
     for a in range(256):
         s.write(bytes([SYNC, OP_R, a, ck(OP_R + a)]))
-        s.write(bytes([SYNC, OP_W, a, 0x5A, ck(OP_W + a + 0x5A)]))
+        if a not in CAM_COMMITS:
+            s.write(bytes([SYNC, OP_W, a, 0x5A, ck(OP_W + a + 0x5A)]))
     s.flush(); time.sleep(1.0); liveness(s, "A: whole address space")
 
     print("\n[6] Port A: truncated table upload, then abandoned")

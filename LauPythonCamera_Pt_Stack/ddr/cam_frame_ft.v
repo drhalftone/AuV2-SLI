@@ -35,6 +35,10 @@
 //   [6] format = 1          [7] ~MAGIC
 //=============================================================================
 module cam_frame_ft #(
+    // 1 = accept camera commands from uart_ctrl registers (reg_cmd_*). Set ONLY by the
+    // merged top. In the standalone build those ports have no pin, and an auto-placed
+    // floating input would fire random opcodes -- so they are ignored unless enabled.
+    parameter integer REG_CMD_EN = 0,
     parameter integer NCOL = 1280,
     parameter integer NROW = 1024,
     parameter [15:0]  EXPOSURE = 16'h0640,
@@ -139,6 +143,17 @@ module cam_frame_ft #(
     input  wire [7:0]  rpl_byte,
     input  wire        rpl_we,
     output wire        rpl_full,
+
+    // Camera commands written as REGISTERS in uart_ctrl (clk domain): the same
+    // {opcode, payload} words the Ft+ OUT pipe carries, with a 1-clk strobe. They
+    // join the opcode decoder below, so a register commit is validated exactly as
+    // the opcode is. Default 0 -- the standalone build (this module as top) has no
+    // uart_ctrl and leaves them unused; see the waiver in build_cam_ft.tcl.
+    input  wire [31:0] reg_cmd_word,
+    input  wire        reg_cmd_valid,
+    // LIVE settings for uart_ctrl's exposure/period safety checks, clk domain:
+    // {gl_live, trig_per, expo_cur}. Deliberately not the 10 Hz status snapshot.
+    output wire [40:0] cam_live_o,
 
     input  wire        cam_clkout_p, cam_clkout_n,
     input  wire [3:0]  cam_d_p,      cam_d_n,
@@ -374,9 +389,9 @@ module cam_frame_ft #(
     always @(posedge clk) begin
         if (rst) begin
             cam_idle <= 1'b0; idle_ms <= 16'd0; ms_cnt <= 17'd0;
-        end else if (cw_pulse && cw_ft[31:28] == 4'd6) begin
-            cam_idle <= cw_ft[27];
-            idle_ms  <= cw_ft[15:0];
+        end else if (cmd_p && cmd_w[31:28] == 4'd6) begin
+            cam_idle <= cmd_w[27];
+            idle_ms  <= cmd_w[15:0];
             ms_cnt   <= 17'd0;
         end else if (cam_idle && idle_ms != 16'd0) begin
             if (ms_cnt == MS_DIV[16:0]) begin
@@ -876,21 +891,21 @@ module cam_frame_ft #(
             expo_req <= 1'b1;
             expo_cur <= etab;
             eidx     <= eidx + 3'd1;
-        end else if (cw_pulse) begin
-            case (cw_ft[31:28])
+        end else if (cmd_p) begin
+            case (cmd_w[31:28])
             4'd1: begin
-                expo_val <= cw_ft[15:0];
+                expo_val <= cmd_w[15:0];
                 expo_req <= 1'b1;
-                expo_cur <= cw_ft[15:0];
+                expo_cur <= cmd_w[15:0];
             end
-            4'd2: if (cw_ft[23:0] > 24'd1000) trig_per <= cw_ft[23:0];
+            4'd2: if (cmd_w[23:0] > 24'd1000) trig_per <= cmd_w[23:0];
             4'd3: rearm_tog <= ~rearm_tog;
             // M5: opcode 5 asks for a status reply on the IN pipe.
             4'd5: rpl_tog <= ~rpl_tog;
-            4'd4: if (cw_ft[5:0] != 6'd0 && cw_ft[5:0] <= MAXF[5:0])
-                      nframes_r <= cw_ft[5:0];
+            4'd4: if (cmd_w[5:0] != 6'd0 && cmd_w[5:0] <= MAXF[5:0])
+                      nframes_r <= cmd_w[5:0];
             // G3: vsync -> trigger delay. bit27 enables genlock, [23:0] = 10 ns ticks.
-            4'd7: begin gl_en <= cw_ft[27]; gl_dly <= cw_ft[23:0]; end
+            4'd7: begin gl_en <= cmd_w[27]; gl_dly <= cmd_w[23:0]; end
             default: ;
             endcase
         end
@@ -2114,6 +2129,15 @@ module cam_frame_ft #(
     always @(posedge clk) cw_s <= {cw_s[1:0], cw_tog};
     wire cw_pulse = cw_s[2] ^ cw_s[1];       // cw_ft is stable well before this
 
+    // ONE DECODER, TWO SOURCES. A register commit from uart_ctrl arrives already in
+    // `clk`; an Ft+ opcode arrives through the toggle sync above. Both feed the same
+    // case below. A same-cycle collision keeps the register command and drops the
+    // Ft+ word -- a register commit is five host bytes and an opcode is one USB
+    // transfer, so landing on the same 10 ns cycle is not a practical case.
+    wire        reg_v = (REG_CMD_EN != 0) && reg_cmd_valid;
+    wire        cmd_p = cw_pulse | reg_v;
+    wire [31:0] cmd_w = reg_v ? reg_cmd_word : cw_ft;
+
     // ---- M6a: control-byte carrier on the FT601 OUT pipe -------------------
     //
     // WHY OPCODE 0 AND NOT RAW BYTES. The OUT pipe delivers 32-bit WORDS, and the
@@ -2294,6 +2318,7 @@ module cam_frame_ft #(
     reg [223:0] cstat_r  = 224'd0;
     reg        cstat_tog = 1'b0;
     assign cam_stat_o     = cstat_r;
+    assign cam_live_o     = {gl_live, trig_per, expo_cur};   // clk domain, live
     assign cam_stat_tog_o = cstat_tog;
 
     reg [127:0] shold = 128'd0;
@@ -2325,7 +2350,7 @@ module cam_frame_ft #(
                 // silently truncated from the TOP -- losing dur_p and shifting
                 // nothing else, so every other field would still have looked
                 // right. Arithmetic checked rather than assumed.
-                cstat_r <= { 8'd0,                             // spare
+                cstat_r <= { {2'd0, nframes_r},                 // 0x91 frames per scan
                              trig_per,                          // 0x8E..0x90
                              gl_ovf,                            // 0x5F
                              gl_out,                            // 0x5E
