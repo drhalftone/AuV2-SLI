@@ -207,6 +207,67 @@ the model's context either way. Two paths instead:
 is for loading known images by name. They share the JTAG pins, so the firmware must
 **refuse an MCP load while an XVC client is connected**, and vice versa.
 
+### 6.5 Alternative interface: micro-ROS
+
+**The library and its guards (§4, §5) do not change; only the front door does.**
+Instead of — or beside — the MCP server, the card can be a **ROS 2 node** using
+micro-ROS, which has an ESP-IDF component (`micro_ros_espidf_component`) and
+supports both the C3 and the S3.
+
+**Architecture.** micro-ROS does not speak DDS on the ESP32 itself. It speaks
+**XRCE-DDS over UDP** (WiFi) to a **micro-ROS agent** running on a host, and the
+agent represents it in the ROS 2 graph. So unlike §6.1, **a host process is always
+in the loop.**
+
+**The same tools, as ROS 2 interfaces:**
+
+| §6.2 tool | ROS 2 interface | Why that kind |
+|---|---|---|
+| `list_bitstreams` | service | request/reply |
+| `get_card_info` | service | request/reply |
+| `get_fpga_status` | **topic**, published at ~1 Hz | state other nodes can subscribe to without polling |
+| `load_bitstream` | **action** | ~2 s, reports progress (bits shifted), cancellable; result carries `DONE` and elapsed time |
+| `restore_flash_image` | service | |
+| `delete_bitstream` | service | |
+| `fetch_bitstream` | service taking a URL | **the image still travels over HTTP** — see below |
+
+These need a small interface package, e.g. `lau_bitstream_interfaces`
+(`srv/ListBitstreams`, `action/LoadBitstream`, `msg/FpgaStatus`), built **both**
+into the micro-ROS firmware library and into the host workspace. Custom interfaces
+require rebuilding the micro-ROS library — a firmware-build step, not a runtime one.
+
+**What micro-ROS does badly here — confirm before choosing it:**
+
+- **No bitstream transfer over ROS.** XRCE-DDS works in small, statically
+  allocated buffers; a 2.5 MB message is out of the question. §6.3's reasoning
+  holds even more strongly: the image moves over HTTP, and ROS only names it.
+- **`list_bitstreams` on a large library** can exceed the default message size.
+  Page the reply, or raise the transport MTU and use reliable (fragmenting)
+  streams.
+- **Action server support in `rclc`** is newer than services and topics. Verify it
+  against the ROS 2 distro in use; if it is lacking, fall back to a service plus a
+  progress topic.
+- **No descriptions for a model.** ROS interfaces are typed but carry no
+  natural-language purpose. An LLM reaching the card through a ROS→MCP bridge
+  (rosbridge-based MCP servers exist) sees names and types only — keep interface
+  and field names self-explanatory.
+
+**When to choose which:**
+
+| | MCP on the ESP32 (§6.1) | micro-ROS |
+|---|---|---|
+| Host software needed | none | micro-ROS agent |
+| Reachable by Claude Code | directly | through a ROS→MCP bridge |
+| Reachable by other robot software | HTTP only | native ROS 2 graph |
+| Long operations | blocking call | action, with feedback and cancel |
+| Time sync with the rest of the rig | none | agent session time sync |
+| Worth it when | the camera stands alone | the rig is becoming a ROS system — arms, turntables, other sensors |
+
+**They are not exclusive.** Both front ends can call the same library code in one
+firmware image, provided the JTAG lock of §6.4 covers **all three** clients — MCP,
+micro-ROS, and XVC. Build MCP first (no host dependency, §6.1 is already specified)
+and add micro-ROS when a ROS graph exists to join.
+
 ## 7. Firmware outline
 
 | Piece | Source |
@@ -217,6 +278,7 @@ is for loading known images by name. They share the JTAG pins, so the firmware m
 | `.bit` header parser | ~50 lines, hand-written |
 | JTAG shift | SPI peripheral driving TCK/TDI at 10 MHz (`README.md` §5) |
 | OTA with rollback | `esp_https_ota`, A/B partitions (`README.md` §6.0) |
+| micro-ROS front end (optional, §6.5) | `micro_ros_espidf_component`, `rclc`; custom `lau_bitstream_interfaces` |
 
 ## 8. Open items
 
@@ -227,4 +289,5 @@ is for loading known images by name. They share the JTAG pins, so the firmware m
 | microSD socket part | not chosen; read its height from the drawing |
 | Field access to the slot | proposed **no** — filled over WiFi (§3) |
 | Sidecar JSON written by build scripts | not started; `.bit` header alone is enough to begin |
+| micro-ROS front end | **alternative, not scheduled** — add when the rig joins a ROS 2 graph (§6.5) |
 | Rev B JTAG pin move | inherited from `README.md` §3 — confirm board revision first |
