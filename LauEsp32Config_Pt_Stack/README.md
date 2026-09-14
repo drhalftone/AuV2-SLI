@@ -306,6 +306,10 @@ pads, which is why they exist and why their placement matters.
 > box's existing port window — the same end where the lens box seam is now filled.
 
 ### 6.1 Bitstream storage
+> **Superseded by `SD_BITSTREAM_LIBRARY.md` (2026-09-13):** a microSD library on the
+> card, reported and loaded through an MCP server on the ESP32. It also proposes moving
+> to the ESP32-S3-MINI-1U, since microSD does not fit the C3's GPIO budget.
+
 2.46 MB does not sit comfortably in a 4 MB module beside an application. Either an
 8/16 MB module, or **stream over WiFi and never store it** — which keeps versioning
 on the server and leaves no stale image to load by accident.
@@ -435,6 +439,7 @@ Batch.pdf` sits on the same CDN path; it is the pre-production drawing and repor
 | SPI to fabric | 4 spare I/O pairs on J3 29-36, unused today; ~10 MB/s single-bit (§3b) |
 | GPIO budget | **15 on the C3-MINI-1 — at the limit.** Sensors go to the FPGA, not the ESP32 |
 | USB | **no connector** — USB_D+/D-, EN, GPIO9, GND, +3V3 as edge pads; OTA after (§6.0) |
+| microSD library | proposed — `SD_BITSTREAM_LIBRARY.md`; needs the C3 → S3 module decision |
 | Next | confirm Hd+ top-side heights for the bottom face, then schematic |
 
 Out of scope for now: using the daisy-chained HDMI as a data fabric between
