@@ -442,6 +442,9 @@ Batch.pdf` sits on the same CDN path; it is the pre-production drawing and repor
 | microSD library | proposed — `SD_BITSTREAM_LIBRARY.md`; needs the C3 → S3 module decision |
 | Next | confirm Hd+ top-side heights for the bottom face, then schematic |
 
-Out of scope for now: using the daisy-chained HDMI as a data fabric between
-cameras. It is a real capability and the pixels-as-data mechanism is sound, but it
-is a separate piece of work from getting a bitstream into the part.
+**Long-term goal — [`COMPUTE_RING_PLAN.md`](../COMPUTE_RING_PLAN.md):** the camera
+stacks as a ring of FPGA compute nodes that LLMs hand work to over MCP — host data over
+the Ft+, control over this card's WiFi, node to node over the HDMI ports. It is still
+separate work from getting a bitstream into the part, but it raises the stakes on two
+choices here: the SPI side channel (§3b) becomes the path for loading kernels without
+breaking the ring, which strengthens the C3 → S3 case in `SD_BITSTREAM_LIBRARY.md`.
