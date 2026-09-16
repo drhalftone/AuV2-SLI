@@ -636,6 +636,76 @@ rule, and the board edge.
   Worth a visual pass in KiCad for any obviously long detours, but the metrics above show none
   on the critical nets.
 
+## 20. GND pours on both outer layers, and stitching vias (`add_ground_pours.py`, 2026-09-16)
+
+**Why.** The review (§19) found that the only ground was In1. Tracks on B.Cu referenced the
+**+3V3** plane, and the fast nets changed layers 1–4 times with no ground via beside the signal
+via.
+
+**What was added:**
+
+| | |
+|---|---|
+| GND pour, F.Cu | ~1,590 mm²: 11 regions, all tied to ground through pads and vias; islands removed |
+| GND pour, B.Cu | ~1,700 mm²: 17 regions, likewise |
+| Clearance | 0.15 mm (0.10 mm inside the DF40 fan-out areas, per the DRU) |
+| Pad connection | thermal relief 0.30 gap / 0.30 spoke, so 0402s solder evenly. **U1 is solid:** its 0.85 mm-pitch ground pads only had room for one spoke (DRC "starved thermal" on pad 58), and a shielded module doesn't need reliefs |
+| No-pour area | F.Cu, x 44–50, y 26.5–35: the antenna connector and its cable exit to the notch |
+| Stitching vias | **180 on a 2 mm grid**, plus **50 beside autorouted signal vias** (0.6–1.6 mm away). 31 signal vias had no legal spot nearby, but the pours now sit on both faces around them |
+
+**Stitching rules:** each via is checked with `route_prep.Router.via_ok` (other-net copper, JLC
+hole rules, board edge). None goes inside a component courtyard (except U1's: tented vias under
+the module body are normal), a DF40 fan-out area or the antenna area.
+
+**Verified on the real board:**
+- DRC: **0 violations, 0 unconnected, 0 footprint errors**
+- `check_board_nets.py`: 0 wrong nets
+- `check_power_connectivity.py`: **GND and +3V3 each one connected conductor**, the outer pours
+  included
+- The negative test (all 352 GND vias removed in memory → 34 islands) proves the check still
+  detects a break
+
+**Check fixed along the way.** The original negative test removed one cap's track. Once the pours
+existed, that cap stayed connected through the pour, so the test could no longer fail. It now
+removes every GND via, which no pour can bypass.
+
+Totals: **594 vias** (210 fan-out, 73 plane stitching, 81 autorouter, 230 ground stitching).
+The pours carry the ground zone thermals, so **refill zones (B in KiCad) after any hand edit.**
+
+## 21. Stitching thinned: 594 → 474 vias (`thin_stitching.py`, 2026-09-16)
+
+**Why.** §20's 2 mm stitching grid (180 vias) was overkill. Stitching only needs spacing of
+about λ/20 of the highest frequency of concern:
+- **~7 mm** for the 80 MHz SPI, whose content runs up to ~1 GHz;
+- **~3 mm** only where 2.4 GHz WiFi matters: the board edges and the antenna.
+
+Every GND via also cuts a clearance hole in the **+3V3 plane** (In2), so the extra holes cost
+plane integrity for no benefit.
+
+**Removed:** exactly the 180 GND vias on the 2 mm grid points (x, y multiples of 2.000 mm).
+
+**Kept:** everything that has a job:
+
+| Group | Count |
+|---|---|
+| DF40 fan-out | 210 |
+| Plane vias on SMD power pads | 73 |
+| Autorouter | 81 |
+| Companion GND vias beside signal vias | 50 |
+
+**Added:** each via checked exactly as in §20.
+
+| Group | Count |
+|---|---|
+| Interior grid, 5 mm | 25 |
+| Edge row, every 3 mm, 1 mm inside the outline (notch and chamfers included) | 30 |
+| Ring around the antenna no-pour area | 5 |
+
+**Verified on the real board:** DRC **0 violations, 0 unconnected, 0 footprint errors**;
+0 wrong nets; GND and +3V3 each one connected conductor, with the negative test still detecting
+a break. Fills: +3V3 plane 1,959 mm², GND plane 2,069 mm², F.Cu pour 1,587 mm², B.Cu pour
+1,688 mm².
+
 ## 9. What is not done
 
 | | |
