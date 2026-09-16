@@ -284,9 +284,9 @@ and add micro-ROS when a ROS graph exists to join.
 
 | | |
 |---|---|
-| **Module: C3 → S3-MINI-1U** | **DECISION PENDING.** Recommended (§2). Blocks the schematic. |
-| S3 datasheet figures (§2.1) | fetch into `docs/`, confirm height, footprint, USB and strap pins |
-| microSD socket part | not chosen; read its height from the drawing |
+| **Module: C3 → S3-MINI-1U** | **DECIDED 2026-09-16: ESP32-S3-MINI-1U-N8.** Schematic in `SCHEMATIC.md` |
+| S3 datasheet figures (§2.1) | **confirmed** from datasheet v1.7: USB D−/D+ = GPIO19/20, straps GPIO0/3/45/46; land-pattern check at layout |
+| microSD socket part | **Molex 104031-0811** (C585350), 1.42 mm, from drawing SD-104031-001 |
 | Field access to the slot | proposed **no** — filled over WiFi (§3) |
 | Sidecar JSON written by build scripts | not started; `.bit` header alone is enough to begin |
 | micro-ROS front end | **alternative, not scheduled** — add when the rig joins a ROS 2 graph (§6.5) |

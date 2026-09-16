@@ -1,0 +1,29 @@
+(version 1)
+# =====================================================================
+# Custom DRC rules - LauEsp32Config_Pt_Stack
+#
+# Base rules (Board Setup) are the camera board's: JLCPCB standard process,
+# 0.5 mm copper-to-edge. Its LVDS netclasses are NOT carried over -- this card
+# has no high-speed pairs; the fastest nets are 80 MHz single-ended SPI.
+#
+# --- DF40 land pattern: 0.4 mm pitch -> 0.17 mm (plug) / 0.20 mm (receptacle)
+#     between adjacent pads, below the 0.2 mm default clearance.
+#     The plug pattern is the one on the FABBED LauCameraTrigger_Alchitry_Stack,
+#     so JLCPCB demonstrably builds it (same rule as LauPythonCamera_Pt_Stack).
+#     Scoped to pads of the SAME connector -- do NOT lower the global clearance.
+# =====================================================================
+
+(rule "DF40 land pattern - 0.4mm pitch, intra-connector only"
+	(condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Reference == B.Reference && (A.Reference == 'J1' || A.Reference == 'J2' || A.Reference == 'J3' || A.Reference == 'J4' || A.Reference == 'J5' || A.Reference == 'J6')")
+	(constraint clearance (min 0.1mm)))
+
+# --- DF40 fan-out (route_df40_fanout.py): one 0.45/0.20 via per pin in two staggered rows.
+#     Inside the named fan-out rule areas only, copper clearance may drop to JLC's 0.10 mm
+#     minimum and tracks neck to 0.10 mm. Everywhere else the netclass 0.15 mm applies.
+(rule "DF40 fan-out clearance"
+	(condition "A.intersectsArea('DF40 fan-out J1') || A.intersectsArea('DF40 fan-out J2') || A.intersectsArea('DF40 fan-out J3')")
+	(constraint clearance (min 0.1mm)))
+
+(rule "DF40 fan-out track width"
+	(condition "A.Type == 'Track' && (A.intersectsArea('DF40 fan-out J1') || A.intersectsArea('DF40 fan-out J2') || A.intersectsArea('DF40 fan-out J3'))")
+	(constraint track_width (min 0.1mm)))

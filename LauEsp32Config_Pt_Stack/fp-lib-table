@@ -1,0 +1,4 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "LauEsp32")(type "KiCad")(uri "${KIPRJMOD}/LauEsp32.pretty")(options "")(descr "DF40 plugs vendored from LauPythonCamera_Pt_Stack (fabbed geometry)"))
+)

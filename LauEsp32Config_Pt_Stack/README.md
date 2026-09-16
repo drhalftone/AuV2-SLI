@@ -28,6 +28,55 @@ costs no stack height that is not already accounted for.
 > The founder of Alchitry, who designed these boards, says the approach should
 > work. §3 and §4 are the pin- and part-level confirmation of that.
 
+## 1a. Stack position — in place of the Sp spacer between Ft+ and Hd. VERIFIED 2026-09-16
+
+```
+   [ camera element ]      top of the Pt
+     Alchitry Pt V2
+   [ Sp ]                  clears the Pt's bottom-side caps
+   [ Ft+ ]
+   [ ESP32 card ]          <- replaces the second Sp (micro-HDMI / USB cable clearance)
+   [ Hd ]
+```
+
+Checked against Alchitry's own schematics (`docs/Alchitry_Platinum_RevA_schematic.pdf`
+sheet 4, `docs/FtPlusSchematic.pdf`, `docs/HdSchematic.pdf`), read from rendered images:
+
+- **Connector genders match.** Pt, Ft+ and Hd all carry `DF40C-xxDS-0.4V(4.0)` receptacles on
+  top and `DF40C-xxDP-0.4V` plugs on the bottom. This card does the same, so it fits
+  anywhere a spacer fits.
+- **The control signals reach this slot.** The Ft+ and the Hd pass control pins C29–C50
+  straight through and use none of them.
+- **Alchitry numbers every bottom plug mirrored.** On all three boards, bottom plug pin *2k*
+  mates receptacle pin *2k−1*: the Pt's J8 has +3V3 on **even** 1–16, RESET on 38, TCK on 50.
+  Carried through the Ft+ into this card's top receptacle (receptacle numbering), the pins
+  land **exactly where §3 and the schematic assume**: +3V3 odd 1–15, 37 Reset, 39 DONE,
+  41 PROGRAM_B, 43 TDI, 45 TDO, 47 TMS, 49 TCK. **No netlist change is needed.**
+- **The FPGA nets on 29–36 are NOT the ones in §3b.** §3b decoded the Pt's *top* connector.
+  Below the Pt they come from J8, the bottom connector:
+
+  | Card pin | FPGA net (Pt J8) | | Card pin | FPGA net (Pt J8) |
+  |---|---|---|---|---|
+  | 29 `FAB_SCK` | `34_L1_N` | | 30 `FAB_IO2` | `34_L15_N` |
+  | 31 `FAB_MOSI` | `34_L1_P` | | 32 `FAB_IO3` | `34_L15_P` |
+  | 33 `FAB_IRQ` | `34_L3_N` | | 34 `FAB_MISO` | `34_L6_N` |
+  | 35 `FAB_SPARE` | `34_L3_P` | | 36 `FAB_CS` | `34_L6_P` |
+
+  All are bank 34, hardwired 3.3 V, and they are still true N/P pairs. Constrain them **by
+  package pin** from Alchitry's `pt_*_bottom` constraint files (bank-16/34 labels are swapped
+  in the schematic, §3b).
+
+**Mechanical consequences:**
+- **Stack height is unchanged.** The gap on each side stays 4.125 mm (§6.3).
+- **Top face:** faces the Ft+ underside, which has no components (§6.3). The whole gap is usable.
+- **Bottom face:** now faces the **Hd's top side, where its micro-HDMI receptacles are.**
+  Cable clearance there is what the spacer was for. **Measured from the Hd STEP (§6.3):**
+  ≥ 2.67 mm under the card everywhere except over the two HDMI connectors (1.15 mm). That area
+  is now a B.Cu no-footprint rule area (x 0–9.5, y 17.5–40, left edge).
+- **Rev B:** Alchitry's "JTAG pins will change places" note is on the *top* connector
+  column of the rev A pinout sheet. Whether the bottom connector changes too is unconfirmed.
+  The straps (`SCHEMATIC.md` §4) cover the published Au order either way.
+
 ## 2. Configure RAM, never the boot flash
 
 **The bitstream goes into the FPGA's volatile configuration memory. The QSPI boot
@@ -112,7 +161,9 @@ characters in the PDF text layer; these are the de-doubled net names):
 | 33 | `BANK34_L2_N` | | 34 | `BANK14_L23_N` |
 | 35 | `BANK34_L2_P` | | 36 | `BANK14_L23_P` |
 
-Two pairs on bank 14, two on bank 34. **SPI needs four signals** — SCK, MOSI, MISO,
+Two pairs on bank 14, two on bank 34. **These are the Pt's TOP-connector nets. In the card's
+actual slot (below the Ft+, §1a), pins 29–36 are bank-34 `L1`/`L3`/`L6`/`L15` from the
+bottom connector J8. Use §1a's table for constraints.** **SPI needs four signals** — SCK, MOSI, MISO,
 CS — so half of them do the job and the other four are free for an interrupt, a
 handshake, or flow control. They are differential-capable pairs, so LVDS is
 available on the same wires if CMOS SPI ever proves too slow.
@@ -337,16 +388,36 @@ so the whole gap above this board is available.
 That is a comfortable fit, and the MINI series is the right pick over a WROOM
 (3.1 mm) — 0.7 mm is a large fraction of a 4 mm budget for identical silicon.
 
-**The bottom face is NOT yet budgeted.** The Hd+'s top-side component heights have
-not been measured, so keep the underside low-profile — 0402/0603 passives, small
-SOT/SOIC — until someone puts calipers on the Hd+. Decoupling and any JTAG buffer
-can live there; nothing tall should.
+**The bottom face IS now budgeted, from Alchitry's Hd STEP (2026-09-16).** The card sits
+above the Hd (§1a), so its bottom face looks down on the Hd's top side across the same
+4.125 mm gap. `hd_clearance.py` measured the Hd and wrote `mech/hd_top_clearance.png`.
 
-> The STEP models in `docs/` cannot settle this. Their point clouds span −13.71 to
-> +19.20 mm on both boards — ~33 mm around a 1.6 mm PCB — so they carry connector
-> bodies and construction geometry that cannot be attributed to parts without a
-> full B-rep traversal. `check_step.py` parses them but rejects Alchitry's face
-> winding. Measure the hardware; do not trust a number derived from those files.
+| Hd top-side part | Board position (mm from corner, y down) | Height | Clearance for the card's bottom face |
+|---|---|---|---|
+| 3 × DF40HC(4.0) receptacles | the element sites | 3.90 | 0.22 (these mate with the card's plugs) |
+| **2 × HDMI connectors** | **x 0.2–7.8, y 19.2–25.8 and 31.7–38.3** (left edge) | **2.97** | **1.15** |
+| IC, 3.4 × 3.2 | x 25.3–28.7, y 14.9–18.1 | 1.45 | 2.67 |
+| 2 × 2.2 × 2.1 parts | (12.1–14.3, 22.8–24.9), (11.4–13.6, 39.0–41.1) | 1.10 | 3.02 |
+| everything else | — | ≤ 0.90 | ≥ 3.22 |
+
+So away from the two HDMI connectors, **there is at least 2.67 mm under the card
+everywhere**. That fits 0805 caps (~1.3 mm), SOT-23 (~1.1 mm) and TSSOP (1.2 mm) with
+margin. **Keep the bottom face clear over the HDMI footprints. DONE:** `add_hdmi_keepout.py` puts a
+B.Cu rule area (no footprints; tracks and vias allowed) at x 0–9.5, y 17.5–40, which is both
+connectors plus 1.5 mm, out to the left edge. DRC enforces it (tested by moving a footprint
+inside). 1.15 mm is marginal even
+for a 0402, and a mated HDMI plug's shell may need more. Measure a plugged-in cable before
+using that area.
+
+> **How the STEP was read.** The raw point cloud *is* unusable: it spans −13.71 to +19.20 mm
+> because it carries axis placements and construction geometry. `check_step.py` also rejects
+> Alchitry's face winding. So KiCad tessellates the file instead: it's attached as a
+> dummy footprint's 3D model and exported with `kicad-cli pcb export stl`, so only real faces
+> survive. The mesh is exactly 55 × 45 mm, the board surfaces are at z 1.52 / 3.12, the plugs
+> below reach 1.1 mm, and the tallest part above is 3.90 mm, matching Hirose's D = 3.9. The
+> three receptacles land on the element-standard positions, which fixes the frame
+> (y = 45 − y_model). **This is Alchitry's CAD, not calipers.** A quick caliper check of the
+> HDMI connector height on real hardware is still worth doing.
 
 ### 6.4 RF, and the aluminium shroud
 A 2.4 GHz radio is going inside a stack with 720 Mbps LVDS, DDR3 and HDMI TMDS —
@@ -430,17 +501,18 @@ Batch.pdf` sits on the same CDN path; it is the pre-production drawing and repor
 
 | | |
 |---|---|
-| Schematic | not started |
+| Schematic | **generated 2026-09-16** — `SCHEMATIC.md`; ERC clean, all 16 BOM lines JLCPCB-stocked |
 | Layout | not started |
 | Firmware | not started |
 | Electrical unknowns | **none** — J3 mapped, 3.3 V confirmed, FTDI isolation confirmed |
-| Module | **ESP32-C3-MINI-1U** — external wired antenna, top face, 2.4 mm in a 4.125 mm gap |
+| Module | **ESP32-S3-MINI-1U-N8** (decided 2026-09-16, supersedes the C3) — external wired antenna, top face |
 | Antenna | external, routed outside the aluminium shroud (§6.4) |
 | SPI to fabric | 4 spare I/O pairs on J3 29-36, unused today; ~10 MB/s single-bit (§3b) |
-| GPIO budget | **15 on the C3-MINI-1 — at the limit.** Sensors go to the FPGA, not the ESP32 |
-| USB | **no connector** — USB_D+/D-, EN, GPIO9, GND, +3V3 as edge pads; OTA after (§6.0) |
-| microSD library | proposed — `SD_BITSTREAM_LIBRARY.md`; needs the C3 → S3 module decision |
-| Next | confirm Hd+ top-side heights for the bottom face, then schematic |
+| GPIO budget | S3: 29 used, 7 spare, 3 straps left NC (`SCHEMATIC.md` §6). The C3's 15-pin limit in §3b.1 no longer applies |
+| USB | **no connector** — USB_D+/D- (GPIO20/19), EN, GPIO0, UART0, GND, +3V3 as pads TP1-TP8; OTA after (§6.0) |
+| microSD library | **in the schematic** — Molex 104031-0811, SDMMC 4-bit |
+| JTAG rev A/B | rev A wired; rev B by moving 4 strap resistors (`SCHEMATIC.md` §4) |
+| Next | confirm Hd+ top-side heights for the bottom face, check DF40 receptacle footprints, then layout |
 
 **Long-term goal — [`COMPUTE_RING_PLAN.md`](../COMPUTE_RING_PLAN.md):** the camera
 stacks as a ring of FPGA compute nodes that LLMs hand work to over MCP — host data over
