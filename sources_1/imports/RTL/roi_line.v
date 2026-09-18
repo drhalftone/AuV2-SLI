@@ -71,10 +71,24 @@
 // small number, and nothing downstream can tell them apart. Three characters to
 // make the mean falsifiable.
 //
+// hh AND ll ARE THE SATURATION CHECK, appended rather than inserted so every
+// field before them keeps its offset:
+//
+//    R=mmm,nnn,rrggbb,cc,hh,ll<CR><LF>          27 bytes
+//
+//        hh   ROI pixels at or above 1020 -- saturated. The mean is only a mean
+//             when this is 00; a handful of clipped pixels hide inside an average.
+//        ll   ROI pixels at or below 3 -- clamped at the floor.
+//
+// Both are capped at FF. A parser written for the 21-byte line does NOT still
+// match: the host parsers anchor on CRLF straight after cc, precisely so a half-
+// arrived line cannot match on its fixed-width fields. Every current-format
+// parser in host/ was updated to accept the two fields as optional.
+//
 // WHY ASCII AND NOT BINARY. Every other telemetry path in this design is readable
 // in a terminal, and that has repeatedly been what separated "the link is dead"
-// from "the link is fine and the data is wrong". 21 B x 120/s = 2520 B/s against
-// 11520 B/s at 115200 8N1, about 22%.
+// from "the link is fine and the data is wrong". 27 B x 120/s = 3240 B/s against
+// 11520 B/s at 115200 8N1, about 28%.
 //
 // Handshake matches status_line exactly (go / tx_data / tx_send / tx_busy / busy)
 // so it drops into the same arbiter slot.
@@ -86,25 +100,27 @@ module roi_line (
     input  wire [8:0]  npx,
     input  wire [23:0] tlp,           // top-left pixel AS TRANSMITTED, {R,G,B}
     input  wire [7:0]  tcnt,          // trigger ordinal
+    input  wire [15:0] sat,           // {saturated px, clamped-low px}, capped at FF
     output reg  [7:0]  tx_data,
     output reg         tx_send,
     input  wire        tx_busy,
     output reg         busy
 );
-    localparam integer LEN = 21;
+    localparam integer LEN = 27;
     reg [7:0] msg [0:LEN-1];
     integer k;
     initial begin
         for (k = 0; k < LEN; k = k + 1) msg[k] = 8'h20;
         msg[0]  = "R";  msg[1] = "=";
         msg[5]  = ",";  msg[9] = ",";  msg[16] = ",";
-        msg[19] = 8'h0D; msg[20] = 8'h0A;
+        msg[19] = ",";  msg[22] = ",";
+        msg[25] = 8'h0D; msg[26] = 8'h0A;
         busy = 1'b0; tx_send = 1'b0;
     end
 
     function [7:0] h2a; input [3:0] n; h2a = (n < 10) ? (8'h30 + n) : (8'h41 + n - 4'd10); endfunction
 
-    // Six bits for a 21-byte message. It needs five today, but roi_block was once
+    // Six bits for a 27-byte message. It needs five today, but roi_block was once
     // truncated silently by exactly this -- its LEN grew past 32 while the index
     // stayed 5 bits, and the stream looked healthy while every line was cut short
     // and re-sent forever. The margin costs one flip-flop.
@@ -128,6 +144,10 @@ module roi_line (
                 msg[15] <= h2a(tlp[3:0]);
                 msg[17] <= h2a(tcnt[7:4]);
                 msg[18] <= h2a(tcnt[3:0]);
+                msg[20] <= h2a(sat[15:12]);   // saturated
+                msg[21] <= h2a(sat[11:8]);
+                msg[23] <= h2a(sat[7:4]);     // clamped low
+                msg[24] <= h2a(sat[3:0]);
                 idx <= 6'd0; st <= 1'b0; busy <= 1'b1;
             end
         end else begin

@@ -77,7 +77,14 @@ TICK_US = 0.01
 # Built by concatenation so the source carries no backslash escapes, and the CRLF
 # is REQUIRED -- that is what stops a half-arrived line from matching on its
 # fixed-width fields and being counted twice.
+#
+# THE LINE GREW TWO FIELDS: ,hh,ll -- ROI pixels saturated (>=1020) and clamped
+# low (<=3). They are OPTIONAL here, so this matches the 21-byte line from older
+# bitstreams and the 27-byte line from newer ones. Note the CRLF anchor means a
+# parser that does NOT know about them rejects the new line entirely -- it does
+# not quietly read the first four fields.
 LINE = re.compile(b"R=([0-9A-F]{3}),([0-9A-F]{3}),([0-9A-F]{6}),([0-9A-F]{2})"
+                  + b"(?:,([0-9A-F]{2}),([0-9A-F]{2}))?"
                   + bytes([13, 10]))
 
 
@@ -141,16 +148,25 @@ def wait_delay(ser, want, timeout=1.5):
     return got, False
 
 
-def collect(ser, nframes, timeout=6.0):
-    """Return up to nframes tuples of (mean, npx, tlp, tcnt)."""
+def collect(ser, nframes, timeout=6.0, sat=False):
+    """Return up to nframes tuples of (mean, npx, tlp, tcnt).
+
+    sat=True returns (mean, npx, tlp, tcnt, nhi, nlo) instead: the ROI's saturated
+    and clamped-low pixel counts. Both are None from a bitstream too old to send
+    them -- which is not the same as zero, and callers must not treat it so.
+    """
     out, buf, t0 = [], b"", time.time()
     while len(out) < nframes and time.time() - t0 < timeout:
         buf += ser.read(4096)
         ms = list(LINE.finditer(buf))
         if ms:
             for m in ms:
-                out.append((int(m.group(1), 16), int(m.group(2), 16),
-                            int(m.group(3), 16), int(m.group(4), 16)))
+                row = (int(m.group(1), 16), int(m.group(2), 16),
+                       int(m.group(3), 16), int(m.group(4), 16))
+                if sat:
+                    row += ((int(m.group(5), 16) if m.group(5) else None),
+                            (int(m.group(6), 16) if m.group(6) else None))
+                out.append(row)
             buf = buf[ms[-1].end():]
         elif len(buf) > 8192:
             buf = buf[-64:]
@@ -480,7 +496,7 @@ def main():
     except KeyboardInterrupt:
         print("\ninterrupted -- everything captured so far is already written")
     finally:
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         set_delay(ser, 0)
         ser.close()
         fh.close()

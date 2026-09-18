@@ -24,10 +24,10 @@ down to 16 is about 125 measurements instead of 1900, and every level's evidence
 is an integral over a region rather than a sample of a point.
 
 SATURATION IS THE TRAP IN THAT PLAN. A 256x256 square puts 256x more light on the
-sensor than a 16x16 one. If two tiles both rail at 1023 the comparison between
-them is meaningless and the search follows the wrong one. So the exposure is
-re-chosen at every level: measure, and if the level's best reading is near the
-ceiling, cut the exposure and do that level again.
+sensor than a 16x16 one. If two tiles both clip, the comparison between them is
+meaningless and the search follows the wrong one. So every level is a scan that
+must finish WITHOUT any reading passing --ceiling (600 ADU). The moment one does,
+the exposure is shortened and that level's scan starts again from the top.
 
 The FPGA must be passing HDMI through, not generating its own patterns -- this
 tool sets that up and puts it back afterwards.
@@ -137,7 +137,15 @@ def main():
                     help="genlock delay, us. 540 with a 6175 us exposure spans the "
                          "whole emission window measured in README 3.1, so the "
                          "reading is the frame's total light rather than a slice.")
-    ap.add_argument("--expo", type=float, default=6175.0, help="exposure, us")
+    ap.add_argument("--expo", type=float, default=300.0,
+                    help="starting exposure, us. Only a starting point -- it is "
+                         "re-derived from the measurement at every level.")
+    ap.add_argument("--ceiling", type=float, default=600.0,
+                    help="raw ADU no reading may exceed. The moment one does, the "
+                         "scan stops, the exposure is shortened, and that level "
+                         "starts again from its first position. Well under 1023: "
+                         "by 1000 the sensor is already clipping, and two clipped "
+                         "tiles cannot be told apart.")
     ap.add_argument("--frames", type=int, default=10, help="frames averaged per position")
     ap.add_argument("--settle", type=int, default=8,
                     help="frames discarded after moving the square. The projector is "
@@ -164,7 +172,15 @@ def main():
     dev, DX, DY, DW, DH, DHZ = pick[0]
     print("\nprojector display: %s" % dev)
 
-    if a.set_mode:
+    # THE MODE IS ENFORCED, NOT OPTIONAL. Windows dropped this display back to
+    # 1280x720@60 between two runs, and a run without --set-mode then completed
+    # and reported an "ALIGNED" square at 60 Hz -- a different frame, different
+    # sub-field timing, and a genlock delay pointing at the wrong light. So the
+    # mode is checked every run and set whenever it does not match.
+    if a.set_mode or (DW, DH, DHZ) != (a.width, a.height, a.hz):
+        if (DW, DH, DHZ) != (a.width, a.height, a.hz):
+            print("display is %dx%d@%d, want %dx%d@%d" % (DW, DH, DHZ, a.width,
+                                                     a.height, a.hz))
         ok, msg = set_mode(dev, a.width, a.height, a.hz)
         print("set %dx%d@%d: %s" % (a.width, a.height, a.hz, msg))
         if not ok:
@@ -181,6 +197,12 @@ def main():
     T_us = per * TICK_US
     gl = rd(ser, 0x5D) or 0
     print("frame period  %.1f us  (%.2f Hz)   genlock 0x%02X" % (T_us, 1e6 / T_us, gl))
+    # And check it where it counts: the FPGA's own measured frame period. Windows
+    # reporting the mode is not the same as the projector receiving it.
+    if abs(1e6 / T_us - a.hz) > 1.0:
+        ser.close()
+        sys.exit("the FPGA measures %.2f Hz but %d Hz was asked for -- refusing to "
+                 "align at the wrong frame rate" % (1e6 / T_us, a.hz))
     if (gl & 3) != 3:
         ser.close(); sys.exit("genlock not live -- is the profiling bitstream loaded?")
 
@@ -240,9 +262,11 @@ def main():
 
     fh = open(a.out, "w", newline="")
     wcsv = csv.writer(fh)
-    wcsv.writerow(["level", "size", "x", "y", "expo_us", "mean", "nframes"])
+    wcsv.writerow(["level", "size", "x", "y", "expo_us", "mean", "nframes",
+                   "sat_px_max", "low_px_max"])
     fh.flush()
 
+    dark = [0.0]          # the black-screen floor, so "signal" means something
     samples = []          # (x, y, size, mean) for the diagram
     seq = []              # every reading, in order, for the profile
     npos = [0]
@@ -251,18 +275,36 @@ def main():
         canvas.coords(rect, x, y, x + s, y + s)
         root.update()
 
+    lastsat = [None, None]   # worst saturated / clamped-low pixel count, last position
+    warned = [False, False]
+
     def measure(x, y, s):
         show(x, y, s)
         ser.reset_input_buffer()
         collect(ser, a.settle, timeout=3.0)
-        rows = collect(ser, a.frames, timeout=5.0)
-        good = [m for m, n, t, c in rows if n == 256]
-        v = sum(good) / len(good) if good else float("nan")
+        rows = collect(ser, a.frames, timeout=5.0, sat=True)
+        ok = [r for r in rows if r[1] == 256]
+        v = sum(r[0] for r in ok) / len(ok) if ok else float("nan")
+        # THE WORST FRAME, NOT THE AVERAGE. One frame with clipped pixels is enough
+        # to make that position's mean untrustworthy.
+        his = [r[4] for r in ok if r[4] is not None]
+        los = [r[5] for r in ok if r[5] is not None]
+        lastsat[0] = max(his) if his else None
+        lastsat[1] = max(los) if los else None
+        if ok and lastsat[0] is None and not warned[0]:
+            warned[0] = True
+            print("  WARNING: this bitstream sends no saturated-pixel count -- only the "
+                  "mean is being checked against the ceiling")
+        if lastsat[1] and not warned[1]:
+            warned[1] = True
+            print("  WARNING: %d ROI pixels read <= 3 at (%d,%d) -- clamped at the "
+                  "bottom. The black level is wrong; means are biased high."
+                  % (lastsat[1], x, y))
         npos[0] += 1
-        seq.append(v)
+        seq.append((v, expo_us[0]))
         samples.append((x, y, s, v))
         wcsv.writerow([len(samples), s, x, y, round(expo_us[0], 2),
-                       round(v, 2), len(good)])
+                       round(v, 2), len(ok), lastsat[0], lastsat[1]])
         fh.flush()
         return v
 
@@ -292,8 +334,34 @@ def main():
             x, y, s, v = best
             axm.plot([x + s / 2.0], [y + s / 2.0], marker="+", ms=14,
                      color="#d0242a", mew=2)
-        prof.set_data(range(len(seq)), seq)
-        axp.relim(); axp.autoscale_view()
+        # ONE COLOUR PER EXPOSURE. A restart changes the exposure, and readings
+        # taken at different exposures are not comparable -- drawn as one line they
+        # look like a single noisy trace. Each run of readings at one exposure gets
+        # its own colour, a divider where it changed, and its exposure written on.
+        axp.cla()
+        axp.set_xlabel("measurement"); axp.set_ylabel("ROI mean (ADU)")
+        axp.grid(alpha=0.3)
+        axp.axhline(a.ceiling, color="#c0392b", lw=1, ls="--")
+        pal = ["#1f5fd0", "#e07b00", "#1a8f3c", "#8e44ad", "#b8860b",
+               "#008b8b", "#c2185b", "#5d6d7e"]
+        runs, start = [], 0
+        for i in range(1, len(seq) + 1):
+            if i == len(seq) or seq[i][1] != seq[start][1]:
+                runs.append((start, i, seq[start][1]))
+                start = i
+        for k, (i0, i1, e) in enumerate(runs):
+            col = pal[k % len(pal)]
+            axp.plot(range(i0, i1), [q[0] for q in seq[i0:i1]], lw=1,
+                     marker=".", ms=3, color=col)
+            if i0 > 0:
+                axp.axvline(i0 - 0.5, color="#999999", lw=0.8)
+            axp.text(i0, a.ceiling, " %.0f us" % e, color=col, fontsize=7,
+                     va="bottom", ha="left", rotation=90)
+        if seq:
+            axp.set_xlim(-1, max(10, len(seq)))
+            lo = min(q[0] for q in seq)
+            axp.set_ylim(min(lo, dark[0]) - 20, max(a.ceiling + 90,
+                                                      max(q[0] for q in seq) + 20))
         hdr.set_text(note)
         try:
             if not plt.fignum_exists(fig.number):
@@ -302,6 +370,27 @@ def main():
             fig.canvas.flush_events()
         except Exception:
             print("plot gone -- continuing")
+
+    # The floor is measured, not assumed: everything below is reasoned about in
+    # ADU ABOVE IT, and the floor moves with exposure, filter and ambient light.
+    def measure_dark():
+        # Re-measured after every exposure change: the black-screen floor includes
+        # the projector's own black-level light, which scales with exposure.
+        show(0, 0, 0)
+        ser.reset_input_buffer()
+        collect(ser, a.settle, timeout=3.0)
+        r = collect(ser, a.frames, timeout=5.0)
+        g = [m for m, n, t, c in r if n == 256]
+        dark[0] = sum(g) / len(g) if g else dark[0]
+        return dark[0]
+
+    measure_dark()
+    print("dark floor %.1f ADU (black screen, %.0f us)   ceiling %.0f ADU"
+          % (dark[0], expo_us[0], a.ceiling))
+    if dark[0] >= a.ceiling:
+        ser.close()
+        sys.exit("the BLACK screen already reads %.0f, at or over the %.0f ceiling -- "
+                 "lower --expo" % (dark[0], a.ceiling))
 
     # ---- the search: big square first, halve, search the winner ------------
     best = None
@@ -316,37 +405,127 @@ def main():
                  or [max(0, min(DW - size, x0))]
             ys = list(range(max(0, y0), max(1, min(DH - size, y1 - size) + 1), step)) \
                  or [max(0, min(DH - size, y0))]
-            while True:                      # repeat the level if it saturates
-                lvl = []
+            # The stepped list can stop short of the right and bottom edges, so a peak
+            # living there is never sampled. Add the flush-to-edge positions.
+            for lst, span in ((xs, DW), (ys, DH)):
+                edge = span - size
+                if edge >= 0 and lst[-1] < edge and edge <= (x1 if lst is xs else y1):
+                    lst.append(edge)
+            # ABORT-AND-RESTART. The scan is only accepted if it gets through every
+            # position without a single reading over --ceiling. The instant one
+            # goes over, the exposure is shortened and the level starts again from
+            # its first position -- the readings taken so far were at the wrong
+            # exposure and are thrown away rather than compared against the rest.
+            #
+            # WHY IT BISECTS. The reading is not proportional to exposure. With the
+            # genlock delay at 540 us and a colour filter in the beam, the window
+            # only reaches that colour's sub-fields once the exposure is long enough
+            # to cover them -- blue's start at 2740 us -- so the light arrives in
+            # steps. A proportional correction overshoots both ways and the old
+            # version hunted between 2000 and 7700 us on both runs. The reading IS
+            # still monotonic in exposure, so bracketing between the longest
+            # exposure that finished too dim and the shortest that went over always
+            # converges, however lumpy the response is.
+            lo_e, hi_e = None, None           # too dim / went over
+            restarts = 0
+            # The frame limit, and the sensor's own: commanding more than reg 0x53
+            # wedges capture until the FPGA is reconfigured (README 7.4).
+            maxe = max(50.0, T_us - a.delay - 50.0)
+            mx_units = (rd(ser, 0x53) or 0) | ((rd(ser, 0x54) or 0) << 8)
+            if (rd(ser, 0x55) or 0) & 0x80 and mx_units:
+                maxe = min(maxe, mx_units * EXPO_UNIT_US)
+            while True:
+                lvl, over = [], None
                 for yy in ys:
                     for xx in xs:
                         v = measure(xx, yy, size)
                         lvl.append((xx, yy, size, v))
                         b = max(lvl, key=lambda t: t[3])
-                        redraw((xx, yy, size), best or b,
-                               "level %d   square %d px   %d x %d positions   "
-                               "exposure %.0f us" % (level, size, len(xs), len(ys))
-                               + chr(10)
-                               + "at (%d,%d)  mean %7.2f   best so far %7.2f at "
-                                 "(%d,%d)   %d measurements"
-                                 % (xx, yy, v, b[3], b[0], b[1], npos[0]))
-                b = max(lvl, key=lambda t: t[3])
-                if b[3] < 950 or expo_us[0] <= 30:
+                        note = ("level %d   square %d px   %d x %d positions   "
+                                "exposure %.0f us   restarts %d"
+                                % (level, size, len(xs), len(ys), expo_us[0],
+                                   restarts)
+                                + chr(10)
+                                + "at (%d,%d)  mean %7.2f  sat px %s  low px %s   "
+                                  "best %7.2f at (%d,%d)   ceiling %.0f   %d meas"
+                                % (xx, yy, v,
+                                   "-" if lastsat[0] is None else lastsat[0],
+                                   "-" if lastsat[1] is None else lastsat[1],
+                                   b[3], b[0], b[1], a.ceiling, npos[0]))
+                        redraw((xx, yy, size), best or b, note)
+                        # Over EITHER limit: the mean past the ceiling, or ANY
+                        # pixel saturated -- a mean can sit under 600 while a few
+                        # pixels are clipped at 1023 inside it.
+                        if v > a.ceiling or (lastsat[0] or 0) > 0:
+                            over = (xx, yy, v, lastsat[0] or 0)
+                            break
+                    if over:
+                        break
+
+                e = expo_us[0]
+                aim = dark[0] + 0.8 * (a.ceiling - dark[0])   # land with headroom
+                if over:
+                    hi_e = e if hi_e is None else min(hi_e, e)
+                    if over[2] >= 1015.0:
+                        new = e / 4.0                 # railed: true value unknown
+                    elif over[2] <= a.ceiling:
+                        # stopped by clipped PIXELS with the mean still in range, so
+                        # the mean says nothing about how far over they are
+                        new = e * 0.6
+                    else:
+                        new = e * (aim - dark[0]) / max(1.0, over[2] - dark[0])
+                    if lo_e is not None:
+                        new = max(new, (lo_e * hi_e) ** 0.5)
+                    new = min(new, 0.9 * e)           # must actually get shorter
+                    if over[2] > a.ceiling:
+                        why = "mean %.0f at (%d,%d) is over %.0f" % (
+                            over[2], over[0], over[1], a.ceiling)
+                    else:
+                        why = "%d saturated pixels at (%d,%d), mean only %.0f" % (
+                            over[3], over[0], over[1], over[2])
+                else:
+                    b = max(lvl, key=lambda t: t[3])
+                    floor_mid = dark[0] + 0.5 * (a.ceiling - dark[0])
+                    if b[3] >= floor_mid or e >= 0.995 * maxe:
+                        break                         # completed, or as long as it gets
+                    lo_e = e if lo_e is None else max(lo_e, e)
+                    if hi_e is not None and hi_e / lo_e < 1.15:
+                        break                         # bracket closed: accept
+                    new = e * (aim - dark[0]) / max(1.0, b[3] - dark[0])
+                    new = min(new, 4.0 * e)
+                    if hi_e is not None:
+                        new = min(new, (lo_e * hi_e) ** 0.5)
+                    new = max(new, 1.1 * e)           # must actually get longer
+                    why = "completed but best is only %.0f" % b[3]
+
+                new = min(max(new, 0.4), maxe)
+                if abs(new - e) < 0.01 * e:
+                    print("  level %d: exposure cannot move past %.1f us -- taking the "
+                          "best found" % (level, e))
+                    break                             # nothing left to adjust
+                restarts += 1
+                if restarts > 16:
+                    print("  level %d: gave up after 16 restarts at %.1f us"
+                          % (level, e))
                     break
-                # A big square can rail the sensor, and two railed tiles cannot be
-                # told apart -- so back the exposure off and do the level again.
-                new = max(20.0, expo_us[0] / 4.0)
-                print("  level %d saturated (best %.0f) -- exposure %.0f -> %.0f us"
-                      % (level, b[3], expo_us[0], new))
                 set_expo(new)
-                samples[:] = [s for s in samples if s[2] != size]
+                measure_dark()
+                print("  level %d: %s -- exposure %.1f -> %.1f us, floor %.0f, "
+                      "scan restarts" % (level, why, e, expo_us[0], dark[0]))
+                samples[:] = [q for q in samples if q[2] != size]
+            b = max(lvl, key=lambda t: t[3])
             best = b
             print("  level %d: square %d px -> best (%d,%d) mean %.2f  [%d positions]"
                   % (level, size, b[0], b[1], b[3], len(lvl)))
             if size <= a.size:
                 break
-            x0, y0 = b[0], b[1]
-            x1, y1 = b[0] + size, b[1] + size
+            # Search the winning tile PLUS half a tile of margin on every side. Refining
+            # strictly inside the winner cannot follow a peak that sits on its edge --
+            # and the coarse tiles are integrals over a wide area, so the winner's
+            # centre is not where the peak has to be.
+            m = size // 2
+            x0, y0 = max(0, b[0] - m), max(0, b[1] - m)
+            x1, y1 = min(DW, b[0] + size + m), min(DH, b[1] + size + m)
             size = max(a.size, size // 2)
     except KeyboardInterrupt:
         print("\ninterrupted")
@@ -370,14 +549,19 @@ def main():
         print("\nthe square is left on screen at the winning position.")
     print("wrote %s" % a.out)
 
-    wr(ser, R_ROICTL, 0x80)
+    wr(ser, R_ROICTL, 0x00)
     set_delay(ser, 0)
     ser.close()
     if live:
         print("close the plot window to exit.")
         live[0].ioff()
         live[0].show()
-    root.destroy()
+    # Closing the plot window tears down the interpreter both windows share, so by
+    # the time we get here the Toplevel may already be gone. Not an error.
+    try:
+        root.destroy()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

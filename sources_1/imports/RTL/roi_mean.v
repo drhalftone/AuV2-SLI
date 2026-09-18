@@ -24,12 +24,22 @@
 // picture. `in_black` is exported as a status bit so the host can see whether the
 // chosen row is a black line.
 //
+// A MEAN HIDES SATURATION. 256 pixels averaged can read a comfortable 600 while a
+// handful of them sit clipped at 1023 -- the bright ones pulled down by the rest.
+// So the same pass also counts pixels at or above HI_TH (clipped, or one noise
+// step from it) and at or below LO_TH (clamped at the bottom), and publishes both.
+// A reading is only trustworthy as a MEAN if nhi is zero; nlo should be zero too,
+// since the sensor pedestal keeps a healthy black near 142.
+//
 // npx IS THE HONEST WITNESS. It counts the pixels actually accumulated. It must read
 // exactly 256. A mis-set ROI -- off the end of a line, past the last row, or landing
 // where no kernels arrive -- produces a perfectly plausible small mean and no other
 // symptom. A mean reported without npx == 256 beside it is not a measurement.
 //==============================================================================
-module roi_mean (
+module roi_mean #(
+    parameter [9:0] HI_TH = 10'd1020,    // at/next to the 10-bit ceiling
+    parameter [9:0] LO_TH = 10'd3        // clamped at the floor
+)(
     input  wire        wordclk,      // camera word clock -- the pixel stream domain
     input  wire        rst,
 
@@ -51,6 +61,8 @@ module roi_mean (
     // ---- one result per frame, wordclk domain ----
     output reg  [9:0]  mean,         // sum >> 8
     output reg  [8:0]  npx,          // pixels accumulated; MUST be 256
+    output reg  [8:0]  nhi,          // of those, pixels >= HI_TH (saturated)
+    output reg  [8:0]  nlo,          // of those, pixels <= LO_TH (clamped low)
     output reg  [15:0] fcnt,         // frames since reset -- lets the host see gaps
     output reg         blk,          // the ROI row was a black-reference line
     output reg         done          // 1-cycle pulse, wordclk
@@ -58,6 +70,8 @@ module roi_mean (
     // 256 px x 1023 = 261,888 -> 18 bits. Sized from the worst case, not guessed.
     reg [17:0] sum  = 18'd0;
     reg [8:0]  cnt  = 9'd0;
+    reg [8:0]  hacc = 9'd0;          // running saturated-pixel count
+    reg [8:0]  lacc = 9'd0;          // running clamped-low count
     reg [10:0] row  = 11'd0;
     reg        blk_l = 1'b0;
 
@@ -74,12 +88,21 @@ module roi_mean (
     wire [12:0] ksum = {3'b0, kp0} + {3'b0, kp1} + {3'b0, kp2} + {3'b0, kp3}
                      + {3'b0, kp4} + {3'b0, kp5} + {3'b0, kp6} + {3'b0, kp7};
 
+    // per-kernel counts, 0..8 -- a separate path from ksum, not in series with it
+    wire [3:0] khi = {3'b0, kp0 >= HI_TH} + {3'b0, kp1 >= HI_TH} + {3'b0, kp2 >= HI_TH}
+                   + {3'b0, kp3 >= HI_TH} + {3'b0, kp4 >= HI_TH} + {3'b0, kp5 >= HI_TH}
+                   + {3'b0, kp6 >= HI_TH} + {3'b0, kp7 >= HI_TH};
+    wire [3:0] klo = {3'b0, kp0 <= LO_TH} + {3'b0, kp1 <= LO_TH} + {3'b0, kp2 <= LO_TH}
+                   + {3'b0, kp3 <= LO_TH} + {3'b0, kp4 <= LO_TH} + {3'b0, kp5 <= LO_TH}
+                   + {3'b0, kp6 <= LO_TH} + {3'b0, kp7 <= LO_TH};
+
     always @(posedge wordclk) begin
         done <= 1'b0;
 
         if (rst) begin
             sum <= 18'd0; cnt <= 9'd0; row <= 11'd0; fcnt <= 16'd0;
             mean <= 10'd0; npx <= 9'd0; blk <= 1'b0; blk_l <= 1'b0;
+            hacc <= 9'd0; lacc <= 9'd0; nhi <= 9'd0; nlo <= 9'd0;
         end else begin
             // ---- row tracking -------------------------------------------------
             // frame_start and line_start pulse together on the first line, so the
@@ -96,8 +119,10 @@ module roi_mean (
 
             // ---- accumulate ---------------------------------------------------
             if (take) begin
-                sum <= sum + {5'b0, ksum};
-                cnt <= cnt + 9'd8;
+                sum  <= sum + {5'b0, ksum};
+                cnt  <= cnt + 9'd8;
+                hacc <= hacc + {5'b0, khi};
+                lacc <= lacc + {5'b0, klo};
             end
 
             // ---- publish ------------------------------------------------------
@@ -109,15 +134,21 @@ module roi_mean (
                 if (take) begin
                     mean <= (sum + {5'b0, ksum}) >> 8;
                     npx  <= cnt + 9'd8;
+                    nhi  <= hacc + {5'b0, khi};
+                    nlo  <= lacc + {5'b0, klo};
                 end else begin
                     mean <= sum >> 8;
                     npx  <= cnt;
+                    nhi  <= hacc;
+                    nlo  <= lacc;
                 end
                 blk  <= blk_l;
                 fcnt <= fcnt + 16'd1;
                 done <= 1'b1;
                 sum  <= 18'd0;
                 cnt  <= 9'd0;
+                hacc <= 9'd0;
+                lacc <= 9'd0;
             end
         end
     end

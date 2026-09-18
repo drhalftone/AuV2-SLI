@@ -122,7 +122,7 @@ def main():
     set_delay(ser, want)
     got, ok = wait_delay(ser, want)
     if not ok:
-        wr(ser, R_ROICTL, 0x80); ser.close()
+        wr(ser, R_ROICTL, 0x00); ser.close()
         sys.exit(f"delay write did not land: asked {want} ticks, register holds {got}")
     wr(ser, R_ROICTL, 0xC0)
     time.sleep(0.4)
@@ -179,7 +179,7 @@ def main():
         ser.reset_input_buffer()
         pr = collect(ser, 20, timeout=6.0)
         if not pr:
-            wr(ser, R_ROICTL, 0x80); ser.close()
+            wr(ser, R_ROICTL, 0x00); ser.close()
             sys.exit("PRE-FLIGHT FAILED: no camera frames arrived at all.")
         ptlp = collections.Counter(t for m, n, t, c in pr).most_common(1)[0][0]
         pgot = (ptlp >> probe_shift) & 0xFF
@@ -189,7 +189,7 @@ def main():
     distinct = len(set(t for _l, t, _g in seen_probe))
     wrong = [p for p in seen_probe if p[2] != p[0]]
     if distinct < 3 or wrong:
-        wr(ser, R_ROICTL, 0x80); ser.close()
+        wr(ser, R_ROICTL, 0x00); ser.close()
         if distinct < 3:
             sys.exit(f"PRE-FLIGHT FAILED: the TLP took only {distinct} distinct "
                      f"value(s) across commanded 0/128/255. It is NOT tracking the "
@@ -353,7 +353,7 @@ def main():
     except KeyboardInterrupt:
         print("\ninterrupted -- everything captured so far is already written")
     finally:
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         wr(ser, R_IMPLVL, 255)
         set_delay(ser, 0)
         ser.close()

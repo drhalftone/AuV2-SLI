@@ -106,6 +106,7 @@ module usb_link #(
     output wire [7:0]  roi_row8,       // 0x19
     input  wire [9:0]  roi_mean_i,     // from cam_frame_ft, clk100 domain
     input  wire [8:0]  roi_npx_i,
+    input  wire [15:0] roi_sat_i,      // {saturated px, clamped-low px} in the ROI
     input  wire [15:0] roi_fcnt_i,
     input  wire        roi_blk_i,
     input  wire        roi_valid_i,    // 1-cycle pulse, one per camera frame
@@ -419,7 +420,7 @@ module usb_link #(
         .clk(clk100),
         .go(roi_valid_i & roi_en & ~c_active & ~owner),
         .mean(roi_mean_i), .npx(roi_npx_i),
-        .tlp(roi_tlp_i), .tcnt(roi_tcnt_i),
+        .tlp(roi_tlp_i), .tcnt(roi_tcnt_i), .sat(roi_sat_i),
         .tx_data(rl_data), .tx_send(rl_send), .tx_busy(s_tx_busy), .busy(rl_busy)
     );
 

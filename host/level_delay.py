@@ -224,7 +224,7 @@ def main():
     finally:
         wr(ser, R_IMPLVL, 0)
         wr(ser, R_IMPLVL2, 0)
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         set_delay(ser, 0)
         ser.close()
         fh.close()

@@ -293,6 +293,8 @@ architecture Behavioral of Au2_SLI is
     signal roi_phase_w : std_logic_vector(2 downto 0) := (others => '0');
     signal roi_tlp_w   : std_logic_vector(23 downto 0) := (others => '0');
     signal roi_tcnt_w  : std_logic_vector(7 downto 0) := (others => '0');
+    -- {saturated px, clamped-low px} in the ROI, per frame. WITH_CAM=2 only.
+    signal roi_sat_w   : std_logic_vector(15 downto 0) := (others => '0');
     signal expo_uart_w    : std_logic_vector(15 downto 0) := (others => '0');
     signal expo_uart_we_w : std_logic := '0';
     signal gldly_uart_w    : std_logic_vector(23 downto 0) := (others => '0');
@@ -600,6 +602,7 @@ architecture Behavioral of Au2_SLI is
                roi_phase_i    : in  STD_LOGIC_VECTOR(2 downto 0);
                roi_tlp_i      : in  STD_LOGIC_VECTOR(23 downto 0);
                roi_tcnt_i     : in  STD_LOGIC_VECTOR(7 downto 0);
+               roi_sat_i      : in  STD_LOGIC_VECTOR(15 downto 0);
                expo_uart      : out STD_LOGIC_VECTOR(15 downto 0);
                expo_uart_we   : out STD_LOGIC;
                gldly_uart     : out STD_LOGIC_VECTOR(23 downto 0);
@@ -902,6 +905,7 @@ architecture Behavioral of Au2_SLI is
                roi_phase_o    : out std_logic_vector(2 downto 0);
                roi_tlp_o      : out std_logic_vector(23 downto 0);
                roi_tcnt_o     : out std_logic_vector(7 downto 0);
+               roi_sat_o      : out std_logic_vector(15 downto 0);
                cam_stat_o     : out std_logic_vector(223 downto 0);
                cam_stat_tog_o : out std_logic;
                cam_clkout_p, cam_clkout_n : in  std_logic;
@@ -1107,7 +1111,7 @@ begin
         roi_mean_i  => roi_mean_w, roi_npx_i => roi_npx_w, roi_fcnt_i => roi_fcnt_w,
         roi_blk_i   => roi_blk_w,  roi_valid_i => roi_valid_w,
         roi_phase_i => roi_phase_w, roi_tlp_i => roi_tlp_w,
-        roi_tcnt_i => roi_tcnt_w,
+        roi_tcnt_i => roi_tcnt_w, roi_sat_i => roi_sat_w,
         expo_uart   => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart  => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
@@ -1760,6 +1764,7 @@ i_cam_frame_ft : cam_frame_ft
     -- measurement and the host must not read it as one: the trigger-ordinal
     -- check is a WITH_CAM=2 feature.
     roi_tcnt_w <= (others => '0');
+    roi_sat_w  <= (others => '0');
 end generate gen_cam;
 
 -- ===================================================================
@@ -1798,7 +1803,7 @@ i_cam_roi_min : cam_roi_min
         roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,
         roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
         roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w,
-        roi_tcnt_o => roi_tcnt_w,
+        roi_tcnt_o => roi_tcnt_w, roi_sat_o => roi_sat_w,
         cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
         cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,
@@ -1856,6 +1861,7 @@ gen_nocam: if WITH_CAM = 0 generate
     roi_fcnt_w <= (others => '0'); roi_blk_w <= '0'; roi_valid_w <= '0';
     roi_phase_w <= (others => '0'); roi_tlp_w <= (others => '0');
     roi_tcnt_w <= (others => '0');
+    roi_sat_w  <= (others => '0');
     -- rpl_byte_w / rpl_we_w are OUTPUTS of the control block above; driving them
     -- here too created a second driver. The Ft+ readback path is never gated out.
 end generate gen_nocam;

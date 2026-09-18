@@ -355,7 +355,7 @@ def main():
     except KeyboardInterrupt:
         print("\ninterrupted -- writing what was captured")
     finally:
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         set_delay(ser, 0)
         ser.close()
 

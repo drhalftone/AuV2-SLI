@@ -363,7 +363,7 @@ if {[llength $tlp_src] >= 8 && [llength $tlp_dst] >= 8} {
 # shape and would fail the same way the first time placement moves, in some build
 # that has nothing to do with it -- which is precisely how the TLP path was found.
 set roi_src [get_cells -quiet -hier -regexp {.*roi_hold_w_reg\[[0-9]+\]}]
-set roi_dst [get_cells -quiet -hier -regexp {.*roi_(mean|npx|fcnt|blk)_o_reg(\[[0-9]+\])?}]
+set roi_dst [get_cells -quiet -hier -regexp {.*roi_(mean|npx|fcnt|blk|sat)_o_reg(\[[0-9]+\])?}]
 if {[llength $roi_src] >= 8 && [llength $roi_dst] >= 4} {
     set_max_delay -datapath_only -from $roi_src -to $roi_dst 10.000
     puts "### ROI CDC max_delay applied ([llength $roi_src] src -> [llength $roi_dst] dst)"

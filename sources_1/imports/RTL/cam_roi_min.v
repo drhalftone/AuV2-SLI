@@ -129,6 +129,9 @@ module cam_roi_min #(
     //---- one result per camera frame, clk domain -----------------------------
     output reg  [9:0]  roi_mean_o  = 10'd0,
     output reg  [8:0]  roi_npx_o   = 9'd0,
+    // {saturated pixels, clamped-low pixels} in the ROI, each capped at 255 (a
+    // full 256 reads FF). The mean is only a valid mean when the top byte is 0.
+    output reg  [15:0] roi_sat_o   = 16'd0,
     output reg  [15:0] roi_fcnt_o  = 16'd0,
     output reg         roi_blk_o   = 1'b0,
     output reg         roi_valid_o = 1'b0,
@@ -344,6 +347,7 @@ module cam_roi_min #(
 
     wire [9:0]  roi_mean_w;
     wire [8:0]  roi_npx_w;
+    wire [8:0]  roi_nhi_w, roi_nlo_w;
     wire [15:0] roi_fcnt_w;
     wire        roi_blk_w, roi_done_w;
 
@@ -356,6 +360,7 @@ module cam_roi_min #(
         .line_start(line_start), .frame_start(frame_start),
         .frame_end(frame_end), .in_black(in_black),
         .mean(roi_mean_w), .npx(roi_npx_w), .fcnt(roi_fcnt_w),
+        .nhi(roi_nhi_w), .nlo(roi_nlo_w),
         .blk(roi_blk_w), .done(roi_done_w)
     );
 
@@ -529,10 +534,14 @@ module cam_roi_min #(
     // period, five orders of magnitude longer than the two sync flops.
     //   [9:0] mean  [25:10] fcnt  [34:26] npx  [35] blk  [38:36] phase
     //   [40:39] tlp ring index  [48:41] trigger ordinal
-    reg [48:0] roi_hold_w = 49'd0;
+    //   [57:49] saturated pixels  [66:58] clamped-low pixels
+    // The counts ride in the SAME held word as the mean, so they cannot be paired
+    // with a neighbouring frame's mean on the far side of the crossing.
+    reg [66:0] roi_hold_w = 67'd0;
     reg        roi_tog_w  = 1'b0;
     always @(posedge wordclk) if (roi_done_w) begin
-        roi_hold_w <= {roi_tcn_w, roi_ix_w, roi_ph_w, roi_blk_w,
+        roi_hold_w <= {roi_nlo_w, roi_nhi_w,
+                       roi_tcn_w, roi_ix_w, roi_ph_w, roi_blk_w,
                        roi_npx_w, roi_fcnt_w, roi_mean_w};
         roi_tog_w  <= ~roi_tog_w;
     end
@@ -556,6 +565,8 @@ module cam_roi_min #(
             // will not be overwritten for another 27.
             roi_tlp_o   <= tlp_sel;
             roi_tcnt_o  <= roi_hold_w[48:41];
+            roi_sat_o   <= {roi_hold_w[57] ? 8'hFF : roi_hold_w[56:49],
+                            roi_hold_w[66] ? 8'hFF : roi_hold_w[65:58]};
         end
     end
 

@@ -56,6 +56,7 @@ R_ROICTL = 0x17
 # builds that report all three. Both are accepted so this works either side of
 # that change; the width tells us which we are talking to.
 LINE_RGB = re.compile(b"R=([0-9A-F]{3}),([0-9A-F]{3}),([0-9A-F]{6}),([0-9A-F]{2})"
+                      + b"(?:,([0-9A-F]{2}),([0-9A-F]{2}))?"   # ,hh,ll: see frame_sweep.LINE
                       + bytes([13, 10]))
 LINE_RED = re.compile(b"R=([0-9A-F]{3}),([0-9A-F]{3}),([0-9A-F]{2}),([0-9A-F]{2})"
                       + bytes([13, 10]))

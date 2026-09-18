@@ -629,6 +629,8 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 | `sli_frame_sweep.py` | **The projector timing sweep.** A whole frame at 1 µs with the fringes cycling — this is what 3.1 was measured with |
 | `plot_white_window.py` | Draws that sweep with the emission window, gaps and recommended delay/exposure, all recomputed from the CSV |
 | `roi_scope.py`, `tlp_check.py`, `hdmi_ramp.py` | Rolling ROI scope; transmitted-pixel check; drive the projector from the PC's HDMI |
+| `align_roi.py` | Find the projector pixels that land on the camera ROI — shrinking white square, exposure held under 600 ADU *(step 1 of [14.2](#142-measuring-the-three-responses--a-square-with-a-matched-background))* |
+| `roi_integral.py` | One frame's light at the ROI summed from 30 µs slices, for levels a single exposure would clip |
 
 > After a board reset, `edid_merge` needs a few seconds to finish reading the DDC. Until it does,
 > `edid_ok` is 0 and `SUPP` is empty while `MODE` still reads the power-up default — a half-state
@@ -835,23 +837,107 @@ projector has finished manipulating it.
 | RTL | `corr` becomes **three** 256-entry tables, or one 256 x 24. Today `pat_out` is a single value fed to all three channels, so this is the blocking change. The lookup must stay combinational (a registered read applies each pixel's correction to the next one). |
 | Host | Upload three tables instead of one; extend `upload_corr.py` and its self-test. |
 
-### 14.2 Measuring the three responses
+### 14.2 Measuring the three responses — a square with a matched background
 
 Nothing here needs full-frame capture — the 16x16 ROI is enough, because the quantity wanted is a
-*transfer curve*, not an image.
+*transfer curve*, not an image. The curve is measured with a **small square of known level** placed
+on exactly the projector pixels the ROI sees, so every reading belongs to one commanded value.
 
-1. Fit the mount, insert one filter.
-2. Set the genlock delay and exposure to span the **whole** emission window from
-   [3.1](#31-where-the-light-actually-is--measured-on-an-optoma-ml750st) — 540 us and 6175 us. This
-   is a radiometric measurement: it wants the total light per frame, not a slice of it.
-3. Project white fringes, horizontal (the ROI rides the fringe in that orientation, which is what
-   gives a large signal), and walk the **eight phase steps** with `sli_background.py --octet`.
-   Fitting a sinusoid to those eight readings gives amplitude, offset and phase for that filter.
-4. Repeat over a ramp of commanded grey levels.
-5. Repeat for each filter.
+**Why the square alone is not enough.** The sensor is bare, 17 mm in front of the lens, so the ROI
+also collects light from a wide ring of projector pixels *around* the ones it is aligned to. A square
+on a black screen therefore sits in a darker surround than the same pixels do during a real SLI
+scan, and its curve would be measured at the wrong background. The fix is to project **white
+everywhere except a black hole around the ROI**, and size the hole so the background the ROI sees
+equals the background of the high-frequency SLI sequence. Measuring that SLI background is part of
+the procedure, not a one-off.
 
-That yields, per channel, intensity against commanded grey — three curves that will not agree in
+#### Procedure
+
+> **Do not move anything once step 1 has started.** The projector ROI, the SLI background and the
+> hole size all depend on where the bare sensor sits relative to the projector lens. Bumping or
+> repositioning the camera, the projector or the mount, or swapping the mount, invalidates all
+> three. This has happened: after the camera and projector were physically repositioned, the
+> background level visibly changed. If anything moves, **start over from step 1**; do not carry
+> old numbers forward. Changing the filter does not move the ROI, but it does mean redoing steps 2–4.
+
+0. **Set up.** Fit the filter mount and insert one filter. The PC drives 800x600@120 over HDMI with
+   the FPGA passing it through (SLICTL `0x00`, ROICTL bit 7 `imp_en` **off** — it replaces the HDMI
+   picture). After any display mode change, give the projector a minute before trusting a level:
+   a black screen at the full-window exposure slid from 662 to 515 ADU over 70 s after Windows
+   switched 1280x720@60 back to 800x600@120, whereas a content change settles within 0.2 s.
+
+1. **Find the projector ROI** — the projector pixels that land on the camera ROI.
+
+       python -u host/align_roi.py COM6 --set-mode --live
+
+   A white square on black, starting at 256 px and halving to 16 px, keeps the brightest tile at each
+   size. Any reading over `--ceiling` (600 ADU) or any saturated pixel shortens the exposure and
+   restarts that size. On this rig four runs agreed within 8 px: centre **(388, 502)**, used as a
+   32x32 square at (372, 486).
+
+2. **Measure the SLI background** — the target level.
+
+       python -u host/sli_background.py COM6 --octet 2 --delay 8000 --expo 5 --scope --live
+
+   Octet 2 is the highest-frequency set (horizontal, white), frozen and repeating. The probe is a
+   ~5 µs exposure at 8000 µs, after the last light of the frame
+   ([3.1](#31-where-the-light-actually-is--measured-on-an-optoma-ml750st)). The target is the
+   **mean over the eight phases**. With the 440 nm filter the eight phases read 158.9–162.9,
+   average **160.8 ADU**. That 4 ADU swing is light from fringe pixels near the ROI and changes with
+   phase, which is why the target is the eight-phase average and not any one pattern. *Why a
+   pattern-dependent level exists after the last measured light at all is not yet explained.*
+
+3. **Size the hole** — full white, black square hole centred on the projector ROI, same 8000 µs /
+   5 µs probe. Grow the hole until the ROI mean equals the target from step 2. With the 440 nm
+   filter:
+
+   | Full-white screen, black hole | White left | ROI mean |
+   |---|---|---|
+   | none | 100 % | 180.0 |
+   | 32x32 | 99.8 % | 180.0 |
+   | 64x64 | 99.1 % | 179.6 |
+   | 128x128 | 96.6 % | 175.0 |
+   | 160x160 | 94.7 % | 169.6 |
+   | 176x176 | 93.5 % | 163.9 |
+   | **184x184** | **92.9 %** | **160.3** (target 160.8) |
+   | 192x192 | 92.3 % | 156.5 |
+
+   The response is steep between 128 and 192 px — step in 8 px there. *This step was done by hand
+   (a live reader switching scenes); there is no tool for it in `host/` yet.*
+
+4. **Measure the curve.** Keep the white surround and hole, put the test square at the projector ROI
+   inside the hole, switch to the full emission-window exposure (540 µs delay, 6175 µs), and step the
+   square's level 0..255. *Not yet checked: whether white surround + square fits in 10 bits at that
+   exposure. If it clips, sum 30 µs slices with `roi_integral.py` instead of one long exposure.*
+
+5. **Repeat steps 2–4 for each filter.** The target and the hole size are specific to the filter.
+   If the camera, projector or mount has moved at any point, go back to step 1 instead.
+
+The numbers quoted in these steps and in the table below are from one positioning of the rig
+(Sep 15, 2026). They show the size of the effects, but they are **not** values to reuse; every
+setup measures its own.
+
+That yields, per channel, intensity against commanded level — three curves that will not agree in
 gain, in offset, or in shape.
+
+#### What the procedure rests on — measured, 440 nm filter, 8000 µs / 4.88 µs probe
+
+| Projected | Mean picture level | ROI mean |
+|---|---|---|
+| black | 0 % | 153.9 |
+| white 32x32 square at the ROI (blue square: 153.9) | 0.2 % | 154.0 |
+| square + white band over the top 150 px | 25 % | 154.0 |
+| square + white band over the top 300 px | 50 % | 154.0 |
+| high-frequency fringes, eight-phase average | ~50 % | 160.8 |
+| full white | 100 % | 180.0 |
+
+- **The average picture level does not set the background.** Half the screen white, kept away from
+  the ROI, adds nothing, yet the fringes at the same average add 7 ADU and full white adds 26.
+- **The added light is local.** Blacking out only 7 % of the screen around the ROI removes most of
+  it. It comes mainly from a **ring 64–96 px from the ROI centre**; the centre 64x64 contributes
+  almost nothing (hole 32 → 64 changes 0.4 ADU; 128 → 192 changes 18.5).
+- **A small square does not disturb the background.** Black and a 32x32 square read the same, so
+  the square's level can be stepped without moving the background under it.
 
 ### 14.3 Turning three curves into a LUT
 

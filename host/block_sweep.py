@@ -230,7 +230,7 @@ def main():
         print("must agree at delay 0; they differ by %.1f ADU. The five numbers are not" % gap)
         print("in the order the block claims -- do not trust a sweep taken like this.")
         if not a.force:
-            wr(ser, R_ROICTL, 0x80); ser.close()
+            wr(ser, R_ROICTL, 0x00); ser.close()
             sys.exit("refusing to sweep (pass --force to override)")
         print("--force given: continuing anyway.")
     else:
@@ -248,7 +248,7 @@ def main():
     print(f"estimated      {npts*(a.blocks+a.settle)*5/(1e6/T_us)/60:.1f} min\n")
 
     if a.check:
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         ser.close()
         return
 
@@ -356,7 +356,7 @@ def main():
     except KeyboardInterrupt:
         print("\ninterrupted -- writing what was captured")
     finally:
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         set_delay(ser, 0)
         ser.close()
 

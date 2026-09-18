@@ -426,7 +426,7 @@ def main():
         ser.timeout = 0.05
         wr(ser, R_SLICTL, 0x00)          # release the switches and the mode pin
         wr(ser, R_CAMSIM, 0x00)          # give the ready line back to the pin
-        wr(ser, R_ROICTL, 0x80)
+        wr(ser, R_ROICTL, 0x00)
         set_delay(ser, 0)
         ser.close()
         if fh_raw:
