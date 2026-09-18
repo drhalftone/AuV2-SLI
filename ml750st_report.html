@@ -655,6 +655,164 @@
   </ul>
 </section>
 
+<section class="col">
+  <p class="eyebrow">ADDENDUM &middot; 18 SEPTEMBER 2026</p>
+  <h2>Per-channel LUT: blue, measured and corrected</h2>
+  <p>README &sect;14 asks for a LUT per colour channel so a commanded grey level
+  produces equal <em>emitted</em> light across R, G and B, which the projector
+  does not do on its own. This addendum builds and verifies that LUT for the
+  blue channel, and documents two methodology bugs that made the first
+  verification attempt unreadable.</p>
+  <p>The scene: a white field with a 184&times;184 black hole cut around the
+  camera ROI &mdash; sized so the ROI's background reads the same as the
+  high-frequency SLI scan's own background &mdash; and a 32&times;32 target
+  square on the bottom edge of the hole. The square's commanded level
+  <b>W</b> sets R&nbsp;=&nbsp;G&nbsp;=&nbsp;W and, once corrected, a different
+  value on B. Each measurement is a 20&nbsp;&micro;s slice at each of 416
+  delays tiling the whole 8325&nbsp;&micro;s frame, summed with no floor
+  subtraction &mdash; <code>sum(y)</code>, nothing else.</p>
+</section>
+
+<section>
+  <p class="eyebrow">METHOD FIX 1 OF 2</p>
+  <h2>Median, not mean, across the 6 frames per delay point</h2>
+  <p>Each delay point reads 6 camera lines and combines them into one value.
+  Averaging them let a single glitched line drag the whole point &mdash; caught
+  by running the identical scene twice, minutes apart, at two different square
+  levels and finding the two traces <strong>uncorrelated</strong>
+  (r&nbsp;=&nbsp;0.036), each with a narrow single-bin "peak" at a delay the
+  other trace didn't share.</p>
+  <div class="finding">
+    <p>Switching the 6-frame combine from mean to median fixed it immediately
+    &mdash; the same levels, remeasured, came out in the right order and by a
+    sensible margin.</p>
+  </div>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>square (R,G,B)</th><th>combine</th><th>sum(y)</th><th>note</th></tr></thead>
+    <tbody>
+      <tr><td>W=153 (153,153,214)</td><td>mean of 6</td><td>&mdash;</td><td>uncorrelated with W=255's trace, r=0.036</td></tr>
+      <tr><td>W=255 (255,255,255)</td><td>mean of 6</td><td>&mdash;</td><td>same pair</td></tr>
+      <tr><td>W=153 (153,153,214)</td><td><strong>median of 6</strong></td><td>67807.5</td><td>&mdash;</td></tr>
+      <tr><td>W=204 (204,204,236)</td><td><strong>median of 6</strong></td><td>69273.0</td><td>+1465.5 vs W=153</td></tr>
+      <tr><td>W=255 (255,255,255)</td><td><strong>median of 6</strong></td><td>70993.0</td><td>+1720.0 vs W=204</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">METHOD FIX 2 OF 2</p>
+  <h2>Sweep levels in bisection order, not 0&rarr;255</h2>
+  <p>A sequential sweep visits level 0 first and level 255 last by
+  construction, which makes elapsed time and commanded level perfectly
+  confounded over the 27&nbsp;minutes a full 16-level sweep takes. The first
+  full verification run showed exactly that failure:
+  <code>corr(total,&nbsp;level)</code> and
+  <code>corr(total,&nbsp;elapsed&nbsp;time)</code> were both &minus;0.946,
+  identically, and removing a linear time trend left <strong>zero</strong>
+  residual correlation with level &mdash; level 255 read <em>below</em>
+  level 0.</p>
+  <p>The fix visits the endpoints first, then keeps bisecting the remaining
+  gaps &mdash; 0, 255, then the midpoint, then quarters, then eighths &mdash;
+  so a drift shows up as scatter around the level-vs-light curve instead of
+  aliasing into a fake slope:</p>
+  <p style="font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:13px; color:var(--body)">
+  0, 255, 119, 51, 187, 17, 85, 153, 221, 34, 68, 102, 136, 170, 204, 238</p>
+</section>
+
+<section>
+  <p class="eyebrow">RESULT</p>
+  <h2>The measured curve, the LUT, and the check</h2>
+  <figure>
+    <div class="figbody">
+      <svg viewBox="0 0 780 400" role="img" aria-label="Blue tone curve before and after LUT correction">
+        <line x1="60" y1="360" x2="760" y2="360" stroke="var(--rule)" stroke-width="1"/>
+        <line x1="60" y1="20" x2="60" y2="360" stroke="var(--rule)" stroke-width="1"/>
+        <polyline points="60.0,341.8 106.7,337.7 153.3,338.2 200.0,338.7 246.7,337.6 293.3,333.5 340.0,327.1 386.7,316.4 433.3,302.5 480.0,285.9 526.7,265.8 573.3,240.7 620.0,211.0 666.7,179.2 713.3,140.2 760.0,95.8"
+                  fill="none" stroke="var(--faint)" stroke-width="2" stroke-dasharray="5 4"/>
+        <polyline points="60.0,322.9 106.7,304.6 153.3,288.6 200.0,267.8 246.7,255.6 293.3,230.2 340.0,211.7 386.7,188.9 433.3,171.9 480.0,155.2 526.7,135.6 573.3,116.2 620.0,99.6 666.7,84.0 713.3,59.3 760.0,38.2"
+                  fill="none" stroke="var(--led-b)" stroke-width="2.4"/>
+        <text x="60" y="378" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono, monospace">0</text>
+        <text x="745" y="378" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono, monospace">255</text>
+        <text x="400" y="392" font-size="11" fill="var(--faint)" font-family="IBM Plex Mono, monospace" text-anchor="middle">commanded level W</text>
+      </svg>
+    </div>
+    <div class="legend">
+      <span><i style="background:var(--faint)"></i>before correction (raw, dashed)</span>
+      <span><i style="background:var(--led-b)"></i>after LUT (R=G=W, B=LUT(W))</span>
+    </div>
+    <figcaption><b>The LUT flattens the bottom and steepens the top.</b> Before
+    correction, roughly the bottom half of the level range (W&nbsp;&lt;&nbsp;150)
+    produces almost no additional blue light &mdash; the flat/dipping stretch on
+    the left of the dashed curve. The LUT concentrates the usable input range
+    there and compresses the top, giving the solid curve a closer to constant
+    slope. Both curves measured with the median fix; the raw curve was swept
+    sequentially (it was already in hand before the ordering fix), the
+    corrected curve in bisection order.</figcaption>
+  </figure>
+
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>nominal W</th><th>R</th><th>G</th><th>B (LUT)</th><th>raw sum(y)</th><th>corrected sum(y)</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>62804.0</td><td>63302.0</td></tr>
+      <tr><td>17</td><td>17</td><td>17</td><td>109</td><td>62912.2</td><td>63786.0</td></tr>
+      <tr><td>34</td><td>34</td><td>34</td><td>131</td><td>62899.3</td><td>64207.0</td></tr>
+      <tr><td>51</td><td>51</td><td>51</td><td>149</td><td>62884.8</td><td>64756.0</td></tr>
+      <tr><td>68</td><td>68</td><td>68</td><td>163</td><td>62913.8</td><td>65077.0</td></tr>
+      <tr><td>85</td><td>85</td><td>85</td><td>175</td><td>63023.7</td><td>65746.0</td></tr>
+      <tr><td>102</td><td>102</td><td>102</td><td>186</td><td>63192.5</td><td>66236.0</td></tr>
+      <tr><td>119</td><td>119</td><td>119</td><td>196</td><td>63474.5</td><td>66837.0</td></tr>
+      <tr><td>136</td><td>136</td><td>136</td><td>205</td><td>63840.0</td><td>67285.0</td></tr>
+      <tr><td>153</td><td>153</td><td>153</td><td>214</td><td>64276.7</td><td>67725.5</td></tr>
+      <tr><td>170</td><td>170</td><td>170</td><td>222</td><td>64808.7</td><td>68242.0</td></tr>
+      <tr><td>187</td><td>187</td><td>187</td><td>229</td><td>65469.3</td><td>68754.5</td></tr>
+      <tr><td>204</td><td>204</td><td>204</td><td>236</td><td>66252.3</td><td>69190.5</td></tr>
+      <tr><td>221</td><td>221</td><td>221</td><td>243</td><td>67092.3</td><td>69602.5</td></tr>
+      <tr><td>238</td><td>238</td><td>238</td><td>249</td><td>68119.2</td><td>70254.0</td></tr>
+      <tr><td>255</td><td>255</td><td>255</td><td>255</td><td>69290.0</td><td>70810.0</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:12.5px;color:var(--faint)">Table sorted by level for
+  reading; the corrected column was actually measured in the bisection order
+  above.</p>
+
+  <p><strong>The check is clean.</strong> The corrected column increases
+  monotonically end to end, with no reversal anywhere in the sweep &mdash;
+  against the first attempt (mean combine, sequential order), where the
+  level-255 point read <em>below</em> level 0. The level-0 repeat at the end
+  of the run (last of the 17 points measured) came back at 62980.5 against
+  63302.0 at the start: a drift of 321.5 over the full 27-minute run, about 4%
+  of the 7829.5 total span &mdash; small enough that the curve is readable
+  without drift correction.</p>
+
+  <div class="caveat">
+    <span class="tag">Bottom clamp before inverting</span>
+    <p>The raw curve is not quite monotonic at the very bottom &mdash; level 51
+    (62884.8) reads slightly below level 34 (62899.3) and level 17 (62912.2).
+    Levels 0&ndash;51 were pinned to the sweep minimum before inverting the
+    curve into a LUT, since an inverted non-monotonic curve is not a function.
+    The dip is small (&lt;30 ADU&middot;slice against a span of 6486) and is
+    most likely sub-threshold noise around the point where the blue LED's
+    drive first produces any measurable extra light.</p>
+  </div>
+</section>
+
+<section class="col">
+  <p class="eyebrow">NEXT</p>
+  <h2>Repeat for green and red</h2>
+  <p>Same scene, same slice-and-sum method, same median combine, same
+  bisection order &mdash; only the filter and two per-filter numbers from
+  README &sect;14.2 change: the SLI-background target and the matched hole
+  size. Blue reused its own filter's hole size (184&times;184) without
+  re-measuring it for this run; red and green have not had that measurement
+  done at all yet (README &sect;14.2 steps 2&ndash;3), so each needs its own
+  background target and hole size found first &mdash; or a documented decision
+  to reuse blue's 184&times;184 as an approximation, the way this run did.</p>
+</section>
+
 <footer>
   Optoma ML750ST &middot; Alchitry Pt V2 (XC7A100T) &middot; PYTHON 1300 mono, gain &times;1.00, ROI 16&times;16 at sensor centre &middot; all figures ADU, 10-bit
 </footer>
