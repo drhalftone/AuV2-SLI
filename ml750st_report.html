@@ -273,7 +273,7 @@
   <div class="col">
   <div class="caveat">
     <span class="tag">Not yet reconciled</span>
-    <p>The hole below was sized against the 440-labelled target of 160.8&nbsp;ADU. The tone sweeps in this report are file-labelled 420, whose own SLI background reads 153.8. Whether a 184&times;184 hole reproduces <em>that</em> run&rsquo;s background was not measured. Which physical filter each label refers to, and whether it is the one in the mount, needs confirming; the target should be re-measured for the filter actually installed before the hole is trusted.</p>
+    <p>The hole below was sized against the 440-labelled target of 160.8&nbsp;ADU. The tone sweeps in this report are file-labelled 420, whose own SLI background reads 153.8. Whether a 184&times;184 hole reproduces <em>that</em> run&rsquo;s background was not measured. The 440 label is a separate 440&nbsp;nm filter; the 420 label is the 420&nbsp;nm filter used for the tone sweeps. The target should be re-measured for the filter actually installed before the hole is trusted.</p>
   </div>
   <h3>Step 2 &mdash; the hole</h3>
   <p>Fill the screen with white (255) and cut a black square hole around the ROI, open at the bottom edge. Full white with no hole reads 180.0&nbsp;ADU at the ROI; growing the hole removes the nearest bright pixels and the reading falls until it equals the target. The response is steep between 128 and 192&nbsp;px, so the last steps are 8&nbsp;px. With the 440-labelled filter, <strong>184&times;184 reads 160.3&nbsp;ADU against a target of 160.8</strong>; 176 reads 163.9 and 192 reads 156.5. This step was done by hand, switching scenes while watching the ROI; there is no tool for it in <code>host/</code> yet.</p>
@@ -302,7 +302,7 @@
   <h2>Align every trace to the first before summing</h2>
   <div class="col">
   <p>Nearly all 416 slices are dark. So the dark <em>floor</em>, not the light, dominates the sum: 1&nbsp;ADU of floor drift moves the total by about 416, while a dim square adds a few hundred. The floor settles by roughly 2.5&nbsp;ADU over the first ~8 minutes of a run, which made W&nbsp;=&nbsp;0 read brighter than W&nbsp;=&nbsp;17 &mdash; the level-0 repeat at the end of that run read 63305 against 65094 at the start.</p>
-  <p>Each trace is shifted in y so its floor lies on the first-measured trace (W&nbsp;=&nbsp;0), using a translation-only iterative closest point: match each point to the reference at the <em>same delay</em>, discard pairs whose residual exceeds 4&nbsp;ADU (those are the lit slices), and step by the <em>mean</em> of the rest. Two variants fail: matching by nearest value across delays pairs a flat floor with itself and finds nothing, and trimming the smallest residuals (or taking a median) keeps the pairs that already agree and returns 0 on data quantised to 0.5&nbsp;ADU.</p>
+  <p>Each trace is shifted in y so its floor lies on the first-measured trace (W&nbsp;=&nbsp;0), using a translation-only iterative closest point: match each point to the reference at the <em>same delay</em>, discard pairs whose residual exceeds 4&nbsp;ADU (those are the lit slices), and step by the <em>mean</em> of the rest, starting from the difference of the two traces&rsquo; 20th-percentile floors (starting from zero finds nothing when a floor is more than 4&nbsp;ADU off, as green&rsquo;s is). Two variants fail: matching by nearest value across delays pairs a flat floor with itself and finds nothing, and trimming the smallest residuals (or taking a median) keeps the pairs that already agree and returns 0 on data quantised to 0.5&nbsp;ADU.</p>
   </div>
   <figure>
     <div class="figbody"><img src="report_figures/fig3_icp_pair.png" alt="W=0 and W=255 traces before and after floor alignment" style="width:100%; max-width:820px; display:block; margin:0 auto"></div>
@@ -387,7 +387,67 @@
   <div class="caveat">
     <span class="tag">The two main windows respond differently</span>
     <p>2440&ndash;3420 keeps rising through W&nbsp;=&nbsp;238. 5880&ndash;6700 has reached 70&ndash;85&nbsp;% of its full value by W&nbsp;=&nbsp;85&ndash;102 and then runs flat. Both are seen through the same filter, so a single LUT can only linearise their <em>sum</em>. The smaller windows switch on at particular levels (580&ndash;900 near W&nbsp;=&nbsp;170, 3580&ndash;4000 near W&nbsp;=&nbsp;136&ndash;170) &mdash; consistent with more than one LED being on at once, which is why the lit set is a union, not blue-only times.</p>
-    <p>Three or four of the seven windows lit at W&nbsp;=&nbsp;255 (580&ndash;860, 2180&ndash;2520, 3720&ndash;3980, and possibly 5660&ndash;5880) fall where the earlier filtered sweeps put <em>green</em> light. Whether that is filter leakage, LED overlap or a different filter than the one assumed has not been settled.</p>
+    <p>Several of the windows lit at W&nbsp;=&nbsp;255 with the 4&nbsp;ADU threshold (580&ndash;860, 2180&ndash;2520, 3720&ndash;3980) fall where the earlier filtered sweeps put <em>green</em> light. That is dim green leaking through the blue filter; the next section separates it from the blue LED&rsquo;s own windows with a second threshold.</p>
+  </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">WHEN EACH LED IS LIT</p>
+  <h2>The emitter windows, from the union over all W</h2>
+  <div class="col">
+  <p>Taking every level of a colour&rsquo;s sweep, aligning each trace to that colour&rsquo;s own W&nbsp;=&nbsp;0 and keeping the largest excess at each delay shows when that LED can be lit. Two tiers separate real emission from everything else: <strong>strong</strong> is more than 30&nbsp;ADU above W&nbsp;=&nbsp;0, <strong>weak</strong> is 3&ndash;30&nbsp;ADU. Blue uses all 15 levels of the v3 run; green (520&nbsp;nm filter) uses only the four levels of its sweep that are valid, W&nbsp;=&nbsp;51, 119, 187 and 255, because a display fault spoiled the rest.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig10_led_windows.png" alt="Blue and green LED lit windows, strong and weak tiers" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>When the blue and green LEDs are lit.</b> Solid: strong tier. Faded: weak tier. Bottom row: the two strong tiers overlaid, red where both are lit. Data: <code>report_figures/data/led_windows_two_tier.csv</code>.</figcaption>
+  </figure>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>LED</th><th>strong windows (&micro;s after vsync)</th><th>slices</th><th>weak windows</th></tr></thead>
+    <tbody>
+      <tr><td>blue</td><td>2740&ndash;3400, 5880&ndash;6700</td><td>74</td><td>580&ndash;1160, 2180&ndash;2740, 3560&ndash;4000, 5180&ndash;5880</td></tr>
+      <tr><td>green</td><td>560&ndash;1160, 2160&ndash;2760, 3580&ndash;4020, 5240&ndash;5900</td><td>115</td><td>0&ndash;560, 1160&ndash;2160, 2760&ndash;3580, 7840&ndash;8320</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="col">
+  <p>The two strong tiers overlap in only 2 slices, at 2740&ndash;2760 and 5880&ndash;5900&nbsp;&micro;s, where blue takes over from green. They match the emitter windows measured earlier through the filters (archived report), which confirms the 520&nbsp;nm filter is passing green and the other is passing blue.</p>
+  <div class="caveat">
+    <span class="tag">What the weak tier is</span>
+    <p><strong>Blue&rsquo;s weak slices are green light leaking through the blue filter:</strong> 110 of the 115 fall inside green&rsquo;s strong windows. This is what the 4&nbsp;ADU lit mask used earlier in this report was picking up.</p>
+    <p><strong>Green&rsquo;s weak slices are floor, not emission.</strong> They fall in the gaps between its windows and at the end of the frame. Green&rsquo;s floor rises with W (+11&nbsp;ADU at W&nbsp;=&nbsp;255 against W&nbsp;=&nbsp;0, blue&rsquo;s only +1), and one y-shift per trace cannot remove a lift that is not constant across the frame. At 3&nbsp;ADU it fills most of the frame, so for green only the strong tier says when the LED is on.</p>
+    <p>Blue is more forgiving: after alignment, nothing across the 15 levels falls below &minus;3&nbsp;ADU and the slices near zero have a standard deviation of 0.23&nbsp;ADU, so 3&nbsp;ADU is safe as the lower bound for blue&rsquo;s <em>total</em> light, while 30 keeps only the LED&rsquo;s own windows.</p>
+  </div>
+  </div>
+</section>
+
+<section>
+  <p class="eyebrow">ALL THREE LEDS</p>
+  <h2>One solid-white sweep per filter shows the whole colour sequence</h2>
+  <div class="col">
+  <p>The whole screen is filled with 255 and the ROI is read at 277 delays of 30&nbsp;&micro;s that tile the frame, once through each filter (<code>host/white_sweep.py</code>): blue 420&nbsp;nm (10&nbsp;nm wide), green 550&nbsp;nm, red 620&nbsp;nm. It takes about a minute per filter and needs no square, hole or LUT, so it is the quickest way to check a filter passes the LED it should.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig11_three_leds.png" alt="Blue, green and red LED windows from solid white sweeps" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>When the blue, green and red LEDs are lit.</b> Top: each trace normalized to its own floor and peak. Bottom: raw ROI median in ADU, with the sensor&rsquo;s clip level dashed. Data: <code>report_figures/data/white_sweep_*.csv</code>.</figcaption>
+  </figure>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>LED / filter</th><th>floor</th><th>peak</th><th>peak above floor</th><th>lit windows above 25% of own range (&micro;s after vsync)</th></tr></thead>
+    <tbody>
+      <tr><td>blue 420&nbsp;nm</td><td>160</td><td>318</td><td>158</td><td>2730&ndash;3150, 6330&ndash;6690</td></tr>
+      <tr><td>green 550&nbsp;nm</td><td>165</td><td>989</td><td>824</td><td>570&ndash;870, 2160&ndash;2550, 3690&ndash;4020, 5640&ndash;5910</td></tr>
+      <tr><td>red 620&nbsp;nm</td><td>157</td><td>988</td><td>831</td><td>1470&ndash;1560, 1740&ndash;2010, 4170&ndash;4980</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="col">
+  <p>No slice is above 25&nbsp;% of its range in more than one colour, so the three LEDs never overlap: any of them is lit for 39&nbsp;% of the frame and none for the other 61&nbsp;%. The blue and green windows agree with the two-tier result above, and the red windows (1470&ndash;2010 and 4170&ndash;4980&nbsp;&micro;s) agree with the ones measured earlier through a red filter (archived report).</p>
+  <div class="caveat">
+    <span class="tag">Read the timing, not the heights</span>
+    <p>Green and red clip: their peaks reach about 989 with roughly 205 of the 256 ROI pixels saturated at the 30&nbsp;&micro;s exposure. Blue peaks at only 318. So the peak heights and summed light are not comparable between colours &mdash; blue&rsquo;s filter is also 10&nbsp;nm wide against wider filters for the others &mdash; and the shapes of the green and red peaks are flattened. A shorter exposure (about 10&nbsp;&micro;s) would keep them under the ceiling.</p>
+    <p>Two filters passed almost nothing: 410&nbsp;nm shows only 13&nbsp;ADU above the floor, and 400&nbsp;nm showed nothing by eye (its recorded sweep is invalid, because the lens was removed while it ran). The blue LED&rsquo;s useful output starts near 420&nbsp;nm.</p>
   </div>
   </div>
 </section>
@@ -397,7 +457,8 @@
   <h2>What is not done</h2>
   <ul>
     <li><strong>Green and red.</strong> Steps 6&ndash;8: swap the filter, spot-check that filter&rsquo;s background level with the 184&times;184 hole, sweep under the current LUT, adjust, confirm, then return to blue.</li>
-    <li><strong>Filter wavelengths are not recorded.</strong> The green filter is only ever called &ldquo;G&rdquo; in the data (<code>sli_filterG_white_10us.csv</code>); red appears as 640 and 660&nbsp;nm; the blue background files are labelled 420, 440 and 480. Read the wavelength off each filter and record it here before the next round.</li>
+    <li><strong>Filter wavelengths.</strong> Blue is a <strong>420&nbsp;nm</strong> filter: the sweeps labelled 420 used a 20&nbsp;nm-wide one, and a 10&nbsp;nm-wide 420&nbsp;nm filter has since replaced it (a solid-white 30&nbsp;&micro;s sweep through it matches the 20&nbsp;nm blue trace, correlation 1.00). Green is 520&nbsp;nm in the tone sweep and 550&nbsp;nm in the solid-white sweep; red is 620&nbsp;nm in the solid-white sweep (640 and 660&nbsp;nm appear in old file names) and has not been used in the tone sweeps. The 184&times;184 hole was sized on the separate 440&nbsp;nm run, so it still has to be checked against the 420&nbsp;nm filter&rsquo;s own background.</li>
+    <li><strong>The green sweep must be repeated.</strong> Only four of its 17 levels are valid (a display fault spoiled the rest) and its brightest slices clip at the 20&nbsp;&micro;s exposure (peaks near 985, about 200 of 256 ROI pixels saturated). Repeat with a shorter exposure and check the display first.</li>
     <li><strong>High-averaging resample of the lit slices.</strong> Planned, not run: measure only the 184 lit slices plus a few dark ones for the floor, with many more frames per point, to bring the run-to-run wobble down.</li>
     <li><strong>Which slices are lit depends on the 4&nbsp;ADU threshold.</strong> Dim light at low W falls under it (W&nbsp;=&nbsp;17 shows 5 lit slices though it carries 443 of summed light).</li>
   </ul>

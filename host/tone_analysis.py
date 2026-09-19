@@ -32,7 +32,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def icp_floor_offset(ref, mov, thresh=4.0, iters=50):
     """y translation to ADD to `mov` so its floor lies on `ref`'s. Both are (n,2)
     arrays of (delay_us, value)."""
-    ty = 0.0
+    # Start from the difference of the two traces' 20th-percentile levels (their floors).
+    # Fixed-threshold rejection needs the floors to begin within `thresh` of each other;
+    # a trace whose floor sits 10+ ADU away matched nothing from zero and stayed put.
+    ty = float(np.percentile(ref[:, 1], 20) - np.percentile(mov[:, 1], 20))
     tree = cKDTree(ref)
     for _ in range(iters):
         idx = tree.query(np.c_[mov[:, 0], mov[:, 1] + ty])[1]
