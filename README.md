@@ -631,7 +631,8 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 | `roi_scope.py`, `tlp_check.py`, `hdmi_ramp.py` | Rolling ROI scope; transmitted-pixel check; drive the projector from the PC's HDMI |
 | `align_roi.py` | Find the projector pixels that land on the camera ROI — shrinking white square, exposure held under 600 ADU *(step 1 of [14.2](#142-measuring-the-three-responses--a-square-with-a-matched-background))* |
 | `roi_integral.py` | One frame's light at the ROI summed from 30 µs slices, for levels a single exposure would clip |
-| `tone_analysis.py` | Floor-align a tone sweep's traces to the first-measured one (ICP, y-translation) so drift in the dark floor stops swamping the light; also imported live by the sweep scripts |
+| `tone_analysis.py` | Floor-align a tone sweep's traces to the first-measured one (ICP, y-translation) so drift in the dark floor stops swamping the light, and classify each slice as light or no light; also imported live by `tone_sweep.py` |
+| `tone_sweep.py` | The 16-level tone-curve sweep for one colour filter: white square through a LUT, bisection level order, median of 6 per slice, live floor-aligned plot. Report: `ml750st_report.html` |
 
 > After a board reset, `edid_merge` needs a few seconds to finish reading the DDC. Until it does,
 > `edid_ok` is 0 and `SUPP` is empty while `MODE` still reads the power-up default — a half-state

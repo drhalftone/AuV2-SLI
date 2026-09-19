@@ -47,6 +47,16 @@ def icp_floor_offset(ref, mov, thresh=4.0, iters=50):
     return float(ty)
 
 
+def light_mask(ref, mov, ty, thresh=4.0):
+    """Classify each slice of `mov` after floor alignment. Returns (light, ref_light):
+    light     -- mov is brighter than the reference by more than `thresh` ADU: light in mov
+    ref_light -- mov is DARKER than the reference by more than `thresh`: the reference had
+                 light there and mov does not, so the slice is not evidence about mov.
+    Everything else is an ICP inlier (floor matches floor): no light."""
+    res = (mov[:, 1] + ty) - ref[:, 1]
+    return res > thresh, res < -thresh
+
+
 def analyze(summary_csv, tag, ref_file=None, thresh=4.0, plot=True):
     rows = list(csv.DictReader(open(summary_csv, newline="")))
     tr = lambda L, sfx="": os.path.join(
