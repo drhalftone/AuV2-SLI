@@ -245,6 +245,47 @@
   </ul>
 </section>
 
+<section>
+  <p class="eyebrow">STEP 0 &middot; ALIGNMENT</p>
+  <h2>Find which projector pixels the ROI sees</h2>
+  <div class="col">
+  <p>Everything after this depends on knowing which projector pixels land on the camera&rsquo;s 16&times;16 ROI, so it comes first and is redone from scratch if the camera, projector or mount moves. <code>host/align_roi.py</code> projects a white square on black, starts at 256&nbsp;px, and at each size tries the square at a grid of positions and keeps the one with the brightest ROI reading; the next size searches around that winner and the size halves down to 16&nbsp;px. A reading over the 600&nbsp;ADU ceiling, or any saturated pixel, shortens the exposure and restarts that size; a best reading that is too weak lengthens it. That is why the exposure climbs from 300&nbsp;&micro;s to 2123&nbsp;&micro;s as the square shrinks and there is less light to see.</p>
+  <p>Run on 18 September the search converged on the square at (376,&nbsp;584)&ndash;(392,&nbsp;600), centre <strong>(384,&nbsp;592)</strong> of 800&times;600 &mdash; the bottom edge of the frame. The scene squares in this report are 32&nbsp;px, flush with that edge, which contains the aligned 16&nbsp;px square.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig7_alignment.png" alt="The five stages of the shrinking-square alignment search" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>The alignment search, redrawn from its log.</b> Each panel is one square size: every position tried is shaded by the ROI reading (brighter = more light reached the ROI) and the winner is outlined in red. The last panel overlays the winners as the search narrows. Data: <code>align_roi_run9.csv</code>.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="eyebrow">STEPS 1 AND 2 &middot; THE BACKGROUND</p>
+  <h2>Measure the SLI background, then cut a hole that reproduces it</h2>
+  <div class="col">
+  <p>The ROI reads a small pedestal even when its own pixels are dark, because light from the pixels around it leaks in. What that leak adds depends on the picture, so the calibration scene has to reproduce the leak of the real measurement &mdash; the highest-frequency SLI scan &mdash; or the curve would be measured at the wrong background.</p>
+  <h3>Step 1 &mdash; the target: the SLI background</h3>
+  <p>The SLI set with the finest fringes (octet&nbsp;2), horizontal white stripes, is frozen and cycles through its eight phases. The probe is a ~5&nbsp;&micro;s exposure at a genlock delay of 8000&nbsp;&micro;s, after the last light of the frame, so it reads the level that persists when no sub-field is lit. The eight phases differ slightly (the ROI sits on a brighter or darker stripe, and fringe pixels near it change with phase), so the target is the <strong>mean over the eight phases</strong>, not any one pattern, and the frames within each phase are <strong>averaged</strong>. The command: <code>python -u host/sli_background.py COM6 --octet 2 --delay 8000 --expo 5 --scope --live</code>.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig8_sli_background.png" alt="ROI mean for each of the eight SLI phases, two runs" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>Background under the SLI scan, per phase, from two recorded runs.</b> Bars are the mean of the frames at each phase with one standard deviation; the y-axis is truncated to show the spread. The run labelled 440 (15 September) reads 158.9&ndash;162.9 and averages <strong>160.8&nbsp;ADU</strong>. The run labelled 420 (17 September) reads 153.5&ndash;153.9 and averages <strong>153.8&nbsp;ADU</strong>. Data: <code>sli_bg_440_oct2_8000_raw.csv</code>, <code>sli_bg_420_oct2_raw.csv</code>.</figcaption>
+  </figure>
+  <div class="col">
+  <div class="caveat">
+    <span class="tag">Not yet reconciled</span>
+    <p>The hole below was sized against the 440-labelled target of 160.8&nbsp;ADU. The tone sweeps in this report are file-labelled 420, whose own SLI background reads 153.8. Whether a 184&times;184 hole reproduces <em>that</em> run&rsquo;s background was not measured. Which physical filter each label refers to, and whether it is the one in the mount, needs confirming; the target should be re-measured for the filter actually installed before the hole is trusted.</p>
+  </div>
+  <h3>Step 2 &mdash; the hole</h3>
+  <p>Fill the screen with white (255) and cut a black square hole around the ROI, open at the bottom edge. Full white with no hole reads 180.0&nbsp;ADU at the ROI; growing the hole removes the nearest bright pixels and the reading falls until it equals the target. The response is steep between 128 and 192&nbsp;px, so the last steps are 8&nbsp;px. With the 440-labelled filter, <strong>184&times;184 reads 160.3&nbsp;ADU against a target of 160.8</strong>; 176 reads 163.9 and 192 reads 156.5. This step was done by hand, switching scenes while watching the ROI; there is no tool for it in <code>host/</code> yet.</p>
+  <p>Three things about the leak came out of that work. It comes mainly from a <strong>ring 64&ndash;96&nbsp;px from the ROI centre</strong>: growing the hole from 32 to 64&nbsp;px changes the reading by 0.4&nbsp;ADU, from 128 to 192&nbsp;px by 18.5. <strong>Average picture level does not set the background</strong>: half the screen white but kept away from the ROI adds nothing, yet fringes with the same average add 7&nbsp;ADU and full white adds 26. And <strong>a small square does not disturb it</strong>: black and a 32&times;32 square at the ROI read the same, so the square&rsquo;s level can be stepped without moving the background under it.</p>
+  <p>The hole is a spatial mask, so it should not depend on which filter is in front of the sensor &mdash; and the reasoning is that both the SLI scan and the white-with-hole scene are grey content, so whatever hole matches one colour&rsquo;s background should match the others&rsquo;. Each new filter gets one spot-check of its own background level rather than a new hole search.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig9_hole_and_background.png" alt="ROI background against hole size, and against picture content" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>Left: the hole size that matches the target. Right: what does and does not set the background.</b> Numbers are from the 15 September hand measurement with the 440-labelled filter (README &sect;14.2); the rig has been repositioned since, so they show the size of the effects and are not values to reuse.</figcaption>
+  </figure>
+</section>
+
 <section class="col">
   <p class="eyebrow">ONE MEASUREMENT</p>
   <h2>416 slices tile the frame; each is the median of six</h2>
