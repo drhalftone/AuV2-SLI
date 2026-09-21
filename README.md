@@ -633,6 +633,9 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 | `roi_integral.py` | One frame's light at the ROI summed from 30 µs slices, for levels a single exposure would clip |
 | `tone_analysis.py` | Floor-align a tone sweep's traces to the first-measured one (ICP, y-translation) so drift in the dark floor stops swamping the light, and classify each slice as light or no light; also imported live by `tone_sweep.py` |
 | `tone_sweep.py` | The 16-level tone-curve sweep for one colour filter: white square through a LUT, bisection level order, median of 6 per slice, live floor-aligned plot. Report: `ml750st_report.html` |
+| `white_sweep.py` | A delay sweep of a solid-white screen (optionally with a black cutout, `--hole`/`--hole-json`): when is light reaching the ROI? 30 us for a quick filter check, 5 us for the LED windows |
+| `hole_match.py` | Size the black cutout in an all-white screen so the ROI's 5 us / 8000 us reading matches a target (the SLI background); writes `hole_<label>.json` |
+| `led_windows.py` | From three 5 us sweeps, find each LED's on-blocks and choose one exposure plus trigger delays (and a background delay) that capture every block |
 
 > After a board reset, `edid_merge` needs a few seconds to finish reading the DDC. Until it does,
 > `edid_ok` is 0 and `SUPP` is empty while `MODE` still reads the power-up default — a half-state

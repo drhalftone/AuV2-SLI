@@ -1,0 +1,11 @@
+{
+ "label": "red",
+ "size": 120,
+ "cx": 384,
+ "cy": 592,
+ "target": 158.22,
+ "level": 157.0,
+ "expo_us": 4.875,
+ "delay_us": 8000.0,
+ "frames": 30
+}

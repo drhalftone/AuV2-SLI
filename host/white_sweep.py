@@ -35,12 +35,24 @@ ap.add_argument("--expo", type=float, default=30.0, help="slice exposure, us")
 ap.add_argument("--frames", type=int, default=6, help="camera lines per slice (median)")
 ap.add_argument("--settle", type=int, default=3)
 ap.add_argument("--level", type=int, default=255, help="grey level of the whole screen")
+ap.add_argument("--hole", type=int, default=0, help="side of a black cutout (px); 0 = none")
+ap.add_argument("--cx", type=int, default=384, help="cutout centre x (projector px)")
+ap.add_argument("--cy", type=int, default=592, help="cutout centre y (projector px)")
+ap.add_argument("--hole-json", help="hole_<label>.json written by host/hole_match.py "
+                                    "(sets --hole, --cx, --cy)")
 ap.add_argument("--label", default="white", help="tag for the output files (e.g. the filter)")
 a = ap.parse_args()
 
+if a.hole_json:
+    import json
+    j = json.load(open(a.hole_json))
+    a.hole, a.cx, a.cy = j["size"], j["cx"], j["cy"]
 s = Screen(set_mode_first=True)
 buf = s.blank()
 buf[:, :] = a.level
+if a.hole > 0:                                   # black cutout, W = 0, clipped to the panel
+    buf[max(0, a.cy - a.hole // 2):min(s.h, a.cy + (a.hole + 1) // 2),
+        max(0, a.cx - a.hole // 2):min(s.w, a.cx + (a.hole + 1) // 2)] = 0
 s.show(buf, settle=1.5)
 
 ser = serial.Serial("COM6", 115200, timeout=0.05)
@@ -66,8 +78,8 @@ wr(ser, R_EXPO_LO, u & 0xFF)
 wr(ser, R_EXPO_HI, (u >> 8) & 0xFF)
 expo = u * EXPO_UNIT_US
 delays = [i * expo for i in range(int(T // expo))]
-print("frame %.1f us   slice %.2f us   %d slices   screen level %d   median of %d"
-      % (T, expo, len(delays), a.level, a.frames), flush=True)
+print("frame %.1f us   slice %.2f us   %d slices   screen level %d   cutout %d px at (%d, %d)   median of %d"
+      % (T, expo, len(delays), a.level, a.hole, a.cx, a.cy, a.frames), flush=True)
 
 plt.ion()
 fig, ax = plt.subplots(figsize=(12, 5))
