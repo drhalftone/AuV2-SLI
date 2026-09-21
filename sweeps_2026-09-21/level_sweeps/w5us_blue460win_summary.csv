@@ -1,0 +1,12 @@
+level,kind,t_s,dark_level,peak,sat_px_max,file
+0,sweep,119.8,162.0,291.5,0,w5us_blue460win_L000.csv
+255,sweep,240.3,175.0,994.0,207,w5us_blue460win_L255.csv
+119,sweep,361.7,163.0,988.5,204,w5us_blue460win_L119.csv
+51,sweep,483.6,162.0,286.0,0,w5us_blue460win_L051.csv
+187,sweep,605.4,166.0,990.0,206,w5us_blue460win_L187.csv
+17,sweep,725.2,162.0,287.0,0,w5us_blue460win_L017.csv
+85,sweep,847.3,162.0,909.0,0,w5us_blue460win_L085.csv
+153,sweep,969.4,164.0,990.0,205,w5us_blue460win_L153.csv
+221,sweep,1090.6,168.0,991.0,206,w5us_blue460win_L221.csv
+34,sweep,1211.7,162.0,290.0,0,w5us_blue460win_L034.csv
+68,sweep,1333.4,162.0,415.0,0,w5us_blue460win_L068.csv
