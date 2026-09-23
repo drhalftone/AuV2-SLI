@@ -222,6 +222,26 @@ def build(args):
                  for i in range(args.segments)]
     outline = hull(pool)
 
+    # ---- optional stand tab: a tongue on the plate's DOWN edge ----------------
+    # For running the camera away from the projector, on a desk. The tab is a
+    # rectangle in the plate's own plane and thickness, so it prints in the same
+    # layers as the plate (in-plane strength) and drops into stand.step's pocket.
+    # DOWN is opposite the filter slot, which must face up. It overlaps the plate
+    # by --tab-overlap so the two solids fuse in the slicer whatever the outline.
+    tab = None
+    if args.tab_w > 0:
+        td = math.radians(args.slot_deg + 180.0 if args.tab_deg is None else args.tab_deg)
+        ux, uy = math.cos(td), math.sin(td)
+        vx, vy = -uy, ux
+        reach = max((p_[0] - ox) * ux + (p_[1] - oy) * uy for p_ in outline)
+        d0, d1 = reach - args.tab_overlap, reach + args.tab_len
+        hw = args.tab_w / 2.0
+        tab_poly = [(ox + ux * d + vx * w, oy + uy * d + vy * w)
+                    for d, w in ((d0, -hw), (d1, -hw), (d1, hw), (d0, hw))]
+        if sw.signed_area(tab_poly) < 0:
+            tab_poly.reverse()
+        tab = dict(poly=tab_poly, reach=reach, deg=math.degrees(td), d1=d1)
+
     aperture = sw.reverse(sw.rounded_rect(ox, oy, args.aperture, args.aperture,
                                           args.aperture_r, segments=6))
 
@@ -239,6 +259,10 @@ def build(args):
     step.prism(outline, cb_z0, plate_z1, "plate_face", COLORS["plate"], holes=hs)
     expected["plate_face"] = (abs(sw.signed_area(outline))
                               - sum(abs(sw.signed_area(h)) for h in hs)) * args.cb_depth
+
+    if tab is not None:
+        step.prism(tab["poly"], plate_z0, plate_z1, "tab", COLORS["plate"])
+        expected["tab"] = abs(sw.signed_area(tab["poly"])) * args.plate_t
 
     # ---- skirt ---------------------------------------------------------------
     def at(i, r):
@@ -332,6 +356,8 @@ def build(args):
     # and it has to stay on disk to go back to.
     out = OUT if fil is None else os.path.join(
         os.path.dirname(OUT), "projector_lens_cap_filter.step")
+    if tab is not None:
+        out = os.path.splitext(out)[0] + "_tab.step"
     text = step.dumps()
     sw.write_verified(out, text)
     stl = os.path.splitext(out)[0] + ".stl"
@@ -389,6 +415,13 @@ def build(args):
           "           the sensor sits that much further from the lens than with the\n"
           "           plain cap. Absolute readings WILL shift; ratios and timings\n"
           "           should not.\n" % ((skirt_z1 - plate_z1) - 25.0))
+    if tab is not None:
+        w("tab        %.1f wide, %.1f long, %.2f thick (= plate), pointing %.0f deg CCW from +x\n"
+          "           (opposite the filter slot). Tab tip is %.2f mm from the optical axis;\n"
+          "           model x,y of the tab end centre = (%.2f, %.2f).\n"
+          % (args.tab_w, args.tab_len, args.plate_t, tab["deg"], tab["d1"],
+             ox + math.cos(math.radians(tab["deg"])) * tab["d1"],
+             oy + math.sin(math.radians(tab["deg"])) * tab["d1"]))
     w("screws     the cap adds %.2f mm of grip above the PCB top (counterbore floor\n"
       "           at z=%.2f), so add that to whatever length holds the stack today\n"
       % (cb_z0, cb_z0))
@@ -451,6 +484,16 @@ def main():
                         "assembly is rolled: point it opposite the cable exit.")
     p.add_argument("--lens-clear", type=float, default=0.60,
                    help="gap from the pocket's outer face to the lens face, mm")
+    p.add_argument("--tab-w", type=float, default=0.0,
+                   help="width of a stand tab on the plate's down edge, mm. 0 (default) "
+                        "builds no tab. Non-zero writes a SEPARATE *_tab.step file.")
+    p.add_argument("--tab-len", type=float, default=16.0,
+                   help="how far the tab projects past the plate outline, mm")
+    p.add_argument("--tab-overlap", type=float, default=1.0,
+                   help="how far the tab reaches back into the plate, mm")
+    p.add_argument("--tab-deg", type=float, default=None,
+                   help="tab direction, degrees CCW from +x in the model frame "
+                        "(default: opposite --slot-deg, i.e. down)")
     p.add_argument("--segments", type=int, default=64)
     p.add_argument("--skirt-segments", type=int, default=180)
     p.add_argument("--timestamp", default="2026-09-03T00:00:00")
