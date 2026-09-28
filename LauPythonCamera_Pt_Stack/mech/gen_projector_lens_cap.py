@@ -486,7 +486,10 @@ def main():
                    help="gap from the pocket's outer face to the lens face, mm")
     p.add_argument("--tab-w", type=float, default=0.0,
                    help="width of a stand tab on the plate's down edge, mm. 0 (default) "
-                        "builds no tab. Non-zero writes a SEPARATE *_tab.step file.")
+                        "builds no tab. Non-zero writes a SEPARATE *_tab.step file. For "
+                        "gen_lens_cap_stand.py build with --slot-deg 90 --tab-w 32: the tab "
+                        "lands on the -y edge (only DF40 J2 there) and the HDMI / USB-C "
+                        "ports on the -x edge leave sideways instead of into the stand.")
     p.add_argument("--tab-len", type=float, default=16.0,
                    help="how far the tab projects past the plate outline, mm")
     p.add_argument("--tab-overlap", type=float, default=1.0,
