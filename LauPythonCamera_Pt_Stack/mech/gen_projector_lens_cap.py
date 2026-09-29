@@ -181,7 +181,11 @@ def build(args):
     for px, py, _ in mh:
         d = math.hypot(px - ox, py - oy)
         web = (d - head_r) - bore_r          # head edge to bore edge, radially
-        cbore = web >= args.min_web
+        # --cbore-all recesses every head anyway. The "bore" here is only the
+        # skirt's inner wall -- the plate is solid across it -- and the skirt is
+        # already clamped off the head's keep-out, so the recess breaks into
+        # nothing; it just reaches into the plate face under the lens.
+        cbore = web >= args.min_web or args.cbore_all
         shank_web = (d - shank_r) - bore_r
         if shank_web < args.min_web:
             sys.exit("SCREW HOLE BREAKS INTO THE BORE at model (%.2f, %.2f): %.2f mm "
@@ -238,6 +242,12 @@ def build(args):
         hw = args.tab_w / 2.0
         tab_poly = [(ox + ux * d + vx * w, oy + uy * d + vy * w)
                     for d, w in ((d0, -hw), (d1, -hw), (d1, hw), (d0, hw))]
+        # The outline is round there, so at the tab's corners it falls short of
+        # `reach` and left an open wedge each side of the root. Hull the root
+        # corners into the plate so the tab joins along its full width; nothing
+        # moves past `reach`, so the stand pocket sees the same part.
+        outline = hull(outline + [(ox + ux * reach + vx * w, oy + uy * reach + vy * w)
+                                  for w in (-hw, hw)])
         if sw.signed_area(tab_poly) < 0:
             tab_poly.reverse()
         tab = dict(poly=tab_poly, reach=reach, deg=math.degrees(td), d1=d1)
@@ -339,11 +349,99 @@ def build(args):
             ca, sa = math.cos(roll), math.sin(roll)
             poly = [(ox + (px - ox) * ca - (py - oy) * sa,
                      oy + (px - ox) * sa + (py - oy) * ca) for px, py in poly]
-        if sw.signed_area(poly) < 0:
-            poly = list(reversed(poly))
-        step.prism(poly, fil["z0"], fil["z1"], "pocket", COLORS["skirt"])
-        expected["pocket"] = abs(sw.signed_area(poly)) * (fil["z1"] - fil["z0"])
-        segs += 1
+        # NOTCHES OVER THE SCREWS. The bands either side are clamped off every
+        # head's keep-out, but this ring is not, and at r 25.3..26.9 it hangs over
+        # the counterbore of any screw about 27 mm from the axis -- the head cannot
+        # drop in and a driver cannot reach it. The ring is only 1.6 mm thick, so a
+        # partial cut would leave a useless sliver: cut it through, radially, where
+        # its radial span meets a keep-out disc. Every piece is still a band
+        # between rin(a) and orr, so the ring is rebuilt that way in the unrolled
+        # frame (slot at +y), in runs between the notches.
+        def rin(a):
+            """Inner radius of the ring at unrolled angle a in [pi-ta, 2pi+ta]."""
+            c = math.cos(a)
+            if math.pi <= a <= 2.0 * math.pi:
+                return ir                            # the cradle
+            return min(orr, ir / abs(c)) if abs(c) > 1e-12 else orr   # the webs
+
+        keep = [(s["x"] - ox, s["y"] - oy, head_r + args.min_web) for s in screws]
+
+        def blocked(a):
+            w = a + roll
+            ux, uy = math.cos(w), math.sin(w)
+            r0 = rin(a)
+            for cx, cy, k in keep:
+                t = min(orr, max(r0, cx * ux + cy * uy))
+                if math.hypot(cx - t * ux, cy - t * uy) < k:
+                    return True
+            return False
+
+        grid = 4096
+        ang = [a0 + (a1 - a0) * k / grid for k in range(grid + 1)]
+        flags = [blocked(a) for a in ang]
+        notches = []
+        if any(flags):
+            def edge(lo, hi):
+                """Bisect the blocked/clear boundary between two grid angles."""
+                want = blocked(lo)
+                for _ in range(50):
+                    mid = 0.5 * (lo + hi)
+                    if blocked(mid) == want:
+                        lo = mid
+                    else:
+                        hi = mid
+                return 0.5 * (lo + hi)
+            runs, start, nstart = [], a0, a0
+            for k in range(1, grid + 1):
+                if flags[k] != flags[k - 1]:
+                    b = edge(ang[k - 1], ang[k])
+                    if flags[k]:
+                        runs.append((start, b))
+                        nstart = b
+                    else:
+                        start = b
+                        notches.append((nstart, b))
+            if flags[-1]:
+                notches.append((nstart, a1))
+            else:
+                runs.append((start, a1))
+            if not runs:
+                sys.exit("FILTER RING ENTIRELY NOTCHED -- nothing would hold the filter.")
+            ca, sa = math.cos(roll), math.sin(roll)
+
+            def pt(a, r):
+                x, y = r * math.cos(a), r * math.sin(a)
+                return (ox + x * ca - y * sa, oy + x * sa + y * ca)
+
+            step_a = (a1 - a0) / m
+            for j, (b0, b1) in enumerate(runs):
+                # sample the run, keeping the cradle/web corners at pi and 2pi exact
+                cuts = sorted({b0, b1} | {c for c in (math.pi, 2.0 * math.pi) if b0 < c < b1})
+                seq = [cuts[0]]
+                for u, v in zip(cuts, cuts[1:]):
+                    nseg = max(1, int(math.ceil((v - u) / step_a)))
+                    seq += [u + (v - u) * k / nseg for k in range(1, nseg + 1)]
+                piece = [pt(a, orr) for a in seq]
+                # where rin meets orr (the web tips) the inner point IS the outer
+                # one -- repeating it makes a zero-length edge -- and along the webs the inner face is straight, so only its
+                # ends go in -- collinear points there break the triangulation
+                piece += [pt(a, rin(a)) for a in reversed(seq)
+                          if orr - rin(a) > 1e-9
+                          and (math.pi <= a <= 2.0 * math.pi or a in cuts)]
+                if sw.signed_area(piece) < 0:
+                    piece.reverse()
+                nm = "pocket%d" % (j + 1)
+                step.prism(piece, fil["z0"], fil["z1"], nm, COLORS["skirt"])
+                expected[nm] = abs(sw.signed_area(piece)) * (fil["z1"] - fil["z0"])
+                segs += 1
+        else:
+            if sw.signed_area(poly) < 0:
+                poly = list(reversed(poly))
+            step.prism(poly, fil["z0"], fil["z1"], "pocket", COLORS["skirt"])
+            expected["pocket"] = abs(sw.signed_area(poly)) * (fil["z1"] - fil["z0"])
+            segs += 1
+        fil["notches"] = [(math.degrees(u + roll), math.degrees(v + roll))
+                          for u, v in notches]
         segs += emit_band(fil["z1"], skirt_z1, "skirt_grip")
     elif not windows:
         segs = emit_band(plate_z1, skirt_z1, "skirt")
@@ -408,9 +506,10 @@ def build(args):
           "           tie the lens grip to the root band. The bore either side traps\n"
           "           the filter axially; gravity holds it down.\n"
           % (fil["ir"], fil["orr"], fil["ir"], fil["orr"] - fil["ir"]))
-        w("           pocket floor sits %.2f mm above the plate face, clearing the\n"
-          "           proud screw head; a driver still reaches that screw through the\n"
-          "           empty cavity.\n" % args.pocket_root)
+        w("           pocket floor sits %.2f mm above the plate face.\n" % args.pocket_root)
+        for u, v in fil["notches"]:
+            w("           ring notched %.1f..%.1f deg CCW from +x (%.1f deg) to clear a\n"
+              "           screw head and its driver\n" % (u, v, v - u))
         w("COST       the skirt grew %.2f mm to put the lens face past the pocket, so\n"
           "           the sensor sits that much further from the lens than with the\n"
           "           plain cap. Absolute readings WILL shift; ratios and timings\n"
@@ -455,6 +554,10 @@ def main():
     p.add_argument("--head-dia", type=float, default=4.20,
                    help="counterbore, mm (M2 socket cap head 3.8 + clearance)")
     p.add_argument("--cb-depth", type=float, default=2.20, help="counterbore depth, mm")
+    p.add_argument("--cbore-all", action="store_true",
+                   help="counterbore every screw, including the one too close to the "
+                        "bore circle to pass --min-web (its head then sits flush "
+                        "instead of proud)")
     p.add_argument("--min-web", type=float, default=0.80,
                    help="thinnest plate web allowed between a bore and anything else, mm")
     p.add_argument("--seat-z", type=float, default=1.0,

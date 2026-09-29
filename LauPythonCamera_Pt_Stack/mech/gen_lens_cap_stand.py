@@ -2,7 +2,7 @@
 
 Writes ../3dmodels/lens_cap_stand.step (+ .stl).
 
-The cap (gen_projector_lens_cap.py --filter-dia 50 --slot-deg 90 --tab-w 32) has a
+The cap (gen_projector_lens_cap.py --filter-dia 50 --slot-deg 90 --tab-w 32 --cbore-all) has a
 tongue on its DOWN edge. This stand takes that tongue in a rectangular pocket and
 puts the whole camera + filter + FPGA stack on a flat base, optical axis horizontal,
 so the camera can look at a projector sitting some distance away on the same desk.
