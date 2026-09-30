@@ -24751,7 +24751,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 480.06 209.55 0)
 			(effects
 				(font
@@ -24778,7 +24778,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 477.52 208.28 0)
 			(hide yes)
 			(effects
@@ -24787,7 +24787,7 @@
 				)
 			)
 		)
-		(property "MPN" "0402WGF330JTCE"
+		(property "MPN" "0402WGF0000TCE"
 			(at 477.52 208.28 0)
 			(hide yes)
 			(effects
@@ -24849,7 +24849,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 492.76 209.55 0)
 			(effects
 				(font
@@ -24876,7 +24876,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 490.22 208.28 0)
 			(hide yes)
 			(effects
@@ -24885,7 +24885,7 @@
 				)
 			)
 		)
-		(property "MPN" "0402WGF330JTCE"
+		(property "MPN" "0402WGF0000TCE"
 			(at 490.22 208.28 0)
 			(hide yes)
 			(effects
@@ -24947,7 +24947,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 505.46 209.55 0)
 			(effects
 				(font
@@ -24974,7 +24974,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 502.92 208.28 0)
 			(hide yes)
 			(effects
@@ -24983,7 +24983,7 @@
 				)
 			)
 		)
-		(property "MPN" "0402WGF330JTCE"
+		(property "MPN" "0402WGF0000TCE"
 			(at 502.92 208.28 0)
 			(hide yes)
 			(effects
@@ -25143,7 +25143,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 530.86 209.55 0)
 			(effects
 				(font
@@ -25170,7 +25170,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 528.32 208.28 0)
 			(hide yes)
 			(effects
@@ -25179,7 +25179,7 @@
 				)
 			)
 		)
-		(property "MPN" "0402WGF330JTCE"
+		(property "MPN" "0402WGF0000TCE"
 			(at 528.32 208.28 0)
 			(hide yes)
 			(effects
@@ -25241,7 +25241,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 543.56 209.55 0)
 			(effects
 				(font
@@ -25268,7 +25268,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 541.02 208.28 0)
 			(hide yes)
 			(effects
@@ -25277,7 +25277,7 @@
 				)
 			)
 		)
-		(property "MPN" "0402WGF330JTCE"
+		(property "MPN" "0402WGF0000TCE"
 			(at 541.02 208.28 0)
 			(hide yes)
 			(effects
@@ -25339,7 +25339,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 556.26 209.55 0)
 			(effects
 				(font
@@ -25366,7 +25366,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 553.72 208.28 0)
 			(hide yes)
 			(effects
@@ -25375,7 +25375,7 @@
 				)
 			)
 		)
-		(property "MPN" "0402WGF330JTCE"
+		(property "MPN" "0402WGF0000TCE"
 			(at 553.72 208.28 0)
 			(hide yes)
 			(effects

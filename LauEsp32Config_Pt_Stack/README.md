@@ -291,6 +291,12 @@ path.
   host has the interface open, so with no cable attached the ESP32 owns the bus.
 - **`TDO` is an FPGA output** feeding the FTDI's input, so the ESP32 only ever
   reads it. No contention on that line at all.
+- **Survivable is not the same as working.** With the original 33 Ω straps, an ESP32
+  pulling low against an FTDI still driving high gives the FPGA
+  3.3 × (≈15 + 33) / (≈15 + 33 + 100) ≈ **0.8 V**: at VIL(max), so JTAG would be
+  unreliable exactly when the FTDI has been left in MPSSE by a loader run. The
+  TCK/TMS/TDI straps (R10–R12, and rev B R14–R16) are therefore **0 Ω** (≈0.3–0.4 V);
+  the TDO straps (R13/R17) keep 33 Ω. Changed at order time, 2026-09-30.
 
 **So a mux is a robustness choice, not a requirement.** Direct connection works. A
 buffer with an output enable is still the better build — it makes "USB cable wins"
@@ -321,10 +327,10 @@ dominates the JIT loop either way.
 **The board carries no USB receptacle.** Firmware reaches the ESP32 by a pad field
 for the first flash, and by OTA thereafter.
 
-The C3 makes this cheap: it has a **native USB Serial/JTAG controller**, so there is
-no bridge chip to justify — `GPIO18 = USB_D−`, `GPIO19 = USB_D+` go straight to a
-host (`docs/esp32-c3-mini-1_datasheet.pdf`). The classic UART bootloader is also
-available on `GPIO20/21` (U0RXD/U0TXD) as a fallback.
+The module makes this cheap: the **ESP32-S3** (like the C3 this section was first
+written for) has a **native USB Serial/JTAG controller**, so there is no bridge chip
+to justify — `GPIO19 = USB_D−`, `GPIO20 = USB_D+` go straight to a host. The classic
+UART bootloader is also available on `GPIO43/44` (U0TXD/U0RXD) as a fallback.
 
 A connector was rejected on the edge budget, not the parts cost. The stack already
 presents **two HDMI and two USB-C** (Pt config, Ft+ data), and the printed enclosure
@@ -332,19 +338,25 @@ has exactly **one port window**. A fifth connector means another opening to cut 
 seal — in a design whose entire purpose is that a *sealed* unit can be
 reprogrammed.
 
-**Bring out, as castellated edge pads or a pad field:**
+**As built (S3):** 1.0 mm pads TP1–TP8 on the top face, in a row at y = 103.4
+(board edge), verified pad-to-pin against the S3-MINI-1U datasheet on 2026-09-30:
 
-| Pad | Why |
-|---|---|
-| `USB_D+` (GPIO19) | native USB, first flash |
-| `USB_D−` (GPIO18) | " |
-| `EN` | reset into the bootloader |
-| `GPIO9` | boot strap — hold low to force download mode |
-| `GND` | return |
-| `+3V3` | bench power when the card is out of the stack |
+| Pad | Net | U1 pin | Why |
+|---|---|---|---|
+| TP1 | `+3V3` | 3 | bench power when the card is out of the stack |
+| TP2 | `GND` | GND | return |
+| TP3 | `USB_DP` | 24 (GPIO20) | native USB, first flash |
+| TP4 | `USB_DN` | 23 (GPIO19) | " |
+| TP5 | `ESP_EN` | 45 | reset into the bootloader |
+| TP6 | `ESP_BOOT` | 4 (GPIO0) | boot strap — hold low at reset to force download mode |
+| TP7 | `ESP_TXD0` | 39 (GPIO43) | UART0 fallback |
+| TP8 | `ESP_RXD0` | 40 (GPIO44) | " |
 
-**Place them at the enclosure's open face** so a pogo fixture can reach them without
-pulling the stack apart.
+GPIO0 relies on the module's internal pull-up; a stray download-mode boot from noise
+on the ~35 mm trace to TP6 is possible in principle (an external 10k is a next-rev
+option). **Caveat:** the pads are on the face that sits under the Ft+ (≈4 mm gap), so
+they are reachable for the first flash out of the stack, not from inside it — the
+in-stack path is OTA.
 
 **The recovery story is OTA with A/B partitions and rollback.** That is the same
 philosophy as §2: do not try to prevent a bad update, make it recoverable. Rollback
@@ -501,8 +513,9 @@ Batch.pdf` sits on the same CDN path; it is the pre-production drawing and repor
 
 | | |
 |---|---|
-| Schematic | **generated 2026-09-16** — `SCHEMATIC.md`; ERC clean, all 16 BOM lines JLCPCB-stocked |
-| Layout | not started |
+| Schematic | **generated 2026-09-16**, straps revised 2026-09-30 — `SCHEMATIC.md`; ERC clean, all 17 BOM lines JLCPCB-stocked |
+| Layout | **routed, DRC clean** — 4-layer, In1 GND / In2 +3V3, GND pours both faces, 474 vias 0.45/0.20 |
+| Fab | **ORDERED 2026-09-30** from JLCPCB, Standard PCBA both sides. Upload set in `production/jlcpcb/` (see below) |
 | Firmware | not started |
 | Electrical unknowns | **none** — J3 mapped, 3.3 V confirmed, FTDI isolation confirmed |
 | Module | **ESP32-S3-MINI-1U-N8** (decided 2026-09-16, supersedes the C3) — external wired antenna, top face |
@@ -511,8 +524,30 @@ Batch.pdf` sits on the same CDN path; it is the pre-production drawing and repor
 | GPIO budget | S3: 29 used, 7 spare, 3 straps left NC (`SCHEMATIC.md` §6). The C3's 15-pin limit in §3b.1 no longer applies |
 | USB | **no connector** — USB_D+/D- (GPIO20/19), EN, GPIO0, UART0, GND, +3V3 as pads TP1-TP8; OTA after (§6.0) |
 | microSD library | **in the schematic** — Molex 104031-0811, SDMMC 4-bit |
-| JTAG rev A/B | rev A wired; rev B by moving 4 strap resistors (`SCHEMATIC.md` §4) |
-| Next | confirm Hd+ top-side heights for the bottom face, check DF40 receptacle footprints, then layout |
+| JTAG rev A/B | rev A wired; rev B by moving 4 strap resistors (`SCHEMATIC.md` §4). TCK/TMS/TDI straps 0 Ω, TDO 33 Ω (§4.2) |
+| Next | bring-up when boards arrive; before that, measure a mated U.FL plug (≈2 mm est. vs ≈1.6 mm above the module) and confirm the Pt is rev A |
+
+### 8.1 The JLCPCB order (2026-09-30)
+
+`production/jlcpcb/` is **exactly what was uploaded**: `_gerbers.zip` (13 files, KiCad
+10.0.3, generated twice and compared), `_BOM.csv`, `_CPL.csv`.
+
+- **CPL rotations are corrected for JLC's library**, not KiCad's: Q1/Q2 0 (KiCad 180),
+  U2 270 (KiCad 0), J7 270 (KiCad 90). Found by fitting each LCSC part's EasyEDA
+  footprint to the KiCad one. Regenerating the CPL from `kicad-cli pcb export pos`
+  loses these — re-apply them.
+- **Order settings:** Single PCB (JLC adds the edge rails, as on the camera card — the
+  board is under their 70 × 70 mm PCBA minimum); 4 layers, 1.6 mm, ENIG; min via
+  0.2 mm (JLC then forces FR4 TG155 + 4-wire Kelvin test); **Epoxy Filled & Capped**
+  vias — 7 vias sit inside SMD pads and 134 merge with a pad edge (J4–J6, U1) with the
+  hole 0.05–0.10 mm outside a 1:1 mask opening; Confirm Production File and Confirm
+  Parts Placement both on.
+- **Pre-order review (four independent checks) found no blocker:** U1 land pattern and
+  all 65 pins against the S3-MINI-1U datasheet; J1–J6 against Alchitry's official V2
+  element library (positions, genders, 210-pad pass-through); the JTAG / PROGRAM_B /
+  DONE / microSD / power circuits against the Pt Rev A schematic; JLC DFM limits.
+  Open: the DF40HC receptacle footprint is KiCad/Alchitry-official but not yet built
+  on one of our boards; D1's EasyEDA pad numbering is swapped (cathode = GND pad).
 
 **Long-term goal — [`COMPUTE_RING_PLAN.md`](../COMPUTE_RING_PLAN.md):** the camera
 stacks as a ring of FPGA compute nodes that LLMs hand work to over MCP — host data over

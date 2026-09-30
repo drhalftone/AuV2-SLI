@@ -113,7 +113,9 @@ not been seen**.
 | TDI | R12 → pin 43 | R16 → pin 47 |
 | TDO | R13 ← pin 45 | R17 ← pin 49 |
 
-All eight are 33 Ω, so each populated strap also acts as the source termination. **Never fit
+The TCK/TMS/TDI straps (R10–R12, R14–R16) are **0 Ω** and the TDO straps (R13, R17) 33 Ω —
+changed from all-33 Ω on 2026-09-30, because against the Pt's 100 Ω FT2232H isolation a 33 Ω
+strap let the ESP32 pull a still-driven line only to ≈0.8 V (README §4.2). **Never fit
 both sets.** Every J3 JTAG pin sits on one rev A strap and one rev B strap, each tied to a
 different signal, so fitting both shorts two JTAG lines together. The DNP set is in
 `bom_full.csv` and left out of `bom.csv`.
@@ -184,7 +186,8 @@ Live check on 2026-09-16 (`check_jlc_parts.py`, 5 boards):
 | C8545 | 2N7002 | Q1, Q2 | Basic | 1.8 M |
 | C2286 | KT-0603R red LED | D1 | Basic | 3.5 M |
 | C25744 | 10 kΩ 0402 | 11 | Basic | 27 M |
-| C25105 | 33 Ω 0402 | 13 (+4 DNP) | Basic | 2.0 M |
+| C25105 | 33 Ω 0402 | 10 (+1 DNP) | Basic | 2.0 M |
+| C17168 | 0 Ω 0402 | R10–R12 (+3 DNP) | Basic | 9.3 M |
 | C11702 | 1 kΩ 0402 | R6, R7 | Basic | 11.6 M |
 | C1525 | 100 nF 0402 | C4, C6, C8 | Basic | 30.8 M |
 | C52923 | 1 µF 0402 | C5 | Basic | 9.0 M |
@@ -442,7 +445,7 @@ connector end is the far end. That version also crowded 17 resistors around J3 f
 | Role | Resistors | Anchored to | Weight |
 |---|---|---|---|
 | Source termination, ESP32 drives | R20 SCK, R21 MOSI, R23 CS, R24 IO2, R25 IO3, R30 SD_CLK | the U1 GPIO pin | 5 |
-| Source termination, U2 drives | R10 TCK, R11 TMS, R12 TDI (rev A straps) | U2 output pin | 5 |
+| Source termination, U2 drives | R10 TCK, R11 TMS, R12 TDI (rev A straps; 0 Ω since 2026-09-30) | U2 output pin | 5 |
 | Rev B straps (DNP) | R14–R17 | their rev A partner (5), U2 (1) | |
 | TDO strap | R13 | U2 (FPGA drives TDO) | 1 |
 | Gate pull-downs | R4, R5 | Q1 / Q2 gate | 1 |

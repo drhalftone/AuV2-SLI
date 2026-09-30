@@ -24,7 +24,9 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = "LauEsp32Config_Pt_Stack"
-KICAD = "C:/Users/drhal/AppData/Local/Programs/KiCad/10.0/share/kicad"
+# Per-user install on one machine, system-wide on the other; take whichever exists.
+KICAD = next(p for p in ("C:/Users/drhal/AppData/Local/Programs/KiCad/10.0/share/kicad",
+                         "C:/Program Files/KiCad/10.0/share/kicad") if os.path.isdir(p))
 LOCAL_FP = {"LauEsp32": os.path.join(HERE, "LauEsp32.pretty")}
 NS = uuid.UUID("5b0e3f5e-6a55-4c7e-9d0e-2f1e5a1c0e32")
 ROOT_UUID = str(uuid.uuid5(NS, "root"))
@@ -146,6 +148,7 @@ FP_C0805 = "Capacitor_SMD:C_0805_2012Metric"
 PASSIVE = {
     "10k": (FP_R, "C25744", "0402WGF1002TCE"),
     "33R": (FP_R, "C25105", "0402WGF330JTCE"),
+    "0R": (FP_R, "C17168", "0402WGF0000TCE"),
     "1k": (FP_R, "C11702", "0402WGF1001TCE"),
     "100n": (FP_C0402, "C1525", "CL05B104KO5NNNC"),
     "1u": (FP_C0402, "C52923", "CL05A105KA5NQNC"),
@@ -290,7 +293,10 @@ note(500, 20, "U2: JTAG buffer. R2 holds /OE HIGH, so the ESP32 is OFF the JTAG 
      "boot and whenever firmware has not claimed it -- the Pt's USB/FT2232H path wins by default\n"
      "(README 4.2). R3 parks ESP_TDO while the buffer is off.", 1.6)
 
-# ---- JTAG straps: rev A populated (33R source termination), rev B positions DNP.
+# ---- JTAG straps: rev A populated, rev B positions DNP.
+# TCK/TMS/TDI straps are 0R: the Pt's FT2232H drives the same nets through only 100R (RN2,
+# sheet 8), so with 33R here the ESP32 could pull a line only to ~0.8 V against an FTDI
+# that is still driving it -- right at VIL(max). TDO is received, not driven: keeps 33R.
 # Rev A (Pt V2 schematic sheet 3): 43 TDI, 45 TDO, 47 TMS, 49 TCK
 # Rev B = Au V2 order (AuSchematic.pdf sheet 1): 43 TMS, 45 TCK, 47 TDI, 49 TDO
 straps = [
@@ -301,7 +307,8 @@ straps = [
 ]
 for i, (ref, a, b, dnp) in enumerate(straps):
     rev = "B (DNP)" if dnp else "A"
-    passive(ref, "33R", (477.52 + i * 12.7, 208.28), a, b, dnp=dnp, comment=f"33R JTAG strap rev {rev}")
+    val = "33R" if b == "JTAG_TDO" else "0R"
+    passive(ref, val, (477.52 + i * 12.7, 208.28), a, b, dnp=dnp, comment=f"{val} JTAG strap rev {rev}")
 note(465, 228, "JTAG STRAPS -- populate R10-R13 for Pt V2 rev A (as built), OR R14-R17 for rev B.\n"
      "NEVER BOTH: that shorts two JTAG lines together.  Rev B moves JTAG to the Au V2 order.", 1.6)
 

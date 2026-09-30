@@ -6648,7 +6648,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 0 -1.17 180)
 			(layer "B.Fab")
 			(uuid "642dcda9-4dc1-42a4-bc9f-00e9f2081949")
@@ -6697,7 +6697,7 @@
 				(justify mirror)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 0 0 180)
 			(layer "B.Fab")
 			(hide yes)
@@ -7152,7 +7152,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 0 -1.17 270)
 			(layer "B.Fab")
 			(uuid "7f992b5e-faf0-488f-b3fd-1f89879090f1")
@@ -7201,7 +7201,7 @@
 				(justify mirror)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
@@ -8592,7 +8592,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 0 -1.17 0)
 			(layer "B.Fab")
 			(uuid "718497f0-9f2b-45ad-b8bf-a00c640c01d1")
@@ -8641,7 +8641,7 @@
 				(justify mirror)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 0 0 0)
 			(layer "B.Fab")
 			(hide yes)
@@ -10704,7 +10704,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 0 -1.17 180)
 			(layer "B.Fab")
 			(uuid "88a86f86-5b48-49b7-afdc-98e7cbf9c7ad")
@@ -10753,7 +10753,7 @@
 				(justify mirror)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 0 0 180)
 			(layer "B.Fab")
 			(hide yes)
@@ -12406,7 +12406,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 0 -1.17 270)
 			(layer "B.Fab")
 			(uuid "21f5f415-8def-4d35-b3bc-f994c16f3d3f")
@@ -12455,7 +12455,7 @@
 				(justify mirror)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 0 0 270)
 			(layer "B.Fab")
 			(hide yes)
@@ -13078,7 +13078,7 @@
 				(justify mirror)
 			)
 		)
-		(property "Value" "33R"
+		(property "Value" "0R"
 			(at 0 -1.17 0)
 			(layer "B.Fab")
 			(uuid "9f279c14-febe-4978-a907-1b25cbddbd87")
@@ -13127,7 +13127,7 @@
 				(justify mirror)
 			)
 		)
-		(property "LCSC" "C25105"
+		(property "LCSC" "C17168"
 			(at 0 0 0)
 			(layer "B.Fab")
 			(hide yes)
