@@ -126,3 +126,6 @@ _expo_choice.txt
 # the same numbers, so these are an intermediate, not a record.
 /*_data.js
 /scan_data.js
+
+# ROI alignment results depend on where the camera sits on the projector -- keep them local
+align_roi*.csv

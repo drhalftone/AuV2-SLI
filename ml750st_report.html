@@ -246,6 +246,24 @@
 </section>
 
 <section>
+  <p class="eyebrow">FIRST TEST &middot; PROJECTOR LAG</p>
+  <h2>Find which frame the light belongs to</h2>
+  <div class="col">
+  <p>Every other measurement here times the camera from the vsync of the video going in. Before any of them means anything, we have to know how many frames the projector holds a picture before showing it &mdash; and some projectors hold more than others. So this is the first test on any new projector. It needs no ROI alignment and no picture from the PC.</p>
+  <p><code>host/lag_search.py</code> puts the FPGA in impulse mode: it generates a 5-frame cycle, black except one white frame, and tags every camera line with the frame it was transmitting when the exposure was triggered. Each reading therefore lands on a 5-frame (41.7&nbsp;ms) timeline measured from the vsync of the frame that <em>carried</em> white. A 1000&nbsp;&micro;s exposure tiles all five frames at once; then the earliest and the latest lit windows are halved, reading both halves each time, down to 7.8&nbsp;&micro;s. Each decision is lit versus dark, so clipping does not matter. The whole search takes under a minute.</p>
+  <p>Run on 29 September, camera bare about 20&nbsp;in from the lens, no filter: the ML750ST is <strong>one frame late</strong>. All of the white frame&rsquo;s light falls in the next frame, from about 575 to 6700&nbsp;&micro;s into it &mdash; the same window as the solid-white sweeps below, which were therefore always looking at the frame sent one earlier. Frames 2&ndash;4 are dark. A 5&nbsp;&micro;s sweep drawn on top matches both edges within one slice.</p>
+  </div>
+  <div class="caveat">
+    <span class="tag">The lit threshold is absolute</span>
+    <p>A window counts as lit above 2&nbsp;ADU/&micro;s. That sits just under a ~3&nbsp;ADU/&micro;s glow before the first LED block, so the search reported first light at 563&nbsp;&micro;s, not the block&rsquo;s edge near 575, and it would miss the blocks entirely on a much dimmer rig (through the blue filter they run at about 6&nbsp;ADU/&micro;s). A threshold at half of the frame&rsquo;s own peak rate is the planned fix.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig0_lag_search.png" alt="The lag search: a 5-frame timeline with the white frame's light in frame 1, and zooms on its first and last light" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>The lag search.</b> Top: every reading on the 5-frame timeline as a light rate (ADU/&micro;s above the dark frames at the same delay, log scale) &mdash; the pale 1000&nbsp;&micro;s windows, clipped, and the short halving windows drawn on top at each edge; the black line is the 5&nbsp;&micro;s solid-white sweep placed in frame&nbsp;1. Bottom: zooms on the first and last light. Data: <code>report_figures/data/lag_search_ml750st.csv</code>.</figcaption>
+  </figure>
+</section>
+
+<section>
   <p class="eyebrow">STEP 0 &middot; ALIGNMENT</p>
   <h2>Find which projector pixels the ROI sees</h2>
   <div class="col">
@@ -448,6 +466,11 @@
     <span class="tag">Read the timing, not the heights</span>
     <p>Green and red clip: their peaks reach about 989 with roughly 205 of the 256 ROI pixels saturated at the 30&nbsp;&micro;s exposure. Blue peaks at only 318. So the peak heights and summed light are not comparable between colours &mdash; blue&rsquo;s filter is also 10&nbsp;nm wide against wider filters for the others &mdash; and the shapes of the green and red peaks are flattened. A shorter exposure (about 10&nbsp;&micro;s) would keep them under the ceiling.</p>
     <p>Two filters passed almost nothing: 410&nbsp;nm shows only 13&nbsp;ADU above the floor, and 400&nbsp;nm showed nothing by eye (its recorded sweep is invalid, because the lens was removed while it ran). The blue LED&rsquo;s useful output starts near 420&nbsp;nm.</p>
+  </div>
+  <div class="caveat">
+    <span class="tag">A third, short blue flash at about 3370&ndash;3400&nbsp;&micro;s</span>
+    <p>Easy to miss in the blue trace above (one 30&nbsp;&micro;s slice at 3360 reads 198 against a 161 floor), but it is real. It shows in a no-filter 5&nbsp;&micro;s sweep (camera bare, about 20&nbsp;in from the lens) as a 35&nbsp;&micro;s bump 220&nbsp;&micro;s after the first blue block ends, and not at all through the green or red filters.</p>
+    <p>A close sweep through the blue filter (<code>host/spike_sweep.py</code>: 1&nbsp;&micro;s steps, 4.88&nbsp;&micro;s exposure, 48 consecutive frames kept per step) puts light from 3371 to 3400&nbsp;&micro;s, so the flash itself is about 25&nbsp;&micro;s long. It is <b>not the same every frame</b>: on the plateau each frame reads one of three levels, the floor (about 14&nbsp;% of frames), about +12&nbsp;ADU (38&nbsp;%) or about +23&nbsp;ADU (44&nbsp;%). Neighbouring frames tend to alternate (lag-1 autocorrelation &minus;0.48), but there is no fixed period out to 12 frames. It looks like the projector&rsquo;s temporal dithering. Any exposure window that covers it collects a frame-to-frame varying amount of blue, so plan either to exclude it or to average over many frames. The red spike near 1500&nbsp;&micro;s and the ragged stretch of red at 4400&ndash;4600&nbsp;&micro;s vary the same way from frame to frame and have not been swept closely yet.</p>
   </div>
   </div>
 </section>

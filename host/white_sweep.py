@@ -31,6 +31,7 @@ from frame_sweep import (wr, rd, set_delay, wait_delay, collect,    # noqa: E402
 
 ap = argparse.ArgumentParser(description=__doc__,
                              formatter_class=argparse.RawDescriptionHelpFormatter)
+ap.add_argument("--port", default="COM6", help="camera serial port")
 ap.add_argument("--expo", type=float, default=30.0, help="slice exposure, us")
 ap.add_argument("--frames", type=int, default=6, help="camera lines per slice (median)")
 ap.add_argument("--settle", type=int, default=3)
@@ -55,7 +56,7 @@ if a.hole > 0:                                   # black cutout, W = 0, clipped 
         max(0, a.cx - a.hole // 2):min(s.w, a.cx + (a.hole + 1) // 2)] = 0
 s.show(buf, settle=1.5)
 
-ser = serial.Serial("COM6", 115200, timeout=0.05)
+ser = serial.Serial(a.port, 115200, timeout=0.05)
 time.sleep(0.4)
 
 

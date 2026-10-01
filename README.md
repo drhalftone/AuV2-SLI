@@ -629,11 +629,16 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 | `sli_frame_sweep.py` | **The projector timing sweep.** A whole frame at 1 µs with the fringes cycling — this is what 3.1 was measured with |
 | `plot_white_window.py` | Draws that sweep with the emission window, gaps and recommended delay/exposure, all recomputed from the CSV |
 | `roi_scope.py`, `tlp_check.py`, `hdmi_ramp.py` | Rolling ROI scope; transmitted-pixel check; drive the projector from the PC's HDMI |
-| `align_roi.py` | Find the projector pixels that land on the camera ROI — shrinking white square, exposure held under 600 ADU *(step 1 of [14.2](#142-measuring-the-three-responses--a-square-with-a-matched-background))* |
+| `lag_search.py` | Measure the projector's lag: one white frame in a 5-frame black cycle (FPGA impulse mode), a 1000 µs exposure tiling all five frames, then halving toward the first and last light; live timeline UI, `--overlay` a slice sweep *(step 1 of [14.2](#142-measuring-the-three-responses--a-square-with-a-matched-background) — the first test on a new projector)* |
+| `bg_vs_level.py` | Whole-screen grey level 0..255 against one or more exposures, live chart. At ~8000 µs: does the background follow the picture? At the full emission window (`--expo 6175 --end 6715`) with `--black-each` (black read after every level, because the long-exposure black level drifts by 100+ ADU): a single-exposure tone curve |
+| `predict_check.py` | Predicted versus measured light for 20 exposure windows: integrates a `white_sweep.py` slice sweep over each window and compares it with white − black read at that window; live scatter chart |
+| `live_white.py` | Live strip chart of the last 300 frames on an all-white screen (default: one full-frame exposure, 540 µs + 6175 µs), with saturated-pixel count — for setting camera distance and ND by hand |
+| `align_roi.py` | Find the projector pixels that land on the camera ROI — shrinking white square, exposure held under 600 ADU *(step 2 of [14.2](#142-measuring-the-three-responses--a-square-with-a-matched-background))* |
 | `roi_integral.py` | One frame's light at the ROI summed from 30 µs slices, for levels a single exposure would clip |
 | `tone_analysis.py` | Floor-align a tone sweep's traces to the first-measured one (ICP, y-translation) so drift in the dark floor stops swamping the light, and classify each slice as light or no light; also imported live by `tone_sweep.py` |
 | `tone_sweep.py` | The 16-level tone-curve sweep for one colour filter: white square through a LUT, bisection level order, median of 6 per slice, live floor-aligned plot. Report: `ml750st_report.html` |
 | `white_sweep.py` | A delay sweep of a solid-white screen (optionally with a black cutout, `--hole`/`--hole-json`): when is light reaching the ROI? 30 us for a quick filter check, 5 us for the LED windows |
+| `spike_sweep.py` | A close delay sweep (1 us steps) over one short feature of a solid-white frame, keeping every frame instead of a median, to see whether it changes from frame to frame (e.g. the blue flash at ~3370-3400 us) |
 | `hole_match.py` | Size the black cutout in an all-white screen so the ROI's 5 us / 8000 us reading matches a target (the SLI background); writes `hole_<label>.json` |
 | `led_windows.py` | From three 5 us sweeps, find each LED's on-blocks and choose one exposure plus trigger delays (and a background delay) that capture every block |
 
@@ -858,12 +863,13 @@ the procedure, not a one-off.
 
 #### Procedure
 
-> **Do not move anything once step 1 has started.** The projector ROI, the SLI background and the
+> **Do not move anything once step 2 has started.** The projector ROI, the SLI background and the
 > hole size all depend on where the bare sensor sits relative to the projector lens. Bumping or
 > repositioning the camera, the projector or the mount, or swapping the mount, invalidates all
 > three. This has happened: after the camera and projector were physically repositioned, the
-> background level visibly changed. If anything moves, **start over from step 1**; do not carry
-> old numbers forward. Changing the filter does not move the ROI, but it does mean redoing steps 2–4.
+> background level visibly changed. If anything moves, **start over from step 2**; do not carry
+> old numbers forward. Changing the filter does not move the ROI, but it does mean redoing steps 3–5.
+> The lag (step 1) belongs to the projector, not the rig: moving things does not change it.
 
 0. **Set up.** Fit the filter mount and insert one filter. The PC drives 800x600@120 over HDMI with
    the FPGA passing it through (SLICTL `0x00`, ROICTL bit 7 `imp_en` **off** — it replaces the HDMI
@@ -871,7 +877,30 @@ the procedure, not a one-off.
    a black screen at the full-window exposure slid from 662 to 515 ADU over 70 s after Windows
    switched 1280x720@60 back to 800x600@120, whereas a content change settles within 0.2 s.
 
-1. **Find the projector ROI** — the projector pixels that land on the camera ROI.
+1. **Measure the projector's lag** — the first test on any new projector, before anything else.
+
+       python -u host/lag_search.py COM6
+
+   The FPGA generates the video itself (impulse mode): a 5-frame cycle, black except one white
+   frame, with every camera line tagged by the frame being transmitted when it was triggered. So
+   each reading lands on a 5-frame timeline measured from the vsync of the frame that **carried**
+   white. A 1000 µs exposure tiles all five frames at once, then the earliest and latest lit
+   windows are halved down to ~8 µs. Every decision is lit versus dark, so clipping does not
+   matter, and it needs no ROI alignment and no HDMI picture — it runs as soon as the camera sees
+   the projector at all. A live window shows the timeline and a zoom on each edge;
+   `--overlay <white_sweep csv>` draws a slice sweep on top to check the edges against it.
+   It sees up to four frames of lag.
+
+   Everything later in this procedure times the camera from the vsync of the HDMI signal, so the
+   lag says which frame that light actually belongs to. On the ML750ST it is **one frame**: the
+   white frame's light runs from about 575 to 6700 µs into the *next* frame, the same window as
+   [3.1](#31-where-the-light-actually-is--measured-on-an-optoma-ml750st) (29 Sep 2026, camera
+   bare ~20 in from the lens, no filter). *The lit test is an absolute 2 ADU/µs, which sits just
+   under a ~3 ADU/µs glow before the first LED block — so "first light" came out at 563 µs rather
+   than the block's edge at ~575 µs — and would miss the blocks on a much dimmer rig. A threshold
+   relative to the frame's own peak rate is the planned fix.*
+
+2. **Find the projector ROI** — the projector pixels that land on the camera ROI.
 
        python -u host/align_roi.py COM6 --set-mode --live
 
@@ -880,7 +909,7 @@ the procedure, not a one-off.
    restarts that size. On this rig four runs agreed within 8 px: centre **(388, 502)**, used as a
    32x32 square at (372, 486).
 
-2. **Measure the SLI background** — the target level.
+3. **Measure the SLI background** — the target level.
 
        python -u host/sli_background.py COM6 --octet 2 --delay 8000 --expo 5 --scope --live
 
@@ -892,8 +921,8 @@ the procedure, not a one-off.
    phase, which is why the target is the eight-phase average and not any one pattern. *Why a
    pattern-dependent level exists after the last measured light at all is not yet explained.*
 
-3. **Size the hole** — full white, black square hole centred on the projector ROI, same 8000 µs /
-   5 µs probe. Grow the hole until the ROI mean equals the target from step 2. With the 440 nm
+4. **Size the hole** — full white, black square hole centred on the projector ROI, same 8000 µs /
+   5 µs probe. Grow the hole until the ROI mean equals the target from step 3. With the 440 nm
    filter:
 
    | Full-white screen, black hole | White left | ROI mean |
@@ -910,13 +939,13 @@ the procedure, not a one-off.
    The response is steep between 128 and 192 px — step in 8 px there. *This step was done by hand
    (a live reader switching scenes); there is no tool for it in `host/` yet.*
 
-4. **Measure the curve.** Keep the white surround and hole, put the test square at the projector ROI
+5. **Measure the curve.** Keep the white surround and hole, put the test square at the projector ROI
    inside the hole, switch to the full emission-window exposure (540 µs delay, 6175 µs), and step the
    square's level 0..255. *Not yet checked: whether white surround + square fits in 10 bits at that
    exposure. If it clips, sum 30 µs slices with `roi_integral.py` instead of one long exposure.*
 
-5. **Repeat steps 2–4 for each filter.** The target and the hole size are specific to the filter.
-   If the camera, projector or mount has moved at any point, go back to step 1 instead.
+6. **Repeat steps 3–5 for each filter.** The target and the hole size are specific to the filter.
+   If the camera, projector or mount has moved at any point, go back to step 2 instead.
 
 The numbers quoted in these steps and in the table below are from one positioning of the rig
 (Sep 15, 2026). They show the size of the effects, but they are **not** values to reuse; every
