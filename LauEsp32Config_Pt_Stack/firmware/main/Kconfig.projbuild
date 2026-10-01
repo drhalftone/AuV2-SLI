@@ -1,0 +1,32 @@
+menu "LAU ESP32 card"
+
+    config LAU_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+
+    config LAU_WIFI_PASSWORD
+        string "WiFi password (empty = open network)"
+        default ""
+
+    config LAU_HOSTNAME
+        string "Hostname (mDNS: <hostname>.local)"
+        default "lau-esp32"
+        help
+            Give each camera its own name when there is more than one on the LAN.
+
+    config LAU_MCP_TOKEN
+        string "MCP bearer token (empty = generate on first boot, keep in NVS)"
+        default ""
+        help
+            Leave empty so no secret lives in sdkconfig. The generated token is printed on the
+            console at every boot.
+
+    config LAU_JTAG_HALF_PERIOD_SPIN
+        int "JTAG half-period delay loop count"
+        default 4
+        range 0 1000
+        help
+            Busy-wait iterations per TCK half-period in the bit-banged JTAG. Raise it if loads fail
+            or IDCODE reads are unstable; each step slows TCK.
+
+endmenu
