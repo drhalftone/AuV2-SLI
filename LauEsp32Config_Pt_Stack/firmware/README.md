@@ -11,17 +11,22 @@ at power-up. A power cycle, or `restore_flash_image`, always brings back the cam
 
 ## 1. Layout
 
+Written in Dr. Lau's house style from his Qt C++ (boxed copyright header, `#ifndef LAUXXX_H`
+guards, the three-line `/****/` banner before every function, ALL-CAPS comments, `lau`-prefixed
+files and camelCase names, `...Flag` booleans, underscore-free macros, `return (x);`). C has no
+classes, so `LAUFpga::load()` is written `lauFpgaLoad()`. Keep new code in the same style.
+
 | File | Job |
 |---|---|
-| `main/pins.h` | every GPIO, read from the schematic netlist |
-| `main/jtag.c` | bit-banged JTAG through U2; U2 is enabled only while shifting, so the Pt's FT2232H owns the bus otherwise |
-| `main/fpga.c` | UG470 JTAG configuration flow, IDCODE/part check, PROGRAM_B, DONE, the one-user JTAG lock |
-| `main/bitfile.c` | `.bit` header parser (pure C) |
-| `main/library.c` | SDMMC 4-bit mount, list / sidecar / sha256 / delete / atomic install |
-| `main/fetch.c` | `fetch_bitstream`: HTTP(S) download straight to the card |
-| `main/mcp.c` | JSON-RPC: `initialize`, `ping`, `tools/list`, `tools/call`, notifications |
-| `main/server.c` | `POST /mcp`, `PUT /bitstreams/<name>.bit\|.json`, `PUT /ota`, bearer token, Origin refusal |
-| `main/net.c` | WiFi station, mDNS `<hostname>.local` |
+| `main/laupins.h` | every GPIO, read from the schematic netlist |
+| `main/laujtag.c` | bit-banged JTAG through U2; U2 is enabled only while shifting, so the Pt's FT2232H owns the bus otherwise |
+| `main/laufpga.c` | UG470 JTAG configuration flow, IDCODE/part check, PROGRAM_B, DONE, the one-user JTAG lock |
+| `main/laubitfile.c` | `.bit` header parser (pure C) |
+| `main/laulibrary.c` | SDMMC 4-bit mount, list / sidecar / sha256 / delete / atomic install |
+| `main/laufetch.c` | `fetch_bitstream`: HTTP(S) download straight to the card |
+| `main/laumcp.c` | JSON-RPC: `initialize`, `ping`, `tools/list`, `tools/call`, notifications |
+| `main/lauserver.c` | `POST /mcp`, `PUT /bitstreams/<name>.bit\|.json`, `PUT /ota`, bearer token, Origin refusal |
+| `main/launetwork.c` | WiFi station, mDNS `<hostname>.local` |
 | `main/main.c` | boot order, token, LED, OTA rollback guard |
 | `tools/serve_bitstreams.py` | serve build folders to the card, writing sha256/commit sidecars |
 | `tools/mcp_smoke.py` | bring-up test that speaks MCP the way Claude Code does |

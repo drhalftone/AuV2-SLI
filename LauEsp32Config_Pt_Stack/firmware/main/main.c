@@ -1,4 +1,24 @@
-// LAU ESP32 card: microSD bitstream library behind an MCP server (SD_BITSTREAM_LIBRARY.md).
+/*********************************************************************************
+ *                                                                               *
+ * Copyright (c) 2026, Dr. Daniel L. Lau                                         *
+ * All rights reserved.                                                          *
+ *                                                                               *
+ * Redistribution and use in source and binary forms, with or without            *
+ * modification, is strictly forbidden.                                          *
+ *                                                                               *
+ * THIS SOFTWARE IS PROVIDED BY DR. DANIEL L. LAU ''AS IS'' AND ANY              *
+ * EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED     *
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE        *
+ * DISCLAIMED. IN NO EVENT SHALL DR. DANIEL L. LAU BE LIABLE FOR ANY             *
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES    *
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;  *
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND   *
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT    *
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS *
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.                  *
+ *                                                                               *
+ *********************************************************************************/
+
 #include <stdio.h>
 #include <string.h>
 
@@ -6,101 +26,129 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
-#include "fpga.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "library.h"
-#include "net.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-#include "pins.h"
 #include "sdkconfig.h"
-#include "server.h"
 
-static const char *TAG = "main";
+#include "laufpga.h"
+#include "laulibrary.h"
+#include "launetwork.h"
+#include "laupins.h"
+#include "lauserver.h"
 
-// Token: menuconfig value if set; otherwise one generated on first boot and kept in NVS, so no
-// secret has to live in sdkconfig. Printed to the console at boot -- read it over USB/UART.
-static void get_token(char *out, size_t cap)
+// LAU ESP32 CARD: MICROSD BITSTREAM LIBRARY BEHIND AN MCP SERVER (SD_BITSTREAM_LIBRARY.MD)
+
+static const char *TAG = "LAUMain";
+
+/***************************************************************************************************/
+/***************************************************************************************************/
+/***************************************************************************************************/
+static void readBearerToken(char *token, size_t capacity)
 {
+    // USE THE MENUCONFIG TOKEN IF ONE WAS SET
     if (strlen(CONFIG_LAU_MCP_TOKEN) > 0) {
-        snprintf(out, cap, "%s", CONFIG_LAU_MCP_TOKEN);
+        snprintf(token, capacity, "%s", CONFIG_LAU_MCP_TOKEN);
         return;
     }
-    nvs_handle_t h;
-    ESP_ERROR_CHECK(nvs_open("lau", NVS_READWRITE, &h));
-    size_t len = cap;
-    if (nvs_get_str(h, "token", out, &len) != ESP_OK) {
-        uint8_t r[16];
-        esp_fill_random(r, sizeof(r));   // RF is on by now, so this is a true random source
-        for (int i = 0; i < 16; i++) sprintf(out + 2 * i, "%02x", r[i]);
-        ESP_ERROR_CHECK(nvs_set_str(h, "token", out));
-        ESP_ERROR_CHECK(nvs_commit(h));
-        ESP_LOGW(TAG, "generated a new MCP bearer token");
+
+    // OTHERWISE KEEP ONE IN NVS, GENERATED ON FIRST BOOT, SO NO SECRET LIVES IN SDKCONFIG
+    nvs_handle_t handle;
+    ESP_ERROR_CHECK(nvs_open("lau", NVS_READWRITE, &handle));
+    size_t length = capacity;
+    if (nvs_get_str(handle, "token", token, &length) != ESP_OK) {
+        // THE RADIO IS ON BY NOW SO THIS IS A TRUE RANDOM SOURCE
+        uint8_t randomBytes[16];
+        esp_fill_random(randomBytes, sizeof(randomBytes));
+        for (int index = 0; index < 16; index++) {
+            sprintf(token + 2 * index, "%02x", randomBytes[index]);
+        }
+        ESP_ERROR_CHECK(nvs_set_str(handle, "token", token));
+        ESP_ERROR_CHECK(nvs_commit(handle));
+        ESP_LOGW(TAG, "readBearerToken() :: generated a new MCP bearer token");
     }
-    nvs_close(h);
+    nvs_close(handle);
 }
 
-// LED: slow blink = no WiFi, steady = ready, fast blink = JTAG busy.
-static void led_task(void *arg)
+/***************************************************************************************************/
+/***************************************************************************************************/
+/***************************************************************************************************/
+static void statusLedTask(void *argument)
 {
-    bool on = false;
-    for (;;) {
-        int period_ms;
-        if (fpga_lock_owner()) { on = !on; period_ms = 80; }
-        else if (!net_connected()) { on = !on; period_ms = 500; }
-        else { on = true; period_ms = 200; }
-        gpio_set_level(PIN_LED, on);
-        vTaskDelay(pdMS_TO_TICKS(period_ms));
+    // SLOW BLINK MEANS NO WIFI, STEADY MEANS READY, AND FAST BLINK MEANS JTAG IS BUSY
+    bool ledOnFlag = false;
+    while (true) {
+        int periodMs;
+        if (lauFpgaLockOwner()) {
+            ledOnFlag = !ledOnFlag;
+            periodMs = 80;
+        } else if (!lauNetworkIsConnected()) {
+            ledOnFlag = !ledOnFlag;
+            periodMs = 500;
+        } else {
+            ledOnFlag = true;
+            periodMs = 200;
+        }
+        gpio_set_level(PINSTATUSLED, ledOnFlag);
+        vTaskDelay(pdMS_TO_TICKS(periodMs));
     }
 }
 
-// New OTA firmware must prove it can reach the network, or the bootloader rolls back to the
-// previous image. Without this a bad WiFi setting in an update would brick a sealed camera.
-static void confirm_or_rollback(bool connected)
+/***************************************************************************************************/
+/***************************************************************************************************/
+/***************************************************************************************************/
+static void confirmOrRollback(bool connectedFlag)
 {
-    const esp_partition_t *running = esp_ota_get_running_partition();
+    // NEW OTA FIRMWARE MUST PROVE IT CAN REACH THE NETWORK OR THE BOOTLOADER ROLLS BACK, WITHOUT
+    // THIS A BAD WIFI SETTING IN AN UPDATE WOULD BRICK A SEALED CAMERA
+    const esp_partition_t *runningPartition = esp_ota_get_running_partition();
     esp_ota_img_states_t state;
-    if (esp_ota_get_state_partition(running, &state) != ESP_OK || state != ESP_OTA_IMG_PENDING_VERIFY) return;
-    if (connected) {
-        ESP_LOGI(TAG, "new firmware is on the network: marking it valid");
+    if (esp_ota_get_state_partition(runningPartition, &state) != ESP_OK || state != ESP_OTA_IMG_PENDING_VERIFY) {
+        return;
+    }
+    if (connectedFlag) {
+        ESP_LOGI(TAG, "confirmOrRollback() :: new firmware is on the network, marking it valid");
         esp_ota_mark_app_valid_cancel_rollback();
     } else {
-        ESP_LOGE(TAG, "new firmware never reached the network: rolling back");
+        ESP_LOGE(TAG, "confirmOrRollback() :: new firmware never reached the network, rolling back");
         esp_ota_mark_app_invalid_rollback_and_reboot();
     }
 }
 
+/***************************************************************************************************/
+/***************************************************************************************************/
+/***************************************************************************************************/
 void app_main(void)
 {
-    // 1. Safe states before anything else: FET gates low, JTAG buffer off, DONE as input.
-    fpga_init();
+    // SAFE STATES BEFORE ANYTHING ELSE: FET GATES LOW, JTAG BUFFER OFF, DONE AS AN INPUT
+    lauFpgaInit();
 
-    gpio_config_t led = {.pin_bit_mask = 1ULL << PIN_LED, .mode = GPIO_MODE_OUTPUT};
-    gpio_config(&led);
-    xTaskCreate(led_task, "led", 2048, NULL, 2, NULL);
+    gpio_config_t ledConfig = { .pin_bit_mask = 1ULL << PINSTATUSLED, .mode = GPIO_MODE_OUTPUT };
+    gpio_config(&ledConfig);
+    xTaskCreate(statusLedTask, "led", 2048, NULL, 2, NULL);
 
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    esp_err_t error = nvs_flash_init();
+    if (error == ESP_ERR_NVS_NO_FREE_PAGES || error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
+        error = nvs_flash_init();
     }
-    ESP_ERROR_CHECK(err);
+    ESP_ERROR_CHECK(error);
 
-    // 2. SD library. Not fatal: status and OTA still work without a card.
-    lib_mount();
+    // MOUNT THE SD LIBRARY, WHICH IS NOT FATAL SINCE STATUS AND OTA STILL WORK WITHOUT A CARD
+    lauLibraryMount();
 
-    // 3. Network, then the server. The FPGA is never touched at boot (§4: no autoload).
-    if (net_start() != ESP_OK) {
-        ESP_LOGE(TAG, "no network configuration; the MCP server is not started");
+    // BRING UP THE NETWORK AND THEN THE SERVER, NEVER TOUCHING THE FPGA AT BOOT (NO AUTOLOAD)
+    if (lauNetworkStart() != ESP_OK) {
+        ESP_LOGE(TAG, "app_main() :: no network configuration, the MCP server is not started");
         return;
     }
-    bool connected = net_wait_connected(120 * 1000);
+    bool connectedFlag = lauNetworkWaitConnected(120 * 1000);
 
     char token[72];
-    get_token(token, sizeof(token));
-    ESP_LOGW(TAG, "MCP endpoint http://%s.local/mcp   token: %s", CONFIG_LAU_HOSTNAME, token);
-    ESP_ERROR_CHECK(server_start(token));
+    readBearerToken(token, sizeof(token));
+    ESP_LOGW(TAG, "app_main() :: MCP endpoint http://%s.local/mcp   token: %s", CONFIG_LAU_HOSTNAME, token);
+    ESP_ERROR_CHECK(lauServerStart(token));
 
-    confirm_or_rollback(connected);
+    confirmOrRollback(connectedFlag);
 }
