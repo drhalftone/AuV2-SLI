@@ -877,6 +877,34 @@ the procedure, not a one-off.
    a black screen at the full-window exposure slid from 662 to 515 ADU over 70 s after Windows
    switched 1280x720@60 back to 800x600@120, whereas a content change settles within 0.2 s.
 
+   **Set the light level with ND filters and the live monitor**, so one exposure can take a whole
+   frame of white without clipping:
+
+       python -u host/live_white.py --port COM6
+
+   It fills the screen with white and scrolls the last 300 frames of one full-frame exposure
+   (540 µs + 6175 µs), with the count of saturated ROI pixels underneath. Stack ND filters in front
+   of the bare sensor and move the camera until:
+
+   - **no ROI pixel saturates** — watch the saturated-pixel count, not the mean: the brightest
+     pixels clip while the mean is still well under 1023 (at a mean of ~890, 30 of 256 already had);
+   - the **mean sits at about 600–700 ADU**, the low end of the shaded band, leaving headroom for
+     drift; and
+   - the **trace is flat** (small `sd`). A trace that steps or wanders is the projector changing
+     brightness, not the rig — check its dynamic-contrast / eco / auto-brightness settings first.
+
+   *With the camera on the ML750ST's lens (1 Oct 2026), one ND was not enough, a second cut the light
+   ~18x more and a third ~6.5x more; a full frame of white then read ~500–900 ADU with at most one
+   pixel clipped. Over the same
+   half hour, though, full white wandered 503 → 985 → 707 → 900 ADU with the filters unchanged and
+   the long-exposure black level stepped between ~175 and ~293 ADU — so read black right after every
+   white measurement (`bg_vs_level.py --black-each`) rather than once.*
+
+   If the camera stops sending frames (no ROI lines; `0x48` integration length and `0x3E` period
+   read 0), reload the profiling bitstream into RAM:
+   `alchitry.exe load --bin build_roimin/Au2_SLI_roimin.bin --board PtV2 --ram`. A power cycle
+   alone boots whatever is in flash.
+
 1. **Measure the projector's lag** — the first test on any new projector, before anything else.
 
        python -u host/lag_search.py COM6
