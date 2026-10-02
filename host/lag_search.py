@@ -63,13 +63,31 @@ ap.add_argument("--frames", type=int, default=40,
 ap.add_argument("--settle", type=int, default=10)
 ap.add_argument("--thresh", type=float, default=6.0,
                 help="ADU above the dark reference a window needs, whatever its length")
-ap.add_argument("--rate", type=float, default=2.0,
-                help="ADU per us above the dark reference that counts as lit. The white "
-                     "frame's LED blocks give tens of ADU/us; the dim glow around and "
-                     "between them 0.01-0.5, which is reported but not searched")
+ap.add_argument("--rate", type=float, default=None,
+                help="fixed ADU/us that counts as lit (e.g. 2.0 for a bare camera ~20 in "
+                     "away). Default: --rel of the largest rate in the coarse pass, so the "
+                     "test follows the rig's brightness (ND filters, distance)")
+ap.add_argument("--rel", type=float, default=0.25,
+                help="without --rate: a window is lit at this fraction of the coarse "
+                     "pass's largest rate")
+ap.add_argument("--dark", type=float, default=150.0,
+                help="with --invert: the ROI's dark level, ADU, subtracted so the plot shows "
+                     "the light each window RECEIVED")
+ap.add_argument("--invert", action="store_true",
+                help="send FOUR white frames and ONE black (the marker), and search for the "
+                     "missing light: each window is judged by how far it falls BELOW the "
+                     "other positions at the same delay")
 ap.add_argument("--tile", type=int, default=0,
                 help="instead of chasing the two edges, halve the exposure and re-tile the "
                      "WHOLE lit span (first lit window to last) this many times")
+ap.add_argument("--edges", action="store_true",
+                help="after the coarse pass, slide ONE fixed exposure (--edge-expo) across "
+                     "each edge in --edge-step steps and take the half-way crossing of the "
+                     "step as the edge, instead of halving toward it")
+ap.add_argument("--edge-expo", type=float, default=20.0, help="--edges window, us")
+ap.add_argument("--edge-step", type=float, default=5.0, help="--edges step, us")
+ap.add_argument("--edge-span", type=float, default=200.0,
+                help="--edges sweeps this far either side of the coarse edge, us")
 ap.add_argument("--overlay", help="a white_sweep.py CSV (delay_us, median) to draw as a "
                                    "light-rate line in the frame where the light was found, "
                                    "to check the edges against a slice sweep")
@@ -92,14 +110,18 @@ if not (1000 < T < 60000) or (gl & 3) != 3:
     ser.close()
     sys.exit("ABORT: frame %.1f us, genlock 0x%02X -- is video running?" % (T, gl))
 
-# the 5-frame cycle: four black, ONE lit at position 0
+# the 5-frame cycle: the odd frame out at position 0 is the marker -- one lit frame
+# among four black, or with --invert one BLACK frame among four lit
 lit_px = (((a.level if COLOURS[a.colour] & 4 else 0) << 16)
           | ((a.level if COLOURS[a.colour] & 2 else 0) << 8)
           | (a.level if COLOURS[a.colour] & 1 else 0))
+four_lvl, odd_lvl = (a.level, 0) if a.invert else (0, a.level)
+marker_px = 0 if a.invert else lit_px
+SENT = "black" if a.invert else "white"
 wr(ser, R_IMPCYC, (0 << 4) | 5)
-wr(ser, R_IMPLVL, 0)
+wr(ser, R_IMPLVL, four_lvl & 0xFF)
 wr(ser, R_IMPRGB, COLOURS[a.colour])
-wr(ser, R_IMPLVL2, a.level & 0xFF)
+wr(ser, R_IMPLVL2, odd_lvl & 0xFF)
 wr(ser, R_IMPRGB2, COLOURS[a.colour])
 wr(ser, R_ROICTL, 0xC0)                  # impulse_en | per-frame stream
 time.sleep(0.4)
@@ -123,22 +145,28 @@ ax = fig.add_subplot(gs[0, :])
 azs = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1])]
 fig.canvas.manager.window.wm_geometry("+40+40")
 YLO, YHI = 0.01, 300.0
+thr_lines = []
+RATE = [a.rate]                                    # set after the coarse pass if relative
 for axx in [ax] + azs:
     axx.set_yscale("log")
     axx.set_ylim(YLO, YHI)
-    axx.axhline(a.rate, color="#d0453a", ls="--", lw=1, zorder=50)
+    thr_lines.append(axx.axhline(a.rate or YLO, color="#d0453a", ls="--", lw=1, zorder=50))
     axx.grid(alpha=.3, which="both")
-    axx.set_xlabel("time after the vsync of the frame that carried white (us)")
-ax.text(0.003, a.rate * 1.15, "lit above %.1f ADU/us" % a.rate,
-        transform=ax.get_yaxis_transform(), color="#d0453a", fontsize=8, va="bottom")
+    axx.set_xlabel("time after the vsync of the frame that carried %s (us)" % SENT)
+thr_txt = ax.text(0.003, (a.rate or YLO) * 1.15, "", transform=ax.get_yaxis_transform(),
+                  color="#d0453a", fontsize=8, va="bottom")
 for k in range(1, 5):
     ax.axvline(k * T, color="#888", lw=.8)
 ax.set_xlim(0, 5 * T)
 for k in range(5):
-    ax.text((k + .5) * T, YHI * 1.08, "frame %d%s" % (k, "  (white sent)" if k == 0 else ""),
+    ax.text((k + .5) * T, YHI * 1.08, "frame %d%s" % (k, "  (%s sent)" % SENT if k == 0 else ""),
             ha="center", va="bottom", fontsize=9, color="#555")
-ax.set_ylabel("light rate, ADU/us above dark")
-azs[0].set_ylabel("light rate, ADU/us above dark")
+# --invert draws the light each window RECEIVED, so the four white frames stand tall
+# and the black one is the gap; windows judged dark (missing light) are drawn black
+YLAB = ("light received, ADU/us above %.0f" % a.dark if a.invert
+        else "light rate, ADU/us above dark")
+ax.set_ylabel(YLAB)
+azs[0].set_ylabel(YLAB)
 azs[0].set_title("first light", fontsize=10)
 azs[1].set_title("last light", fontsize=10)
 span = ax.axvspan(0, 0, color="#d0453a", alpha=.18, lw=0, zorder=0)
@@ -148,7 +176,10 @@ hdr = fig.text(0.07, 0.985, "", va="top", ha="left", family="monospace", fontsiz
 def bar(axes, t0, e, r, L, fnt=False):
     """One window as a bar from the floor of the axis up to its rate; shorter on top."""
     z = 2 + max(0.0, 12 - np.log2(max(e, 1.0)))
-    col = "#1f5fd0" if L else ("#e0a030" if fnt else "#9aa3ad")
+    if a.invert:
+        col = "#222222" if L else ("#e0a030" if fnt else "#6f9be8")
+    else:
+        col = "#1f5fd0" if L else ("#e0a030" if fnt else "#9aa3ad")
     for axx in axes:
         axx.bar(t0, r - YLO, width=e, bottom=YLO, align="edge", lw=0, color=col,
                 alpha=.45 if e >= a.start else .9, zorder=z)
@@ -164,8 +195,16 @@ def ui(status=None):
         pass
 
 
+def sig(m, ref):
+    """The signal: light above the dark positions, or with --invert light MISSING
+    below the lit positions (the median of the five is the reference either way)."""
+    return ref - m if a.invert else m - ref
+
+
 def rate(m, ref, e):
-    return max(0.012, (m - ref) / e)
+    if a.invert:
+        return max(0.012, (m - a.dark) / e)
+    return max(0.012, sig(m, ref) / e)
 
 
 ui("frame %.1f us   reading the coarse pass..." % T)
@@ -198,7 +237,7 @@ def read(delay_us, expo_us, stage):
         if last is not None:
             absn += (cc - last) & 0xFF
         last = cc
-        if tlp == lit_px:
+        if tlp == marker_px:
             anchor = absn
         if anchor is None:
             continue                     # before the first marker: position unknown
@@ -219,11 +258,14 @@ def read(delay_us, expo_us, stage):
 def lit(m, ref, e):
     """Lit means a RATE of light, so a 5 us and a 1000 us window are judged alike."""
     # a clipped window cannot show its rate, so the bar stops at 60 % of the headroom
-    return m - ref > max(a.thresh, min(a.rate * e, 0.6 * (1023 - ref)))
+    if RATE[0] is None:
+        return False
+    head = (ref - 140.0) if a.invert else (1023 - ref)   # how far the signal CAN go
+    return sig(m, ref) > max(a.thresh, min(RATE[0] * e, 0.6 * head))
 
 
 def faint(m, ref):
-    return m - ref > a.thresh
+    return sig(m, ref) > a.thresh
 
 
 windows = []                                       # (t0, t1, mean, ref, lit)
@@ -241,6 +283,21 @@ try:
             windows.append((k * T + d, k * T + d + e, m, ref, L))
             bar([ax] + azs, k * T + d, e, rate(m, ref, e), L, faint(m, ref))
         ui("coarse pass   %.0f us windows   delay %.0f of %.0f us" % (e0, d, T))
+    if RATE[0] is None:
+        peak = max(sig(m, ref) / (t1 - t0) for t0, t1, m, ref, _ in windows)
+        RATE[0] = a.rel * peak
+        print("  lit threshold %.3f ADU/us = %.2f x the coarse peak %.3f"
+              % (RATE[0], a.rel, peak), flush=True)
+    for ln in thr_lines:
+        ln.set_ydata([RATE[0], RATE[0]])
+        ln.set_visible(not a.invert)      # inverted, the bars are received light
+    thr_txt.set_y(RATE[0] * 1.15)
+    thr_txt.set_text("black = missing more than %.3g ADU/us" % RATE[0] if a.invert
+                     else "lit above %.3g ADU/us" % RATE[0])
+    windows = [(t0, t1, m, ref, lit(m, ref, t1 - t0)) for t0, t1, m, ref, _ in windows]
+    for t0, t1, m, ref, L in windows:
+        if L:
+            bar([ax] + azs, t0, t1 - t0, rate(m, ref, t1 - t0), True)
     windows.sort()
     for t0, t1, m, ref, L in windows:
         if L or faint(m, ref):
@@ -337,9 +394,66 @@ try:
             e = h
         return t0, e
 
+    def edge_sweep(t_c, which):
+        """Slide ONE fixed exposure across t_c in small steps and read the frame it
+        falls in. Every reading has the same exposure, so whatever fixed offset that
+        exposure carries is the same at every step and the edge is a STEP in the curve:
+        its half-way crossing between the levels before and after, interpolated."""
+        E, S = a.edge_expo, a.edge_step
+        lo, hi = t_c - a.edge_span, t_c + a.edge_span
+        az = azs[0 if which == "first" else 1]
+        az.cla()
+        az.grid(alpha=.3)
+        az.set_xlabel("window centre, us after the marker frame's vsync")
+        az.set_ylabel("ROI mean (ADU), %.0f us window" % E)
+        pts, = az.plot([], [], ".-", color="#1f5fd0", ms=4, lw=.8)
+        az.set_xlim(lo, hi)
+        span.set_x(lo)
+        span.set_width(hi - lo)
+        xs, ys = [], []
+        for t in np.arange(lo, hi, S):
+            k = int(t // T)
+            d = t - k * T
+            if d > T - E - 2.0 or not 0 <= k < 5:
+                continue                         # past the last reachable delay
+            res, ref, ee = read(d, E, "edge_" + which)
+            xs.append(t + ee / 2)
+            ys.append(res[k][0])
+            pts.set_data(xs, ys)
+            az.relim()
+            az.autoscale_view(scalex=False)
+            az.set_title("%s edge: %.0f us window stepped %.0f us   %d/%d"
+                         % (which, E, S, len(xs), int((hi - lo) / S)), fontsize=10)
+            ui("%s-edge sweep   %.0f us window at %.0f us" % (which, ee, t))
+        x, y = np.array(xs), np.array(ys)
+        n = max(3, len(y) // 5)
+        y0, y1 = float(np.median(y[:n])), float(np.median(y[-n:]))
+
+        def cross(frac):
+            lvl = y0 + frac * (y1 - y0)
+            s_ = np.sign(y - lvl) * np.sign(y1 - y0)       # -1 before, +1 after
+            for i in range(1, len(y)):
+                if s_[i - 1] < 0 <= s_[i]:
+                    return x[i - 1] + (lvl - y[i - 1]) * (x[i] - x[i - 1]) / (y[i] - y[i - 1])
+            return float("nan")
+        t50, t10, t90 = cross(0.5), cross(0.1), cross(0.9)
+        for v, c in ((y0, "#888"), (y1, "#888"), ((y0 + y1) / 2, "#d0453a")):
+            az.axhline(v, color=c, ls=":", lw=1)
+        az.axvline(t50, color="#d0453a", lw=1.2)
+        k = int(t50 // T) if t50 == t50 else -1
+        az.set_title("%s edge %.1f us (frame %d, +%.1f)   10-90%% width %.1f us   %.0f -> %.0f ADU"
+                     % (which, t50, k, t50 - k * T, abs(t90 - t10), y0, y1), fontsize=9.5)
+        print("  %s edge  %.1f us = frame %d +%.1f   10-90%% %.1f us   level %.1f -> %.1f ADU"
+              % (which, t50, k, t50 - k * T, abs(t90 - t10), y0, y1), flush=True)
+        return t50, abs(t90 - t10)
+
     # the onset: earliest lit window. Windows at the frame's last delay overlap the
     # one before; the earliest start is what counts.
-    if a.tile:
+    if a.edges:
+        on_t, on_e = edge_sweep(litw[0][0], "first")
+        end_t, end_e = edge_sweep(max(w[1] for w in litw), "last")
+        end_t, end_e = end_t, 0.0
+    elif a.tile:
         on_t, on_e, end_t, end_e = tile(litw, e0)
     else:
         f = litw[0]
@@ -355,7 +469,7 @@ finally:
 onset = on_t
 end = end_t + end_e
 print("\nLAG FOUND")
-print("  first light  %.1f us after the white frame's vsync   (+- %.1f)"
+print("  first light  %.1f us after the marker frame's vsync   (+- %.1f)"
       % (onset, on_e), flush=True)
 print("               = frame %d of the cycle, %.1f us into it" % (int(onset // T), onset % T))
 print("  last light   %.1f us  (+- %.1f)  = frame %d, %.1f us into it"
@@ -394,7 +508,7 @@ azs[0].set_title("first light %.1f us: frame %d, +%.1f  (+- %.1f)"
 azs[1].set_xlim(end - 150, end + 150)
 azs[1].set_title("last light %.1f us: frame %d, +%.1f  (+- %.1f)"
                  % (end, int(end // T), end % T, end_e), fontsize=10)
-ui("LAG: first light %.1f us, last light %.1f us after the white frame's vsync  ->  "
+ui("LAG: first light %.1f us, last light %.1f us after the marker frame's vsync  ->  "
    "%d frame(s) late\nclose the window to exit" % (onset, end, int(round((onset - 575.0) / T))))
 fig.savefig(os.path.splitext(a.out)[0] + ".png", dpi=110)
 plt.ioff()

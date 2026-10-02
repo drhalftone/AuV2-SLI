@@ -264,6 +264,44 @@
 </section>
 
 <section>
+  <p class="eyebrow">EXPLORATORY &middot; NOT YET ROBUST</p>
+  <h2>Step edges and the frame start, from 5&nbsp;&micro;s sweeps of the whole cycle</h2>
+  <div class="col">
+  <p>An attempt to pin the lag and the LED switching times down to a few microseconds, with the camera bare on the ML750ST&rsquo;s lens behind ND filters (2 October 2026). Three steps:</p>
+  <ol>
+    <li><b>Sweep the whole 5-frame cycle.</b> <code>host/lag_sweep.py</code>: one white frame among four black (FPGA impulse mode), a 4.88&nbsp;&micro;s exposure stepped by 5&nbsp;&micro;s across one frame period, all five positions read at every delay (20 camera lines per delay, so about four per position) &mdash; 8330 readings, about 9 minutes. The signal at each point is the ROI mean minus the median of the five positions at that delay.</li>
+    <li><b>Find the one-frame window that holds the most light.</b> A boxcar exactly one frame period wide, slid circularly along the timeline, peaks with the window starting at <strong>8910&nbsp;&micro;s = frame&nbsp;1 + 575&nbsp;&micro;s</strong> (lag 1.069 frames) and holding 92.3&nbsp;% of the cycle&rsquo;s signal.</li>
+    <li><b>Sweep that window with every frame white</b>, padded by 10&nbsp;% of a frame each side (<code>host/roi_white_sweep.py</code>, 8 lines per delay, 1999 readings), and look for step edges in both sweeps (<code>host/dlp_edges.py</code>): a step between consecutive readings larger than max(8&times; the noise, 4&nbsp;ADU) is an edge, timed at half its change.</li>
+  </ol>
+  <p><b>What came out.</b> The frame start &mdash; the first green block switching on &mdash; is the clearest edge: <strong>frame&nbsp;1 +583.9&nbsp;&micro;s and frame&nbsp;2 +583.3&nbsp;&micro;s</strong> with every frame white, 8334.5&nbsp;&micro;s apart against a measured frame period of 8335.1; +579.8&nbsp;&micro;s with one white frame. Every LED block of the earlier sweeps reappears as a pair of edges, each completed within one 5&nbsp;&micro;s step, and the two sweeps agree within 0&ndash;4&nbsp;&micro;s on every edge both detect (23 and 29 edges). The single-white sweep also resolves the short red burst at ~1470&ndash;1550&nbsp;&micro;s as several sub-pulses, the frame-to-frame blue flash at 3372&ndash;3398&nbsp;&micro;s, internal steps in the long red block (~4420 and ~4572&nbsp;&micro;s), and 5&nbsp;&micro;s dark notches just before the fourth green and the second blue block.</p>
+  </div>
+  <div class="caveat">
+    <span class="tag">Why this is not yet trusted</span>
+    <ul>
+      <li><b>The edge list depends on the threshold.</b> A 15&nbsp;ADU floor found 12 edges in the all-white sweep; 4&nbsp;ADU found 23. Nothing is fitted, and there is no principled cut between a small real edge and noise.</li>
+      <li><b>The all-white steps are 5&ndash;10&times; smaller than the single-white ones</b> (the frame-start edge: +44 against +344&nbsp;ADU) on a base near 735&nbsp;ADU. The likeliest cause is ROI pixels pinned at 1023 by the offset, which would compress the mean&rsquo;s response &mdash; but the saturated-pixel count was not recorded in that sweep, so it is unconfirmed.</li>
+      <li><b>Each sweep was run once,</b> with about four lines per position per delay in the five-frame sweep. Several features (the red sub-pulses, the blue flash) are known to change from frame to frame, so a single pass cannot separate their structure from sampling.</li>
+      <li><b>The boxcar sums the glow as well as the light.</b> Most of each close-up reading is an exposure-independent offset that follows the picture (see the background sections), so the 92.3&nbsp;% and the 1.069-frame lag describe signal, not just LED light. The 575&nbsp;&micro;s start agrees with the LED onset, but that may be partly because the green block is the largest single step.</li>
+      <li><b>Frame 2 of the single-white sweep shows edges of the wrong sign</b> (OFF at +575.7, ON at +860&nbsp;&micro;s) where the next frame&rsquo;s green block would be &mdash; the glow responding to LED timing in a black frame. Edges are therefore not proof of light arriving in the exposure.</li>
+      <li><b>The light level was not controlled:</b> white frames clipped at 100&nbsp;&micro;s in the run before, and the ND stack and distance had changed since the measured setup of 1 October.</li>
+    </ul>
+    <p>To make it robust: repeat both sweeps at least twice; record saturated pixels; set the light with <code>live_white.py</code> first (full-frame mean ~600&ndash;700, nothing clipped); and replace the threshold with a fitted step (level before, level after, edge time) whose uncertainty comes from the fit.</p>
+  </div>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig_lag_sweep_boxcar_closeup.png" alt="The 5-frame 5 us sweep with one white frame, and the one-frame boxcar whose peak marks the lag" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>One white frame among four black, swept at 5&nbsp;&micro;s across all five frames.</b> Top: ROI mean minus the median of the five positions. Bottom: the sum over a one-frame boxcar; the red line and shaded window mark its peak at frame&nbsp;1 +575&nbsp;&micro;s. Data: <code>report_figures/data/lag_sweep_closeup_5us.csv</code> (<code>lag_sweep.py --load</code> redoes the analysis).</figcaption>
+  </figure>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig_roi_white_vs_one_closeup.png" alt="The boxcar window swept with every frame white, against the single white frame" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>The boxcar window with every frame white</b> (red, padded 10&nbsp;% each side; the window is shaded) against the single white frame (blue) and its dark reference (grey), as raw ROI means. Inside the window every frame white averages 747.0&nbsp;ADU against 598.4 for one white frame. Data: <code>report_figures/data/roi_white_sweep_closeup_5us.csv</code>.</figcaption>
+  </figure>
+  <figure>
+    <div class="figbody"><img src="report_figures/fig_dlp_edges_closeup.png" alt="Step edges detected in the all-white and single-white sweeps, with the frame starts marked" style="width:100%; max-width:1000px; display:block; margin:0 auto"></div>
+    <figcaption><b>Detected step edges.</b> Green ON, brown OFF, thick black the frame start (first ON edge 500&ndash;650&nbsp;&micro;s into a frame). Top: every frame white (23 edges); bottom: one white frame (29 edges). Threshold max(8&times;noise, 4&nbsp;ADU). Made by <code>host/dlp_edges.py</code>.</figcaption>
+  </figure>
+</section>
+
+<section>
   <p class="eyebrow">STEP 0 &middot; ALIGNMENT</p>
   <h2>Find which projector pixels the ROI sees</h2>
   <div class="col">
