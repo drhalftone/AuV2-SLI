@@ -12,7 +12,7 @@ this builds an open-TOPPED box that runs from there down over the rest of the
 stack and closes underneath. Together they are one enclosure, split on the
 camera PCB's bottom face.
 
-    +19.786  ---- top face = OPTICAL DATUM  --.
+    +18.786  ---- top face = OPTICAL DATUM  --.   (+19.786 before the flat seat)
                                               |  camera_lens_box.step
      -1.600  ==== MATING PLANE ===============:  (already committed, UNCHANGED)
                                               |

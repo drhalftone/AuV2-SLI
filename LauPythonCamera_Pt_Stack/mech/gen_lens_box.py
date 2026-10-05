@@ -724,9 +724,12 @@ def build(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--seat-z", type=float, default=1.0,
-                   help="sensor seating plane above the PCB, mm. Not published; "
-                        "shifts the top face 1:1, so it shifts FOCUS 1:1.")
+    # 0.0 since 2026-10: the colour sensor sits FLAT on the PCB in the Andon
+    # socket. The earlier mono build sat it 1.0 mm up, and the old default
+    # matched that -- pass --seat-z 1.0 to regenerate that part.
+    p.add_argument("--seat-z", type=float, default=0.0,
+                   help="sensor seating plane above the PCB, mm (default 0.0 = flat, "
+                        "Andon socket). Shifts the top face 1:1, so it shifts FOCUS 1:1.")
     p.add_argument("--wall", type=float, default=3.0, help="wall thickness, mm")
     p.add_argument("--pcb-clear", type=float, default=0.75,
                    help="gap between the PCB edge and the cavity wall, mm")
