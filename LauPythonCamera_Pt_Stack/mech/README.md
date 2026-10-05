@@ -106,6 +106,13 @@ east edge** — the slot that makes the Pt's LEDs visible — and a wall built o
 caps 1.4 mm of it and leaves **4.1 × 26 mm wide open** straight into the optical cavity. That
 was most of the light this box was trying to keep out.
 
+**The notch plug (`--notch-drop`, default 2.0 mm).** The thick wall stops at `--board-relief`
+(+0.30) because over the board it must not touch it — but over the notch there is no board, so the
+wall's underside and the gap beneath it were still in the LEDs' view. `notch_plug` fills the notch
+itself from z = +0.30 down to **−1.70**, below the PCB's top surface (and 0.1 mm past its bottom),
+keeping `--pcb-clear` (0.75) off the board's three notch edges and running out to the cavity wall
+on the east so it prints as one piece with the box. `--notch-drop 0` removes it.
+
 So the wall's inner face now **follows the real outline**, notch included:
 
 ```
