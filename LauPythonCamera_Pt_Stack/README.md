@@ -143,6 +143,9 @@ both **require VCCO = 2.5 V**. So bank 13 is mandatory regardless of how we term
 
 ## 4. Sensor
 
+> **Now fitted (2026-10):** the **colour** `NOIP1SE1300A` (Bayer), in the Andon socket. Same pinout,
+> same chip ID (`0x50D0`); the only boot difference is register 2 = `0x0001`.
+
 **`NOIP1SN1300A-QTI`** — PYTHON 1300, monochrome, 4-LVDS output, 48-pin LCC. *(The
 originally-specified `-QDI` is discontinued; `-QTI` is the identical sensor with a peel-off
 protective foil over the glass — see the ordering note below.)*

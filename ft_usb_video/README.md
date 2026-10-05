@@ -276,7 +276,8 @@ not in sync-FIFO mode) or the board is held in reset.
 ## Grab + measure on the PC
 
 Prereqs: **FTDI D3XX driver** installed and the FT601 enumerating as a D3XX device
-(not the D2XX/VCP serial driver). Then:
+(not the D2XX/VCP serial driver). On FTDI's **WinUSB** D3XX driver, do not use
+`--stream` / `setStreamPipe` — reads then return 0 bytes (see the top-level README §8.1). Then:
 
 ```powershell
 cd host

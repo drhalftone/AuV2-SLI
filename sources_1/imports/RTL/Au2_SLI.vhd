@@ -1712,7 +1712,8 @@ i_cam_frame_ft : cam_frame_ft
         roi_col8_i => roi_col8_w, roi_row8_i => roi_row8_w,
         roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,
         roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
-        roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w,
+        -- cam_frame_ft samples RED only (8 bits); the TLP bus is RGB, red in 23:16.
+        roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w(23 downto 16),
         imp_phase_i => imp_ph_s1,
         expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gl_div_i => gl_div_w,
@@ -1734,7 +1735,7 @@ i_cam_frame_ft : cam_frame_ft
         ext_sync => vsync_Pos,
         -- The top-left pixel of the incoming HDMI frame, and its update toggle,
         -- so the camera can stamp each captured frame with the pattern it saw.
-        ext_tlp => tlp_to_cam, ext_tlp_tog => tlp_tog_to_cam,
+        ext_tlp => tlp_to_cam(23 downto 16), ext_tlp_tog => tlp_tog_to_cam,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 
@@ -1765,6 +1766,7 @@ i_cam_frame_ft : cam_frame_ft
     -- check is a WITH_CAM=2 feature.
     roi_tcnt_w <= (others => '0');
     roi_sat_w  <= (others => '0');
+    roi_tlp_w(15 downto 0) <= (others => '0');   -- green/blue: not sampled here
 end generate gen_cam;
 
 -- ===================================================================

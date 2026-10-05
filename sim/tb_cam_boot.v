@@ -96,7 +96,7 @@ module tb_cam_boot;
         else $display("    PASS: PLL locked within the poll budget");
 
         // ---- spot-check that the sequence actually LANDED, in the sensor's registers ----
-        chk("mono (not color)",   9'd2,   16'h0000);   // our deviation from Avnet
+        chk("color",              9'd2,   16'h0001);   // NOIP1SE1300A colour part
         chk("PLL enabled",        9'd16,  16'h0003);
         chk("clock gen SEQ05",    9'd32,  16'h3007);   // last write to reg 32 wins
         chk("SEQ04 reg 65",       9'd65,  16'h288B);
@@ -104,6 +104,9 @@ module tb_cam_boot;
         chk("LVDS drivers ON",    9'd112, 16'h0007);   // reg 112 -- PT ONLY
         chk("AFE reg 128",        9'd128, 16'h4714);
         chk("sequencer enabled",  9'd192, 16'h0801);   // 0x0800 | bit0
+        chk("CDS program start",  9'd384, 16'hC800);   // cam_cds_rom entry 7
+        chk("CDS program end",    9'd474, 16'h0030);   // cam_cds_rom entry 100
+        chk("CDS reg 221",        9'd221, 16'h624A);
 
         $display("");
         $display("=== %0d checks, %0d errors ===", checks, errors);

@@ -13,7 +13,11 @@
 //
 // We ran the first two and never the third. 91 of the 104 entries are
 // registers 384-474 -- the sensor's CDS / sequencer TIMING PROGRAM -- so the
-// pixel array has been running on power-on defaults this whole time. The
+// pixel array has been running on power-on defaults this whole time.
+//
+// WIRED IN 2026-10-05: cam_boot_seq (CDS = 1) walks this table after its own
+// ROM. Without it the exposure never reached the storage node -- the "damaged
+// top of the frame" on both the mono and the colour sensor (README section 10). The
 // datasheet (p17-18) says the full required upload is available only under NDA
 // and that different "reserved" settings "may cause the sensor to malfunction";
 // this table is that upload, published in Avnet's PYTHON project.

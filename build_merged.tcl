@@ -176,6 +176,10 @@ for {set try 1} {$try <= 6} {incr try} {
         break
     }
 }
+# Post-synth checkpoint, so a constraint that matches nothing can be debugged
+# against the real netlist names without re-synthesising.
+write_checkpoint -force $out/Au2_SLI_merged_synth.dcp
+
 # ---- Ft+ tri-state enables: multicycle, and it is NOT optional ----------------
 #
 # Ported from build_cam_ft.tcl. The tri-state enable is NOT sampled by the FT601,
@@ -229,16 +233,19 @@ if {[llength $doe_src] >= 36} {
 # still timed synchronously, and it simply became the new worst path at -2.778 ns.
 # The synchroniser exists precisely to absorb that arrival, so timing it against an
 # unrelated clock phase is as meaningless for the toggle as it is for the payload.
-set tog_src [get_cells -quiet -hier -regexp {.*tlp_tog_reg}]
-set tog_dst [get_cells -quiet -hier -regexp {.*tlp_s_reg\[0\]}]
+# SOURCES MOVED with the profiling work: the camera now takes the pixel AS
+# TRANSMITTED (top-level tlp_tx / tlp_tx_tog, RGB; cam_frame_ft takes red 23:16)
+# and captures it twice -- tlp_ws/tlp_w on wordclk, tlp_cs/tlp_c on clk.
+set tog_src [get_cells -quiet -hier -regexp {.*tlp_tx_tog_reg}]
+set tog_dst [get_cells -quiet -hier -regexp {.*tlp_(ws|cs)_reg\[0\]}]
 if {[llength $tog_src] >= 1 && [llength $tog_dst] >= 1} {
     set_max_delay -datapath_only -from $tog_src -to $tog_dst 10.000
     puts "### TLP toggle CDC max_delay applied ([llength $tog_src] -> [llength $tog_dst])"
 } else {
     error "TLP TOGGLE CDC matched [llength $tog_src] src / [llength $tog_dst] dst cells.           Refusing to build: the data bus would be constrained while the toggle that           gates it is not -- which is exactly how this was missed the first time."
 }
-set tlp_src [get_cells -quiet -hier -regexp {.*tlp_dbg_reg\[[0-9]+\]}]
-set tlp_dst [get_cells -quiet -hier -regexp {.*tlp_ui_reg\[[0-9]+\]}]
+set tlp_src [get_cells -quiet -hier -regexp {.*tlp_tx_reg\[[0-9]+\]}]
+set tlp_dst [get_cells -quiet -hier -regexp {.*tlp_(w|c)_reg\[[0-9]+\]}]
 if {[llength $tlp_src] >= 8 && [llength $tlp_dst] >= 8} {
     set_max_delay -datapath_only -from $tlp_src -to $tlp_dst 10.000
     puts "### TLP CDC max_delay applied ([llength $tlp_src] src -> [llength $tlp_dst] dst)"

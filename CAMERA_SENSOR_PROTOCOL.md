@@ -134,7 +134,7 @@ PYTHON-1300-C module) was written independently and agrees on every point:
 |---|---|---|---|---|
 | **0** | `chip_id[15:0]` | **`0x50D0`** | **Status (read-only)** | **Chip ID** |
 | 1 | `resolution[9:8]` | `0x0` | RW | **`0x0` = PYTHON1300** (0x1 = P300, 0x2 = P500) |
-| 2 | `color[0]` | `0x0` | RW | `0` = Monochrome ✔ (our part is SN) |
+| 2 | `color[0]` | `0x0` | RW | `0` = Monochrome, `1` = Colour. **We write `1`** — the board now carries the colour `NOIP1SE1300A` (the SN part needed `0`) |
 | 2 | `parallel[1]` | `0x0` | RW | `0` = **LVDS** ✔ (`1` = parallel) |
 
 > ### Reading `0x50D0` from register 0 is the whole hardware gate.
@@ -334,7 +334,9 @@ A CRC check gives us a free, self-checking correctness signal for the receiver �
 > The values below are indeed NDA-gated *at onsemi*, but Avnet's PYTHON-1300 reference design
 > publishes the complete flow (`docs/reference/onsemi_python_sw.c`, §8.2), cross-checked against
 > the datasheet in four places. `cam_boot_seq.v` implements it (12 checks, 0 errors), with one
-> traceable deviation: monochrome (`reg 2 = 0x0000`, not Avnet's `0x0001`). The analysis below is
+> no deviation now that the part is colour (`reg 2 = 0x0001`, as Avnet writes it; the mono SN part used `0x0000`).
+> **The CDS / timing program was the missing half** — see `cam_cds_rom.v`; until 2026-10-05 it was never
+> uploaded and the pixel array did not work (README §10). The analysis below is
 > kept as the record of *why* the datasheet alone is insufficient.
 
 **This is the one thing the datasheet does not give us**, and it originally blocked the boot

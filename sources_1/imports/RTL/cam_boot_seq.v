@@ -21,9 +21,9 @@
 // >>> would drive dout0 onto the 1.35 V bank-15 pins (not 3.3 V tolerant). DO NOT
 // >>> instantiate or trigger this on an Au build. See CAMERA_IO_MAP.md §8.2.
 //
-// TWO deviations from Avnet's PYTHON-1300-C sequence, both traceable:
-//   - MONOCHROME: their SEQ01 writes reg 2 = 0x0001 (Color). Our NOIP1SN1300A-SN is mono,
-//     so reg 2 = 0x0000 (datasheet reg 2[0]: 0 = Monochrome). ROM entry 0 below.
+// Avnet's PYTHON-1300-C sequence, followed as published:
+//   - COLOR: reg 2 = 0x0001, as Avnet writes it. The board now carries the colour
+//     NOIP1SE1300A (Bayer); the earlier mono NOIP1SN1300A-SN needed reg 2 = 0x0000.
 //   - CLOCKING: none. We adopted the PLL mode their sequence already uses.
 //
 // The FPGA-side ISERDES/decoder reset that Avnet's SEQ06 also does is handled by our
@@ -103,7 +103,20 @@ module cam_boot_seq #(
     // TESTPAT = 0 writes the datasheet defaults instead, which is a functional
     // no-op, so rom[41..44] are harmless for every existing instantiation.
     parameter integer TESTPAT     = 0,
-    parameter integer STOP_AT     = 0
+    parameter integer STOP_AT     = 0,
+    // THE CDS / SEQUENCER TIMING PROGRAM (cam_cds_rom, Avnet's vita_cds_seq, 104
+    // writes, 91 of them registers 384-474). Without it the pixel array runs on
+    // power-on timing defaults: measured 2026-10-05 with no lens aimed at a sunlit
+    // window, the top ~1/3 of the frame read the DARK level and the rest ramped to
+    // saturation by row -- the exposure never reached the storage node, and what
+    // was read out was light leaking in while each row waited for readout. The
+    // mono sensor showed the same thing and was wrongly blamed on damage.
+    //
+    // Runs after the ROM (any STOP_AT >= 45, or 0), so it also overrides the ROM's
+    // values for 41/42/43/65/72. Its two writes to 192 keep the TRIGGERED bit, and
+    // the closing one re-enables the sequencer only if the ROM had enabled it --
+    // with STOP_AT = 45 the caller's stream_go does that later.
+    parameter integer CDS         = 1
 )(
     input  wire        clk,
     input  wire        rst,
@@ -130,7 +143,7 @@ module cam_boot_seq #(
     reg [24:0] rom [0:NROM-1];
     initial begin
         // ---- SEQ01: clock management part 1 (PLL mode) ----
-        rom[0]  = {9'd2,   16'h0000};   // MONO (Avnet: 0x0001 Color)
+        rom[0]  = {9'd2,   16'h0001};   // COLOR (NOIP1SE1300A); the mono SN part used 0x0000
         rom[1]  = {9'd32,  16'h3004};
         rom[2]  = {9'd20,  16'h0000};
         rom[3]  = {9'd17,  16'h2113};
@@ -191,7 +204,8 @@ module cam_boot_seq #(
         S_CID_RD  = 4'd3,  S_CID_W   = 4'd4,  S_CID_CHK = 4'd5,
         S_WR      = 4'd6,  S_WR_W    = 4'd7,
         S_PLL_RD  = 4'd8,  S_PLL_W   = 4'd9,  S_PLL_CHK = 4'd10, S_PLL_WAIT = 4'd11,
-        S_DONE    = 4'd12, S_FAIL    = 4'd13;
+        S_DONE    = 4'd12, S_FAIL    = 4'd13,
+        S_CDS     = 4'd14, S_CDS_W   = 4'd15;
 
     reg [3:0]  st;
     reg [5:0]  idx;
@@ -204,6 +218,19 @@ module cam_boot_seq #(
 
     // Index of the last ROM entry this run will execute.
     localparam integer LAST_IDX = (STOP_AT == 0) ? (NROM - 1) : (STOP_AT - 1);
+    localparam         RUN_CDS  = (CDS != 0) && (STOP_AT == 0 || STOP_AT >= 45);
+    localparam integer CDS_LAST = 103;
+    localparam [15:0]  TRIG_BIT = TRIGGERED ? 16'h0010 : 16'h0000;
+    localparam [15:0]  SEQ_ON   = (STOP_AT == 0) ? 16'h0001 : 16'h0000;
+
+    reg  [6:0]  cidx;
+    wire [8:0]  cds_addr;
+    wire [15:0] cds_raw;
+    cam_cds_rom u_cds (.idx(cidx), .addr(cds_addr), .data(cds_raw));
+    // Register 192 carries mode bits the table knows nothing about.
+    wire [15:0] cds_data = (cds_addr != 9'd192) ? cds_raw
+                         : (cidx == 7'd0) ? (16'h0800 | TRIG_BIT)
+                         : (16'h0800 | TRIG_BIT | SEQ_ON);
 
     always @(posedge clk) begin
         if (rst) begin
@@ -211,6 +238,7 @@ module cam_boot_seq #(
             reset_n <= 1'b0;                 // hold the sensor in reset until we boot it
             spi_start <= 1'b0; spi_rw <= 1'b0; spi_addr <= 9'd0; spi_wdata <= 16'd0;
             idx <= 6'd0; pll_cnt <= 4'd0; wait_cnt <= 24'd0; pll_done <= 1'b0;
+            cidx <= 7'd0;
         end else begin
             spi_start <= 1'b0;               // default: no strobe
 
@@ -255,7 +283,8 @@ module cam_boot_seq #(
                         if ((idx == PLL_AT - 1) && !pll_done) begin
                             pll_cnt <= 4'd0; st <= S_PLL_RD;
                         end else if (idx == LAST_IDX) begin
-                            st <= S_DONE;
+                            cidx <= 7'd0;
+                            st <= RUN_CDS ? S_CDS : S_DONE;
                         end else begin
                             idx <= idx + 6'd1; st <= S_WR;
                         end
@@ -286,6 +315,16 @@ module cam_boot_seq #(
                     end
                 S_PLL_WAIT: if (wait_cnt == 0) st <= S_PLL_RD;
                             else wait_cnt <= wait_cnt - 24'd1;
+
+                // ---- CDS / timing program, after the ROM ----
+                S_CDS: if (!spi_busy) begin
+                        spi_rw <= 1'b1; spi_addr <= cds_addr; spi_wdata <= cds_data;
+                        spi_start <= 1'b1; st <= S_CDS_W;
+                    end
+                S_CDS_W: if (spi_done) begin
+                        if (cidx == CDS_LAST[6:0]) st <= S_DONE;
+                        else begin cidx <= cidx + 7'd1; st <= S_CDS; end
+                    end
 
                 S_DONE: begin busy <= 1'b0; ready <= 1'b1;
                         if (!go) st <= S_IDLE; end   // stay ready until re-triggered

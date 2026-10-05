@@ -31,9 +31,9 @@ The FPGA can:
 |---|---|
 | **FPGA** | Alchitry **Pt V2**, `xc7a100tfgg484-2` (the original Au V2 / XC7A35T build still exists — `build.tcl`) |
 | **Top level** | `sources_1/imports/RTL/Au2_SLI.vhd` (VHDL, instantiating the Verilog subsystems) |
-| **Current build** | `build_merged.tcl` → `build_merged/Au2_SLI.{bit,bin}` — HDMI/SLI **+** camera **+** Ft+ |
+| **Current build** | `build_merged.tcl` → `build_merged/Au2_SLI_merged.{bit,bin}` — HDMI/SLI **+** camera **+** Ft+ |
 | **Constraints** | `constrs_1/imports/RTL/Au2_pt.xdc` + `pt_ftplus_merged.xdc` |
-| **Camera** | ON Semi **PYTHON 1300** (`NOIP1SN1300A-QTI`), 1280×1024, global shutter, 4-lane LVDS @ 720 Mbps |
+| **Camera** | ON Semi **PYTHON 1300**, now the **colour** `NOIP1SE1300A` (Bayer) in an Andon socket — the mono `NOIP1SN1300A-QTI` before it. 1280×1024, global shutter, 4-lane LVDS @ 720 Mbps |
 | **Camera board** | `LauPythonCamera_Pt_Stack/` — the KiCad board **and** its Verilog (`ddr/`) |
 | **Image path** | Alchitry **Ft+** (FT601Q) USB 3.0 — ~325 MB/s measured, 132 fps at 10-bit |
 | **Control path** | the same Ft+ (opcode-0 tunnel), **and** a 115200 UART on Port A (COM6) kept as an independent witness |
@@ -138,7 +138,7 @@ RTL under `sources_1/imports/RTL/` and `LauPythonCamera_Pt_Stack/ddr/`.
 | `cam_sync_decode.v` | Sync-channel decode + 4-lane de-interleave (proven bit-exact against the OVC reference) |
 | `cam_spi_master.v` | 9-bit-addr / 16-bit-data SPI to the sensor |
 | `cam_boot_seq.v` | ROM-driven power-up sequencer |
-| `cam_cds_rom.v` | The CDS / sequencer-program upload payload |
+| `cam_cds_rom.v` | The CDS / sequencer **timing program** (104 writes, regs 384–474 and friends). `cam_boot_seq` uploads it after the boot ROM — **without it the pixel array does not work** (§10) |
 | `cam_line_buf.v` | One-line capture buffer (bring-up) |
 | `cam_async_fifo.v` | Dual-clock gray-pointer FIFO, **FWFT** |
 | `cam_reply_fifo.v` | Control-plane reply bytes, `clk100` → `ui_clk` |
@@ -567,6 +567,16 @@ recovered vs. pipe-output top-left red, `N` = VSYNC edges per window.
 
 Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 
+> **Driver.** This PC runs FTDI's **WinUSB** D3XX driver (`Winusb_D3XX_Release_1.4.0.6`,
+> `FTD3XXWU.inf`), not the kernel `ftdibus3` one. Two consequences:
+> - The `ftd3xx` Python package loads `FTD3XX.dll`, which cannot see a WinUSB-bound device. The
+>   installed package is patched locally to load `FTD3XXWU.dll` from its own folder when present
+>   (and to stub `FT_GetDeviceInfo`, which that DLL does not export). Reinstalling `ftd3xx` undoes it.
+> - **`setStreamPipe` breaks reads** — accepted, then every `readPipe` returns 0 bytes. `cam_live.py`
+>   skips it on WinUSB; `ft_video_grab.py --stream`, `ft_cam_burst.py`, `ddr_loop_check.py`,
+>   `roi_header_check.py` and `scan_latency.py` still call it. Without it the link measured
+>   **~44 MB/s ≈ 26 fps**, not the 325 MB/s / 120 fps of the kernel driver.
+
 > **There is exactly one viewer: `cam_live.py`.** Because only one process can hold the D3XX handle,
 > a second viewer could only ever be the wrong one to have open. `ft_video_grab.py` used to default
 > to a controls-free PySide6 window; that was removed 2026-09-01 and it is now headless. Nothing in
@@ -574,7 +584,7 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 
 | Tool | Does |
 |---|---|
-| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate. Draws the **ROI box** and shows the fabric's ROI mean beside the host's own mean of the same 16×16 pixels — the box goes red when they disagree. `--roi-col8/--roi-row8` if the ROI has been moved off its default |
+| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; **colour** checkbox + Bayer-phase picker + gray-world auto WB (`--color`, `--bayer RGGB/GRBG/GBRG/BGGR`; 2×2 demosaic to 640×512, display only — Save TIFF stays the raw mosaic); exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate. Draws the **ROI box** and shows the fabric's ROI mean beside the host's own mean of the same 16×16 pixels — the box goes red when they disagree. `--roi-col8/--roi-row8` if the ROI has been moved off its default |
 | `cam_ctl.py` | Exposure, frame rate and re-arm from the command line |
 | `campack.py` | Frame geometry, header parsing and 10-bit unpacking — **shared** by the other tools |
 | `cam_rate_bench.py` | Frame rate over repeated 24-frame runs |
@@ -653,11 +663,11 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 
 ## 9. Building and flashing
 
-**Vivado 2025.2.1** lives at `C:\AMDDesignTools\2025.2.1\Vivado\bin\vivado.bat` (**not**
+**Vivado 2026.1** lives at `C:\AMDDesignTools\2026.1\Vivado\bin\vivado.bat` (**not**
 `C:\Xilinx`, and not on `PATH`).
 
 ```
-vivado -mode batch -source build_merged.tcl    # -> build_merged/Au2_SLI.{bit,bin}   THE CURRENT DESIGN
+vivado -mode batch -source build_merged.tcl    # -> build_merged/Au2_SLI_merged.{bit,bin}   THE CURRENT DESIGN
 vivado -mode batch -source build_pt_hdmi.tcl   # the HDMI/SLI half alone on the Pt V2
 vivado -mode batch -source build.tcl           # the original Au V2 / XC7A35T design
 vivado -mode batch -source program.tcl         # volatile JTAG load
@@ -675,8 +685,8 @@ Do not run two builds concurrently — they share an out-of-tree IP generation d
 **Flashing** with the Alchitry loader **2.0.52+** (not the old `C:\Program Files\Alchitry` copy):
 
 ```
-alchitry.exe load --bin build_merged/Au2_SLI.bin --board PtV2 --ram     # volatile, for testing
-alchitry.exe load --bin build_merged/Au2_SLI.bin --board PtV2 --flash   # persistent
+alchitry.exe load --bin build_merged/Au2_SLI_merged.bin --board PtV2 --ram     # volatile, for testing
+alchitry.exe load --bin build_merged/Au2_SLI_merged.bin --board PtV2 --flash   # persistent
 ```
 
 `AlchitryFlasher/AlchitryFlasher.cmd` is a one-click Windows flasher for the released
@@ -702,7 +712,8 @@ the HDMI path.
 | **`edid_fall` at exactly 2/s is healthy** | It is the 0.5 s DDC presence probe |
 | **`0x3E`/`0x3F` wraps below 68.67 Hz** | Period ÷ 16 in 16 bits. Never infer genlock from it |
 | **FWFT FIFO + `rd <= !empty`** | Duplicates the last item every burst; a doubled stream fails exactly like a dead one |
-| **Sensor damage at the top of the frame** | Permanent, from a soldering-era fault. Not an LVDS/link bug — do not chase it |
+| **"Sensor damage" at the top of the frame — it was never damage** | The CDS / timing program (`cam_cds_rom.v`) was committed but **never uploaded**, so the pixel array ran on power-on defaults. The exposure never reached the storage node: with no lens in direct sun the top ~1/3 read the **dark** level and the rest ramped to saturation by row — light leaking in while each row waited for readout. Blamed on soldering for the mono sensor; a new colour sensor in a socket showed the same thing. Fixed 2026-10-05 (`cam_boot_seq` `CDS=1`): rows flat, level linear in exposure |
+| **The build script's "transient glitch" retry can hide real errors** | `synth_design` failures were reported as the `.tcl`-read glitch while the log held a port-width mismatch. Read `build.log` for `ERROR:` before retrying. It also gates only on **setup** WNS — check WHS in `timing.rpt` |
 | **720 Mbps LVDS needs IDELAYE2** | Without eye-centring the isolated bit drops and it looks exactly like bad solder |
 | **The FT601 can enumerate and not clock** | It can read an EEPROM back perfectly while driving no `ft_clk`. Pulse `RESET_N` |
 | **The FT601 can stream fast and lie** | A build measured 192 fps / 0 drops while corrupting `ft_data[31:16]`. An unconstrained source-synchronous bus is invisible to timing *and* to throughput tests. **Verify bytes** |

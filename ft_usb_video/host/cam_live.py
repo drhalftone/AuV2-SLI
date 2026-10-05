@@ -91,6 +91,21 @@ for _i, _a in enumerate(sys.argv):
     elif _a == "--roi-row8" and _i + 1 < len(sys.argv):
         ROI_ROW8 = int(sys.argv[_i + 1])
 
+# COLOUR SENSOR (NOIP1SE1300A). The pixels arrive as a raw Bayer mosaic; the
+# viewer demosaics for DISPLAY only -- Save TIFF still writes the raw mosaic.
+# --color starts in colour mode; --bayer picks the 2x2 phase (which colour sits
+# at row 0, col 0 depends on where readout starts, so it is a setting, not a
+# constant -- if skin looks blue, try another phase).
+BAYER_PATTERNS = ("RGGB", "GRBG", "GBRG", "BGGR")
+COLOR = "--color" in sys.argv
+BAYER = "GRBG"
+for _i, _a in enumerate(sys.argv):
+    if _a == "--bayer" and _i + 1 < len(sys.argv):
+        BAYER = sys.argv[_i + 1].upper()
+        COLOR = True
+if BAYER not in BAYER_PATTERNS:
+    sys.exit("--bayer must be one of %s" % ", ".join(BAYER_PATTERNS))
+
 
 class Cam:
     """Owns the device. All pipe access goes through here under one lock."""
@@ -113,11 +128,18 @@ class Cam:
             self.dev.setPipeTimeout(IN_PIPE, 1000)
         except Exception:
             pass
-        try:
-            self.dev.setStreamPipe(IN_PIPE, CH)
-            self.streamed = True
-        except Exception:
-            self.streamed = False
+        # NOT on FTDI's WinUSB D3XX library (FTD3XXWU.dll): setStreamPipe is
+        # accepted there, and then every readPipe returns 0 bytes -- measured,
+        # 80k empty reads in 3 s and no picture. Plain reads stream normally.
+        winusb = "FTD3XXWU" in getattr(getattr(ftd3xx, "_ftd3xx_win32", None),
+                                       "_libname", "").upper()
+        self.streamed = False
+        if not winusb:
+            try:
+                self.dev.setStreamPipe(IN_PIPE, CH)
+                self.streamed = True
+            except Exception:
+                pass
         self.lock = threading.Lock()
         self.buf = ctypes.create_string_buffer(CH)
 
@@ -239,6 +261,10 @@ class App:
         self.auto = tk.BooleanVar(value=False)
         self.slo = None
         self.shi = None
+        self.color = tk.BooleanVar(value=COLOR)
+        self.bayer = tk.StringVar(value=BAYER)
+        self.awb = tk.BooleanVar(value=True)
+        self.wb = None                        # eased (r, g, b) gains
 
         self.dw, self.dh = DISP_W, DISP_H     # current preview area, tracked live
         self.save_dir = os.path.abspath(CAPTURE_DIR)   # remembered between saves
@@ -305,6 +331,10 @@ class App:
         self.view.bind("<Configure>", self.on_resize)
 
         ttk.Checkbutton(bar, text="auto contrast", variable=self.auto).pack(side=tk.LEFT)
+        ttk.Checkbutton(bar, text="colour", variable=self.color).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Combobox(bar, textvariable=self.bayer, values=BAYER_PATTERNS, width=5,
+                     state="readonly").pack(side=tk.LEFT, padx=2)
+        ttk.Checkbutton(bar, text="auto WB", variable=self.awb).pack(side=tk.LEFT)
         ttk.Button(bar, text="Save TIFF", command=self.save_tiff).pack(side=tk.LEFT, padx=6)
         self.save_lbl = ttk.Label(bar, text="", width=30)
         self.save_lbl.pack(side=tk.LEFT)
@@ -372,6 +402,40 @@ class App:
         lut[:1024] = np.clip((xs - lo) * gain, 0, 255).astype(np.uint8)
         lut[1024:] = 255
         return lut[a]
+
+    def debayer(self, a, lo, gain):
+        """Raw Bayer mosaic -> half-resolution RGB, 8-bit.
+
+        Each 2x2 cell becomes one RGB pixel (the two greens averaged). That is
+        640x512, which is still more than the preview shows, and it costs a few
+        strided slices instead of an interpolating demosaic -- the reader thread
+        is starved by anything that holds the GIL for long.
+
+        Auto WB is gray-world: gains that make the scene's mean R, G and B equal,
+        eased frame to frame like auto contrast so the colour does not pump.
+        """
+        p = self.bayer.get()
+        cells = {}
+        greens = []
+        for k, (dy, dx) in enumerate(((0, 0), (0, 1), (1, 0), (1, 1))):
+            plane = a[dy::2, dx::2].astype(np.float32)
+            if p[k] == "G":
+                greens.append(plane)
+            else:
+                cells[p[k]] = plane
+        rgb = np.stack((cells["R"], (greens[0] + greens[1]) * 0.5, cells["B"]), axis=-1)
+        rgb -= lo
+        if self.awb.get():
+            m = np.maximum(rgb[::4, ::4].reshape(-1, 3).mean(axis=0), 1.0)
+            target = m[1] / m
+            if self.wb is None:
+                self.wb = target
+            else:
+                self.wb += 0.05 * (target - self.wb)
+            rgb *= self.wb * gain
+        else:
+            rgb *= gain
+        return np.clip(rgb, 0, 255).astype(np.uint8)
 
     def on_expo_move(self, _ev):
         """Live feedback while dragging -- no command sent until release."""
@@ -512,8 +576,9 @@ class App:
         self.save_dir = os.path.dirname(path) or init_dir
         name = os.path.basename(path)
         desc = ("PYTHON1300 %dx%d 10-bit in 16-bit TIFF; values 0..1023 unscaled; "
+                "raw Bayer mosaic (viewer phase %s); "
                 "exposure %d us; frame_idx %s; slot %s"
-                % (NCOL, NROW, int(self.expo.get()), idx, slot))
+                % (NCOL, NROW, self.bayer.get(), int(self.expo.get()), idx, slot))
         try:
             # 270 = ImageDescription, so the capture carries its own settings.
             Image.fromarray(a).save(path, format="TIFF", tiffinfo={270: desc})
@@ -569,9 +634,13 @@ class App:
                     self.slo += k * (float(lo) - self.slo)
                     self.shi += k * (float(hi) - self.shi)
                 span = max(self.shi - self.slo, 1.0)
-                img = self.map_via_lut(a, self.slo, 255.0 / span)
+                lo, gain = self.slo, 255.0 / span
             else:
-                img = self.map_via_lut(a, 0.0, 0.25)  # 10-bit -> 8-bit, no stretch
+                lo, gain = 0.0, 0.25                  # 10-bit -> 8-bit, no stretch
+            if self.color.get():
+                img = self.debayer(a, lo, gain)
+            else:
+                img = self.map_via_lut(a, lo, gain)
             # Fit the preview to whatever the window currently gives us, KEEPING
             # THE ASPECT RATIO. Stretching to the raw widget size would distort a
             # 5:4 sensor into whatever shape the window happens to be, and on a
