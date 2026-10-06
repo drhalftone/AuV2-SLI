@@ -20,9 +20,11 @@ That single surface sets focus. Its height is the one dimension on this part
 that has to be right; everything else is clearance. Print/machine it flat and do
 not sand it.
 
-The bore is deliberately a CLEARANCE hole, not a thread -- 1"-32 UN has a
-25.4 mm major diameter and the bore is that plus --bore-clear, so the barrel
-hangs through without binding and the shoulder alone carries the lens.
+The bore is a THREAD-IN hole: 1"-32 UN has a 25.4 mm major diameter and the
+bore is that plus --bore-clear (-0.10 -> 25.3 mm), so the lens screws into the
+plastic and cuts its own thread, and the shoulder still lands on the top face.
+The number came off a printed test plate (gen_bore_test_plate.py, 2026-10):
+25.2 threads, 25.3 is the better fit. +0.80 restores the old 26.2 clearance hole.
 
 EVERY GEOMETRIC NUMBER IS READ FROM THE BOARD. The outline, the four corner
 holes, U1 and every component courtyard come from ../LauPythonCamera_Pt_Stack.kicad_pcb
@@ -661,6 +663,50 @@ def build(args):
     expected[n] = (abs(sw.signed_area(outer))
                    - sum(abs(sw.signed_area(h)) for h in tholes)) * args.top_t
 
+    # A 1/4-20 HEAT-SET INSERT, for a tripod, on the side wall nearest the board's
+    # Bank B connector (J2, the lone 80-pin DF40 on the SOUTH edge -- the north
+    # edge carries J1 + the 50-pin J3). A buttress on the outside of that wall,
+    # running the box's full height so it stands on the table like the walls and
+    # prints with no overhang either way up. Its hole is horizontal and BLIND:
+    # it runs through the buttress only and the wall closes the bottom, so the
+    # insert never opens the cavity to light. Built in a local frame (step_writer
+    # `frame=`) because a prism along Z cannot carry a horizontal hole.
+    ins = None
+    if args.insert_face.upper() != "NONE":
+        f = args.insert_face.upper()
+        if f in seam_open:
+            sys.exit("--insert-face %s is an --open-face" % f)
+        outward = {"N": (0.0, 1.0, 0.0), "S": (0.0, -1.0, 0.0),
+                   "E": (1.0, 0.0, 0.0), "W": (-1.0, 0.0, 0.0)}[f]
+        half = out_h / 2.0 if f in "NS" else out_w / 2.0
+        span = out_w if f in "NS" else out_h
+        if args.insert_boss_w / 2.0 + abs(args.insert_x) > span / 2.0 - args.corner_r:
+            sys.exit("INSERT BOSS OFF THE FLAT: %.1f wide at %+.1f on a %.1f face "
+                     "with %.1f corners" % (args.insert_boss_w, args.insert_x, span,
+                                            args.corner_r))
+        ez = outward
+        ey = (0.0, 0.0, 1.0)
+        ex = (ey[1] * ez[2] - ey[2] * ez[1], ey[2] * ez[0] - ey[0] * ez[2],
+              ey[0] * ez[1] - ey[1] * ez[0])            # ex = ey x ez, right-handed
+        origin = (cx + outward[0] * half, cy + outward[1] * half, 0.0)
+        ins_z = (z_table + top_surf) / 2.0 if args.insert_z is None else args.insert_z
+        hole_r = args.insert_hole / 2.0
+        if (ins_z - hole_r < z_table + args.insert_wall
+                or ins_z + hole_r > top_surf - args.insert_wall
+                or hole_r > args.insert_boss_w / 2.0 - args.insert_wall):
+            sys.exit("INSERT HOLE BREAKS OUT: %.1f hole at z %.2f in a %.1f wide boss, "
+                     "z %.2f..%.2f" % (args.insert_hole, ins_z, args.insert_boss_w,
+                                       z_table, top_surf))
+        n = "insert_boss"
+        prof = sw.rect(args.insert_x, (z_table + top_surf) / 2.0, args.insert_boss_w,
+                       top_surf - z_table)
+        hole = sw.reverse(sw.circle(args.insert_x, ins_z, hole_r, args.segments))
+        step.prism(prof, 0.0, args.insert_depth, n, COLORS["boss"], holes=[hole],
+                   frame=(origin, ex, ey, ez))
+        expected[n] = ((abs(sw.signed_area(prof)) - abs(sw.signed_area(hole)))
+                       * args.insert_depth)
+        ins = (f, ins_z)
+
     # Optional locating bosses on the PCB's own corner holes.
     #
     # These HANG FROM THE TOP FACE down to the board -- the first version ran
@@ -722,9 +768,15 @@ def build(args):
       % (bw, bh, cav_w, cav_h))
     w("optical    axis KiCad (%.3f, %.3f), bore centred there\n"
       % (u1["x"] + ox, u1["y"] - oy))
-    w("bore       %.2f mm dia = C-mount thread %.1f + %.2f clearance (NOT threaded)\n"
-      % (2 * bore_r, C_THREAD_OD, args.bore_clear))
-    w("stack      PCB 0.00 | seat %.2f | image plane %.2f | glass %.2f | "
+    w("bore       %.2f mm dia = C-mount thread %.1f %+.2f (%s)\n"
+      % (2 * bore_r, C_THREAD_OD, args.bore_clear,
+         "thread-in" if args.bore_clear < 0 else "clearance, NOT threaded"))
+    if ins:
+        w("insert     1/4-20 heat-set on the %s face (by J2, Bank B): %.2f hole, %.1f deep, "
+          "blind,\n           axis z %.2f, %+.1f mm along the face, in a %.1f mm buttress "
+          "z %.2f..%.2f\n" % (ins[0], args.insert_hole, args.insert_depth, ins[1],
+                              args.insert_x, args.insert_boss_w, z_table, top_surf))
+    w("stack     PCB 0.00 | seat %.2f | image plane %.2f | glass %.2f | "
       "top face %.3f\n" % (args.seat_z, image_z, glass_z, top_surf))
     w("*** TOP FACE %.3f mm = image plane %.3f + C-mount flange %.3f ***\n"
       % (top_surf, image_z, C_FLANGE_FOCAL))
@@ -786,8 +838,25 @@ def main():
                    help="PCB thickness, mm -- the walls stand on the table, so this "
                         "sets how far below the board top they reach")
     p.add_argument("--top-t", type=float, default=3.0, help="top face thickness, mm")
-    p.add_argument("--bore-clear", type=float, default=0.80,
-                   help="added to the 25.4 mm thread OD so the barrel never touches")
+    p.add_argument("--bore-clear", type=float, default=-0.10,
+                   help="added to the 25.4 mm thread OD; negative = the lens threads into "
+                        "the plastic (-0.10 = 25.3 mm, from the test plate; +0.80 = the "
+                        "old clearance hole)")
+    p.add_argument("--insert-face", default="S",
+                   help="wall for the 1/4-20 tripod insert: N/S/E/W, or none. S = the "
+                        "side nearest J2, the lone 80-pin DF40")
+    p.add_argument("--insert-hole", type=float, default=8.0,
+                   help="insert hole diameter, mm -- take it from the insert's datasheet")
+    p.add_argument("--insert-depth", type=float, default=13.0,
+                   help="hole depth = buttress protrusion, mm (an insert up to 12.7 long)")
+    p.add_argument("--insert-boss-w", type=float, default=16.0,
+                   help="buttress width along the face, mm")
+    p.add_argument("--insert-wall", type=float, default=2.5,
+                   help="minimum plastic round the insert hole, mm")
+    p.add_argument("--insert-x", type=float, default=0.0,
+                   help="buttress offset along the face from its centre, mm")
+    p.add_argument("--insert-z", type=float, default=None,
+                   help="insert axis height, mm (default: mid-height of the box)")
     p.add_argument("--wall-clear", type=float, default=0.40,
                    help="minimum gap from a wall to any component, mm")
     p.add_argument("--top-clear", type=float, default=1.00)

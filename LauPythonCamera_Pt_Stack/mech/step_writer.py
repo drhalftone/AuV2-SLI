@@ -127,6 +127,50 @@ def ear_clip(poly):
     return tris
 
 
+def _segments_cross(p1, p2, p3, p4):
+    """True if segments p1p2 and p3p4 cross at a point interior to both."""
+    d1, d2 = _cross2(p1, p2, p3), _cross2(p1, p2, p4)
+    d3, d4 = _cross2(p3, p4, p1), _cross2(p3, p4, p2)
+    return d1 * d2 < -_EPS and d3 * d4 < -_EPS
+
+
+def _inside(pt, loop):
+    """Even-odd point-in-polygon."""
+    x, y = pt
+    c = False
+    for i in range(len(loop)):
+        (ax, ay), (bx, by) = loop[i], loop[(i + 1) % len(loop)]
+        if (ay > y) != (by > y) and x < ax + (y - ay) / (by - ay) * (bx - ax):
+            c = not c
+    return c
+
+
+def _bridge_clear(a, b, poly, hole, others):
+    """A bridge a->b crosses no edge of the merged loop or of any hole, and runs
+    through material (its midpoint is inside poly and outside every hole)."""
+    for loop in [poly, hole] + list(others):
+        for i in range(len(loop)):
+            if _segments_cross(a, b, loop[i], loop[(i + 1) % len(loop)]):
+                return False
+    mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+    return _inside(mid, poly) and not any(_inside(mid, h) for h in [hole] + list(others))
+
+
+def _frame_maps(frame):
+    """(point map, direction map) for a prism's local frame; identity for None."""
+    if frame is None:
+        return (lambda p: p), (lambda v: v)
+    o, ex, ey, ez = frame
+
+    def xn(v):
+        return tuple(v[0] * ex[i] + v[1] * ey[i] + v[2] * ez[i] for i in range(3))
+
+    def xf(p):
+        d = xn(p)
+        return tuple(o[i] + d[i] for i in range(3))
+    return xf, xn
+
+
 def bridge_holes(outer, holes):
     """Merge holes into a counter-clockwise outer loop, giving one simple polygon.
 
@@ -155,6 +199,21 @@ def bridge_holes(outer, holes):
         if best_i is None:
             raise ValueError("hole is not inside the outer loop")
         p = best_i if poly[best_i][0] >= poly[(best_i + 1) % n][0] else (best_i + 1) % n
+        rest = [h for h in holes if h is not hole]
+        if not _bridge_clear((mx, my), poly[p], poly, hole, rest):
+            # The hit edge's endpoint can be a far corner of a long outer edge, and the
+            # straight bridge to it then cuts through another hole (offset hole rows do
+            # exactly this). Fall back to the nearest vertex it CAN see. Only taken when
+            # the old choice was already broken, so existing outputs are unchanged.
+            count = {}
+            for q in poly:
+                count[q] = count.get(q, 0) + 1
+            cands = sorted((i for i in range(n) if count[poly[i]] == 1),
+                           key=lambda i: math.hypot(poly[i][0] - mx, poly[i][1] - my))
+            p = next((i for i in cands
+                      if _bridge_clear((mx, my), poly[i], poly, hole, rest)), None)
+            if p is None:
+                raise ValueError("no visible bridge vertex for hole")
         m = len(hole)
         poly = (poly[:p + 1] + [hole[(hi + k) % m] for k in range(m)]
                 + [hole[hi], poly[p]] + poly[p + 1:])
@@ -249,6 +308,7 @@ class StepFile:
         self._edges = {}
         self.solids = []      # (entity id, name, rgb)
         self.meshes = []      # (name, outline CCW, holes CW, z0, z1) -- for STL export
+        self.frames = {}      # name -> (origin, ex, ey, ez) for a prism not built along +Z
 
     @property
     def entity_count(self):
@@ -322,7 +382,9 @@ class StepFile:
         plane = self._e("PLANE('',#%d)" % self.axis2(loop_pts[0], normal, ref))
         return self._e("ADVANCED_FACE('',(%s),#%d,.T.)" % (",".join(bounds), plane))
 
-    def _walls(self, pts, z0, z1, faces):
+    def _walls(self, pts, z0, z1, faces, xf=None, xn=None):
+        xf = xf or (lambda p: p)
+        xn = xn or (lambda v: v)
         for i in range(len(pts)):
             ax, ay = pts[i]
             bx, by = pts[(i + 1) % len(pts)]
@@ -331,14 +393,18 @@ class StepFile:
             if n < 1e-9:
                 continue
             faces.append(self.planar_face(
-                [(ax, ay, z0), (bx, by, z0), (bx, by, z1), (ax, ay, z1)],
-                (dy / n, -dx / n, 0.0)))
+                [xf(q) for q in [(ax, ay, z0), (bx, by, z0), (bx, by, z1), (ax, ay, z1)]],
+                xn((dy / n, -dx / n, 0.0))))
 
-    def prism(self, outline, z0, z1, name, rgb, holes=()):
+    def prism(self, outline, z0, z1, name, rgb, holes=(), frame=None):
         """Extrude a closed outline between two Z planes, optionally with holes through it.
 
         `outline` is normalised to counter-clockwise; each hole is normalised to clockwise.
         Holes must lie inside the outline and not touch it or each other.
+
+        `frame` = (origin, ex, ey, ez), a right-handed orthonormal set: the prism is built
+        in that local frame instead, so it can point along any axis -- a boss sticking out
+        sideways with its hole horizontal. None is the world frame, unchanged.
         """
         pts = list(outline)
         if signed_area(pts) < 0:
@@ -350,20 +416,23 @@ class StepFile:
                 h = reverse(h)
             hs.append(h)
 
+        xf, xn = _frame_maps(frame)
         faces = [
-            self.planar_face([(x, y, z1) for x, y in pts], (0.0, 0.0, 1.0),
-                             [[(x, y, z1) for x, y in h] for h in hs]),
-            self.planar_face([(x, y, z0) for x, y in reverse(pts)], (0.0, 0.0, -1.0),
-                             [[(x, y, z0) for x, y in reverse(h)] for h in hs]),
+            self.planar_face([xf((x, y, z1)) for x, y in pts], xn((0.0, 0.0, 1.0)),
+                             [[xf((x, y, z1)) for x, y in h] for h in hs]),
+            self.planar_face([xf((x, y, z0)) for x, y in reverse(pts)], xn((0.0, 0.0, -1.0)),
+                             [[xf((x, y, z0)) for x, y in reverse(h)] for h in hs]),
         ]
-        self._walls(pts, z0, z1, faces)
+        self._walls(pts, z0, z1, faces, xf, xn)
         for h in hs:
-            self._walls(h, z0, z1, faces)
+            self._walls(h, z0, z1, faces, xf, xn)
 
         shell = self._e("CLOSED_SHELL('',(%s))" % ",".join("#%d" % f for f in faces))
         solid = self._e("MANIFOLD_SOLID_BREP('%s',#%d)" % (name, shell))
         self.solids.append((solid, name, rgb))
         self.meshes.append((name, pts, hs, z0, z1))
+        if frame is not None:
+            self.frames[name] = frame
         return solid
 
     # -- STL ---------------------------------------------------------------------------
@@ -387,8 +456,16 @@ class StepFile:
 
     def stl_solids(self, skip=()):
         """[(name, triangles)], one entry per solid."""
-        return [(name, self._solid_triangles(outer, holes, z0, z1))
-                for name, outer, holes, z0, z1 in self.meshes if name not in skip]
+        out = []
+        for name, outer, holes, z0, z1 in self.meshes:
+            if name in skip:
+                continue
+            tris = self._solid_triangles(outer, holes, z0, z1)
+            if name in self.frames:
+                xf, _ = _frame_maps(self.frames[name])
+                tris = [tuple(xf(q) for q in t) for t in tris]
+            out.append((name, tris))
+        return out
 
     def stl_triangles(self, skip=()):
         return [t for _, tris in self.stl_solids(skip) for t in tris]

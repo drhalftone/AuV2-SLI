@@ -91,7 +91,8 @@ def replay(dst, src, prefix, expected):
     n = 0
     for name, pts, holes, z0, z1 in src.meshes:
         nm = "%s_%s" % (prefix, name)
-        dst.prism(pts, z0, z1, nm, rgb.get(name, (0.5, 0.5, 0.5)), holes=holes)
+        dst.prism(pts, z0, z1, nm, rgb.get(name, (0.5, 0.5, 0.5)), holes=holes,
+                  frame=src.frames.get(name))
         expected[nm] = ((abs(sw.signed_area(pts))
                          - sum(abs(sw.signed_area(h)) for h in holes)) * (z1 - z0))
         n += 1

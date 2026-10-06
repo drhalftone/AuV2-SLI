@@ -49,8 +49,19 @@ that offset decentres the image and looks perfectly plausible while doing so.
 ### `gen_lens_box.py` — C-mount (preferred)
 
 An open-bottomed box. The lens is not threaded into anything: its flange shoulder rests on
-the top face and gravity holds it, board flat on a table. The bore is a **clearance** hole,
-25.4 + 0.8 mm, so the barrel hangs through without touching.
+the top face and gravity holds it, board flat on a table. The bore is a **thread-in** hole,
+25.4 − 0.1 = **25.3 mm** (`--bore-clear -0.10`): the lens screws into the plastic and cuts its
+own thread until the shoulder lands on the top face. The number came off a printed test plate
+(`gen_bore_test_plate.py`, ten holes 26.0 → 24.2 mm): 25.2 threads, 25.3 is the better fit.
+`--bore-clear 0.80` restores the old 26.2 mm clearance hole.
+
+**A 1/4-20 tripod insert** sits on the **south** wall — the side nearest `J2`, the lone 80-pin
+DF40 (the north edge has `J1` *and* the 50-pin `J3`). It is a 16 mm buttress running the box's
+full height (table to top face, so no overhang printed either way up) with a horizontal,
+**blind** Ø8.0 × 13 mm hole for a melt-in brass insert; the wall closes the bottom, so it never
+opens the cavity to light. `--insert-hole/-depth` come from the insert's datasheet;
+`--insert-face none` removes it. It is built with `step_writer`'s `frame=`, which lets a prism
+point along any axis.
 
 **The top face is the optical datum.** C-mount flange focal distance is 17.526 mm from the
 shoulder to the image plane, so `top surface = image plane + 17.526` = **18.786 mm** above
