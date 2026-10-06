@@ -19,7 +19,7 @@ that differs is a real change.
 python gen_sensor_step.py                    # typical dimensions
 python gen_sensor_step.py --tolerance max    # worst-case envelope
 python gen_socket_tile.py
-python gen_lens_box.py --bosses              # the C-mount box, located on the corner holes
+python gen_lens_box.py --bosses --open-face W --pcb-t 7.1 --washer-t 2.5   # the C-mount box as committed (spacer stack, d6201f5)
 python gen_base_box.py --open-face E         # ...and the lower half that sandwiches to it
 python gen_enclosure_assembly.py             # both halves in ONE file, to check the fit
 python gen_lens_holder.py                    # the M12 alternative
@@ -53,8 +53,9 @@ the top face and gravity holds it, board flat on a table. The bore is a **cleara
 25.4 + 0.8 mm, so the barrel hangs through without touching.
 
 **The top face is the optical datum.** C-mount flange focal distance is 17.526 mm from the
-shoulder to the image plane, so `top surface = image plane + 17.526` = **19.786 mm** above
-the PCB at the default seat height. That one surface sets focus; everything else is
+shoulder to the image plane, so `top surface = image plane + 17.526` = **18.786 mm** above
+the PCB at the default seat height (0.0 — the sensor sits flat in the Andon socket; it was
+19.786 at the old 1.0 mm seat). That one surface sets focus; everything else is
 clearance. Machine or print it flat and do not sand it.
 
 **It stands on the table, not the board.** The first version put walls on the board edge
@@ -68,10 +69,10 @@ being precise about because it is the whole load path:
 
 | | z | |
 |---|---|---|
-| top face | 16.786 → 19.786 | the optical datum; the lens shoulder rests here |
-| column ×4 | 1.200 → 16.786 | hangs from the top face, bored Ø4.2 for the screw head |
+| top face | 15.786 → 18.786 | the optical datum; the lens shoulder rests here |
+| column ×4 | 1.200 → 15.786 | hangs from the top face, bored Ø4.2 for the screw head |
 | washer ×4 | 0.000 → 1.200 | a flat Ø7.0 annulus **bearing down on the PCB** at its corner holes |
-| walls | −1.600 → 16.786 | stand on the table and touch nothing |
+| walls | −1.600 → 15.786 | stand on the table and touch nothing |
 
 So the **walls are a skirt, not a support**. The PCB is clamped between the four washers above
 and a nut below, and the board therefore hangs from the box at exactly four points — the
@@ -104,6 +105,13 @@ the wall.
 east edge** — the slot that makes the Pt's LEDs visible — and a wall built on the bounding box
 caps 1.4 mm of it and leaves **4.1 × 26 mm wide open** straight into the optical cavity. That
 was most of the light this box was trying to keep out.
+
+**The notch plug (`--notch-drop`, default 2.0 mm).** The thick wall stops at `--board-relief`
+(+0.30) because over the board it must not touch it — but over the notch there is no board, so the
+wall's underside and the gap beneath it were still in the LEDs' view. `notch_plug` fills the notch
+itself from z = +0.30 down to **−1.70**, below the PCB's top surface (and 0.1 mm past its bottom),
+keeping `--pcb-clear` (0.75) off the board's three notch edges and running out to the cavity wall
+on the east so it prints as one piece with the box. `--notch-drop 0` removes it.
 
 So the wall's inner face now **follows the real outline**, notch included:
 
@@ -251,7 +259,9 @@ the tap drill for M12 × 0.5. Note the PYTHON 1300's image circle is 7.87 mm dia
 
 ### The number that is not published
 
-`--seat-z`, the sensor's seating plane above the PCB, defaults to 1.0 mm. It is not in any
+`--seat-z`, the sensor's seating plane above the PCB, defaults to **0.0 mm**: since 2026-10 the
+colour sensor sits flat on the PCB in the Andon socket (it was 1.0 mm for the earlier mono build —
+`--seat-z 1.0` regenerates those parts, plus `--plate-z 4.5` for the M12 holder). It is not in any
 datasheet — `gen_socket_tile.py` says so outright — and it shifts the top face, and
 therefore **focus**, 1:1. Measure the glass height with calipers before committing to a
 machined part. A C-mount lens at f/1.4 has very little depth of focus.
@@ -547,7 +557,7 @@ purpose, until real positions are measured.
 The enclosure is **two half boxes sharing one split plane**, not a new design:
 
 ```
-  +19.786  ---- top face = OPTICAL DATUM ---------.
+  +18.786  ---- top face = OPTICAL DATUM ---------.
                                                   |  camera_lens_box.step
    -1.600  ==== MATING PLANE ===================== :  (unchanged)
                                                   |

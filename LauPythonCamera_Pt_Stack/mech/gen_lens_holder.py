@@ -23,7 +23,9 @@ checks fail the build rather than warn.
 
 THE ONE NUMBER THAT IS NOT PUBLISHED is the height of the sensor's seating plane
 above the PCB -- gen_socket_tile.py says so explicitly ("published nowhere").
---seat-z takes it; the default of 1.0 mm is the figure supplied for this board.
+--seat-z takes it. The default is 0.0: the colour sensor sits flat on the PCB in
+the Andon socket (2026-10). The earlier build sat it 1.0 mm up -- regenerate that
+with --seat-z 1.0 --plate-z 4.5.
 It sets the image-plane height and therefore the whole optical stack, so if it is
 wrong, the focus range is wrong by the same amount. It is a single flag.
 """
@@ -216,11 +218,13 @@ def build(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--seat-z", type=float, default=1.0,
-                   help="sensor seating plane above the PCB, mm (default 1.0). Not "
-                        "published; sets the whole optical stack.")
-    p.add_argument("--plate-z", type=float, default=4.50,
-                   help="plate underside above the PCB, mm (default 4.50)")
+    p.add_argument("--seat-z", type=float, default=0.0,
+                   help="sensor seating plane above the PCB, mm (default 0.0 = flat, "
+                        "Andon socket). Sets the whole optical stack.")
+    # Moves WITH --seat-z: 3.50 here and 4.50 at seat 1.0 give the same 1.25 mm
+    # over the glass and the same 2.24..17.24 mm focus range.
+    p.add_argument("--plate-z", type=float, default=3.50,
+                   help="plate underside above the PCB, mm (default 3.50)")
     p.add_argument("--plate-t", type=float, default=3.00, help="plate thickness, mm")
     p.add_argument("--barrel-h", type=float, default=12.0,
                    help="threaded barrel height above the plate, mm")

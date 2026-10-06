@@ -142,6 +142,35 @@ def offset_polygon(poly, dists):
     return out
 
 
+def east_notch(contour):
+    """The NOTCH in the board's east edge as its own CCW polygon (model coords).
+
+    It is the run of outline vertices that leaves the east edge of the bounding
+    box and comes back to it, closed by the straight line the board would have
+    had. Exactly one such run is expected; anything else exits rather than plug
+    the wrong hole.
+    """
+    xe = max(p[0] for p in contour)
+    n = len(contour)
+    on = [abs(p[0] - xe) < 1e-6 for p in contour]
+    runs = []
+    for i in range(n):
+        if on[i] and not on[(i + 1) % n]:          # leaves the east edge here
+            j, run = (i + 1) % n, [contour[i]]
+            while not on[j]:
+                run.append(contour[j]); j = (j + 1) % n
+            run.append(contour[j])
+            runs.append(run)
+    # The corner chamfers also leave the east edge, but run on round the board
+    # onto the north/south edges; the notch never touches those.
+    y0, y1 = min(p[1] for p in contour), max(p[1] for p in contour)
+    runs = [r for r in runs if all(y0 + 1e-6 < p[1] < y1 - 1e-6 for p in r)]
+    if len(runs) != 1:
+        sys.exit("east_notch: expected ONE notch in the east edge, found %d" % len(runs))
+    poly = list(reversed(runs[0]))                 # board CCW -> notch CCW
+    return poly if sw.signed_area(poly) > 0 else list(reversed(poly))
+
+
 def union_circle(poly, cx, cy, r, seg=24):
     """Union a CCW polygon with a circle that crosses its boundary exactly twice.
 
@@ -593,6 +622,26 @@ def build(args):
                    holes=[sw.reverse(aperture)])
         expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(aperture)))
                        * (top_under - args.board_relief))
+
+        # THE NOTCH PLUG. The thick wall stops at --board-relief above the PCB,
+        # but over the notch there is no board to stop at: the Pt's LEDs see the
+        # wall's underside straight through the notch, and the gap between it and
+        # the board is still a way in. The plug fills the notch itself, keeping
+        # --pcb-clear off the board's edges and running out to the cavity wall on
+        # the east side so it is one piece with the box, down --notch-drop below
+        # the wall -- i.e. below the board's top surface, inside the notch.
+        if args.notch_drop > EPS:
+            npoly = east_notch(contour)
+            nd = [args.pcb_clear] * len(npoly)
+            nd[-1] = -args.pcb_clear                # the closing edge: out to the wall
+            plug = offset_polygon(npoly, nd)
+            z_pl = args.board_relief - args.notch_drop
+            if z_pl < wall_bot - EPS:
+                sys.exit("--notch-drop %.2f puts the plug at z %.2f, below the wall "
+                         "bottom %.2f" % (args.notch_drop, z_pl, wall_bot))
+            n = "notch_plug"
+            step.prism(plug, z_pl, args.board_relief, n, COLORS["box"])
+            expected[n] = abs(sw.signed_area(plug)) * args.notch_drop
     else:
         n = "walls"
         step.prism(outer, wall_bot, top_under, n, COLORS["box"],
@@ -724,9 +773,12 @@ def build(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--seat-z", type=float, default=1.0,
-                   help="sensor seating plane above the PCB, mm. Not published; "
-                        "shifts the top face 1:1, so it shifts FOCUS 1:1.")
+    # 0.0 since 2026-10: the colour sensor sits FLAT on the PCB in the Andon
+    # socket. The earlier mono build sat it 1.0 mm up, and the old default
+    # matched that -- pass --seat-z 1.0 to regenerate that part.
+    p.add_argument("--seat-z", type=float, default=0.0,
+                   help="sensor seating plane above the PCB, mm (default 0.0 = flat, "
+                        "Andon socket). Shifts the top face 1:1, so it shifts FOCUS 1:1.")
     p.add_argument("--wall", type=float, default=3.0, help="wall thickness, mm")
     p.add_argument("--pcb-clear", type=float, default=0.75,
                    help="gap between the PCB edge and the cavity wall, mm")
@@ -786,6 +838,10 @@ def main():
                    help="gap between the board's top face and the lip's underside, mm. "
                         "The lip must NOT touch the board -- the four washers are the "
                         "seating datum and a proud lip would fight them (default 0.30)")
+    p.add_argument("--notch-drop", type=float, default=2.0,
+                   help="fill the board's east notch from --board-relief down this "
+                        "far (mm), with --pcb-clear off the board edges, to shut the "
+                        "Pt LEDs out (default 2.0; 0 = no plug)")
     p.add_argument("--corner-r", type=float, default=2.0)
     p.add_argument("--segments", type=int, default=64)
     p.add_argument("--timestamp", default="2026-08-13T00:00:00")
