@@ -545,9 +545,11 @@ class App:
         to disk is the raw 10-bit pixel, 0..1023.
 
         TIFF has no usable 10-bit grey mode -- the tag permits BitsPerSample=10
-        but almost nothing reads it -- so the container is 16-bit, which holds
-        all ten bits exactly and opens anywhere. Values are NOT rescaled to
-        16-bit full scale: 1023 stays 1023, so counts remain sensor counts.
+        but almost nothing reads it -- so the container is 16-bit unsigned, and
+        the ten bits go in the TOP of the word (pixel << 6, low 6 bits zero).
+        Unshifted, 1023 is 1.6% of 65535 and every viewer shows a black frame;
+        shifted, full scale is white. Nothing is lost: >> 6 gives the exact
+        sensor count back.
         """
         # Grab the frame BEFORE opening the dialog. The dialog is modal, so tick()
         # stops and the picture freezes -- what gets written is exactly the frame
@@ -575,13 +577,15 @@ class App:
         # default every time.
         self.save_dir = os.path.dirname(path) or init_dir
         name = os.path.basename(path)
-        desc = ("PYTHON1300 %dx%d 10-bit in 16-bit TIFF; values 0..1023 unscaled; "
+        desc = ("PYTHON1300 %dx%d 10-bit in 16-bit TIFF, MSB-aligned (count << 6; "
+                ">> 6 for sensor counts 0..1023); "
                 "raw Bayer mosaic (viewer phase %s); "
                 "exposure %d us; frame_idx %s; slot %s"
                 % (NCOL, NROW, self.bayer.get(), int(self.expo.get()), idx, slot))
         try:
             # 270 = ImageDescription, so the capture carries its own settings.
-            Image.fromarray(a).save(path, format="TIFF", tiffinfo={270: desc})
+            msb = (a.astype(np.uint16) << 6)
+            Image.fromarray(msb).save(path, format="TIFF", tiffinfo={270: desc})
         except Exception as e:
             self.save_lbl.configure(text="SAVE FAILED: %s" % e)
             return
