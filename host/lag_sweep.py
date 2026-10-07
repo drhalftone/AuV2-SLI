@@ -144,17 +144,33 @@ else:
             ser.reset_input_buffer()
             collect(ser, a.settle, timeout=4)
             by = collections.defaultdict(list)
-            last, absn, anchor = None, 0, None
-            for mean, npx, tlp, cc in collect(ser, a.frames, timeout=6):
-                if npx != 256:
+            rows = [r for r in collect(ser, a.frames, timeout=6) if r[1] == 256]
+            # FRAME NUMBERING. The profiling bitstream counts frames in `cc`; the
+            # merged one sends cc = 0 on every line. There, the per-frame stream
+            # still delivers one line per frame, so the line's ARRIVAL ORDER is
+            # the frame number -- and the anchor check below catches a dropped one.
+            use_cc = any((rows[k][3] - rows[k - 1][3]) & 0xFF for k in range(1, len(rows)))
+            absns, absn = [], 0
+            for k, r in enumerate(rows):
+                if k:
+                    absn += ((r[3] - rows[k - 1][3]) & 0xFF) if use_cc else 1
+                absns.append(absn)
+            # THE WHITE FRAME'S TAG. The merged build latches only RED of the
+            # transmitted pixel (build_merged.tcl: cam_frame_ft takes 23:16), so
+            # white reads FF0000 there and FFFFFF on the profiling bitstream.
+            marks = [n for n, r in zip(absns, rows)
+                     if r[2] in (lit_px, lit_px & 0xFF0000)]
+            # Re-anchor on EVERY white frame, and drop any cycle whose marks are
+            # not exactly 5 apart: a missed line then costs one cycle, instead of
+            # shifting every later reading onto the wrong position.
+            for n, r in zip(absns, rows):
+                prev = [m for m in marks if m <= n]
+                nxt = [m for m in marks if m > n]
+                if not prev or n - prev[-1] > 4:
                     continue
-                if last is not None:
-                    absn += (cc - last) & 0xFF
-                last = cc
-                if tlp == lit_px:
-                    anchor = absn
-                if anchor is not None:
-                    by[(absn - anchor) % 5].append(mean)
+                if nxt and nxt[0] - prev[-1] != 5:
+                    continue
+                by[n - prev[-1]].append(r[0])
             if len(by) < 5:
                 print("  delay %.1f: positions seen %s -- skipped"
                       % (d, sorted((k, len(v)) for k, v in by.items())), flush=True)

@@ -465,14 +465,19 @@ class App:
         # PROJECTING -- identical whether that video came from a PC over HDMI or
         # from the board's own offline generator.
         self.sync = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bar2, text="sync to projector", variable=self.sync,
-                        command=self.set_genlock).pack(side=tk.LEFT)
+        self.sync_cb = ttk.Checkbutton(bar2, text="sync to projector", variable=self.sync,
+                                       command=self.set_genlock)
+        self.sync_cb.pack(side=tk.LEFT)
+        self.proj_lbl = ttk.Label(bar2, text="", foreground="#a06000")
+        self.proj_lbl.pack(side=tk.LEFT)
+        self.projector = None                 # None until the board has answered
 
         ttk.Label(bar2, text="trig delay ms").pack(side=tk.LEFT, padx=(12, 2))
         self.dly = tk.DoubleVar(value=0.0)
         sd = ttk.Scale(bar2, from_=0.0, to=DLY_MAX_MS, variable=self.dly, length=200,
                        command=self.on_dly_move)
         sd.pack(side=tk.LEFT)
+        self.dly_scale = sd
         # Applied on RELEASE for the same reason as exposure: every drag pixel
         # would otherwise be a USB command.
         sd.bind("<ButtonRelease-1>", lambda _e: self.set_genlock())
@@ -715,10 +720,33 @@ class App:
 
     # ---- register readback over the Ft+ control tunnel ----------------------
     # 0x40/0x41 EXPO0 (what the sensor was given), 0x53/0x54 MAXEXP in exposure
-    # units, 0x55 {7: valid, 6: register-limited}. Polled, not awaited: replies
-    # leave only at frame boundaries (~8 ms at 120 Hz), and the GUI must never
-    # block on the camera.
-    POLL_REGS = (0x40, 0x41, 0x53, 0x54, 0x55)
+    # units, 0x55 {7: valid, 6: register-limited}, 0x20 MODE {6: edid_ok}.
+    # Polled, not awaited: replies leave only at frame boundaries (~8 ms at
+    # 120 Hz), and the GUI must never block on the camera.
+    POLL_REGS = (0x40, 0x41, 0x53, 0x54, 0x55, 0x20)
+
+    def update_projector(self, present):
+        """Sync is only offered when a projector is attached.
+
+        THE OUTPUT VSYNC IS NOT THE TEST. The board generates its own output
+        timing with no projector attached -- measured: ext_sync at 75 Hz with
+        edid_ok = 0 -- so "vsync is arriving" would happily lock the camera to a
+        picture nobody is showing. edid_ok (reg 0x20 bit 6) is the projector
+        answering its EDID read. No HDMI source is fine: the board then projects
+        its offline patterns, and syncing to those is a real use.
+        """
+        if present == self.projector:
+            return
+        self.projector = present
+        st = "!disabled" if present else "disabled"
+        self.sync_cb.state([st])
+        self.dly_scale.state([st])
+        self.proj_lbl.configure(text="" if present else " (no projector)")
+        if not present and self.sync.get():
+            # Lost the projector while locked: fall back to free-running.
+            # set_genlock shortens the exposure first if it has to.
+            self.sync.set(False)
+            self.set_genlock()
 
     def poll_regs(self):
         # ONE READ IN FLIGHT AT A TIME. Five requests sent back to back lost two
@@ -750,6 +778,8 @@ class App:
                 self.fpga_max_units = new
                 self.expo_ceil = None             # force the slider to re-range
                 self.retune_expo_ceiling()
+        if 0x20 in r:
+            self.update_projector(bool(r[0x20] & 0x40))
         if 0x40 in r and 0x41 in r:
             self.fpga_expo = r[0x40] | (r[0x41] << 8)
             # FOLLOW THE CAMERA, not the slider: the FPGA clamps over-long
