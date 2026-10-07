@@ -143,6 +143,7 @@ RTL under `sources_1/imports/RTL/` and `LauPythonCamera_Pt_Stack/ddr/`.
 | `cam_async_fifo.v` | Dual-clock gray-pointer FIFO, **FWFT** |
 | `cam_reply_fifo.v` | Control-plane reply bytes, `clk100` → `ui_clk` |
 | `ddr/cam_frame_ft.v` | **The datapath.** Camera → DDR3 → FT601. Owns exposure, trigger period, re-arm, frame count, the genlock delay engine, and `cam_stat_o` |
+| `ddr/cam_expo_safety.v` | **Makes a sensor wedge impossible** — clamps every exposure command, shortens the exposure when the rate rises, holds the trigger while a longer exposure may still be in effect (§7.4). Gate: `sim/tb_expo_safety.v` |
 | `ddr/cam_frame_ddr.v`, `ddr/ddr_bist.v`, `ddr/ddr_loop_ft.v`, `ddr/ft_probe_bottom.v` | Bring-up harnesses, kept as isolation tests |
 
 > **The DDR3 is not optional.** The sensor reads a frame out in a **4.55 ms burst at 576 MB/s**
@@ -436,15 +437,16 @@ at 120 Hz that is up to ~8.3 ms of latency, by construction. Size timeouts in mi
 | Op | Payload | Effect |
 |---|---|---|
 | 0 | `{count[3:0], b2, b1, b0}` | **`0xA5` protocol tunnel** — see above |
-| 1 | `[15:0]` | Set exposure, in **375 ns** units |
+| 1 | `[15:0]` | Set exposure, in **375 ns** units — **clamped** to MAXEXP (§7.4); read `0x40`/`0x41` for what was applied |
 | 2 | `[23:0]` | Set the free-running trigger period (10 ns ticks); ignored if ≤ 1000 |
 | 3 | — | **Re-arm** the capture |
 | 4 | `[5:0]` | Frames per run (1…`MAXF`) |
 | 5 | — | Request a status reply on the IN pipe |
+| 6 | `{en, 11'b0, ms[15:0]}` | **Camera idle**: hold the sensor in reset for `ms`, then re-boot it (`ms = 0` latches; `en = 0` releases). **Known bug:** the sensor re-configures but video does not restart (`0x3A` `streaming = 0`) — reload the FPGA instead |
 | 7 | `{gl_en, 3'b0, delay[23:0]}` | **Genlock**: enable + vsync→trigger delay in 10 ns ticks |
 | 8 | *(planned)* | Arm an epoch reset on the next `ext_sync` — see `FRAME_HEADER_PLAN.md` |
 
-> Opcode 6 is unassigned. Opcode 3 (**re-arm**) is easy to forget and its absence is invisible: a new
+> Opcode 3 (**re-arm**) is easy to forget and its absence is invisible: a new
 > exposure changes nothing the host can see, because DDR still holds the burst captured at the old
 > value and capture is one-shot per bitstream load.
 
@@ -522,7 +524,7 @@ PC is told. `host/offline_mode.py` reads both.
 > An EDID readback is always 256 bytes; if the display has no extension block, bytes 128–255 are
 > stale RAM. Byte `0x7E` of block 0 is the authoritative extension count.
 
-### 7.4 Max usable exposure — the FPGA works it out itself
+### 7.4 Max usable exposure — the FPGA works it out, and enforces it
 
 `usb_link.v` derives how long the sensor can integrate at whatever rate it is *actually* running:
 
@@ -532,15 +534,41 @@ wire [23:0] trig_per_s = cam_stat_i[215:192];
 wire [23:0] eff_per    = gl_live_s ? vsp_last_p : trig_per_s;   // vsync period, or free-run period
 ```
 
-Reserve = `GAP_TICKS` 4410 (44.1 µs) + `MARGIN_TICKS` 1000 = **54.1 µs**, then scaled from 10 ns into
-375 ns register units by `×27962 >> 20`.
+Reserve = `GAP_TICKS` 8000 (**80 µs**) + `MARGIN_TICKS` 1000 = **90 µs**, then scaled from 10 ns into
+375 ns register units by `×27962 >> 20`. At 120 Hz that is **8243 µs**.
+
+**The gap is measured, and it moved.** It was 44.1 µs until the CDS timing program started being
+uploaded (2026-10-05); after that, MAXEXP's own 8279 µs answer **wedged the sensor**. Re-measured
+2026-10-07 by bisecting to the cliff (3 µs steps; a wedge is "no frames"):
+
+| Rate | Streams | Wedges / degrades | Gap |
+|---|---|---|---|
+| 120 Hz free-run | 8254.5 µs | 8256.4 µs | 77.0 – 78.8 µs |
+| 60 Hz free-run | 16588.9 µs (full rate) | 16594.5 µs | ~78 µs |
+
+Flat across rates — no slope. **If the sensor configuration changes again, re-measure** (the bisection
+reloads the FPGA after each wedge); `GAP_TICKS` in `usb_link.v` and `EXP_GAP` in
+`cam_expo_safety.v` must move together.
 
 - `0x53`/`0x54` — max exposure **in exposure-register units**; write it straight back with opcode 1.
 - `0x55` — `{7: valid, 6: limited by the 16-bit register rather than by the frame period}`.
 - `0x56`/`0x57` — the reserve subtracted, in 10 ns ticks.
 
-**`valid = 0` means do not guess.** Commanding an exposure longer than the frame period wedges the
-sensor until the FPGA is reconfigured — the exact failure this register exists to prevent.
+**`valid = 0` means do not guess.** An exposure past (period − gap) wedges the sensor until the FPGA
+is reconfigured: it stops integrating, `0x3B` shows `ufifo_empty = 1`, and nothing reaches USB while
+`0x3A` still reads HEALTHY. Publishing the limit was not enough to prevent that — the live viewer's
+hand-measured 8280 µs slider top walked straight into it — so **`cam_expo_safety.v` enforces it**:
+
+1. **Clamp.** Every exposure command (opcode 1, UART) is limited to this same figure. Ask for 8290 µs
+   or 24.6 ms at 120 Hz and you get 8243 µs, still streaming.
+2. **Auto-shorten.** If the period drops under the current exposure — sync unticked, display
+   unplugged, opcode 2 — the FPGA cuts the exposure itself at the next trigger.
+3. **Spacing guard.** exposure0 applies **one frame late**, so the trigger is held until the exposure
+   that may still be in effect, plus the gap, has elapsed. In a transition the period stretches (or a
+   genlocked trigger is skipped) instead of wedging; in steady state it never bites.
+
+`gl_div` (one trigger per sequence) is not period-clamped — its spacing is five frames — and relies
+on the guard.
 
 > **Trap:** `0x3E`/`0x3F` holds the camera period **÷ 16** in 16 bits and therefore cannot represent
 > anything below **68.67 Hz**. A genlocked 59.9 Hz and 6.16 Hz produce the same reading. Infer
@@ -574,8 +602,11 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 >   (and to stub `FT_GetDeviceInfo`, which that DLL does not export). Reinstalling `ftd3xx` undoes it.
 > - **`setStreamPipe` breaks reads** — accepted, then every `readPipe` returns 0 bytes. `cam_live.py`
 >   skips it on WinUSB; `ft_video_grab.py --stream`, `ft_cam_burst.py`, `ddr_loop_check.py`,
->   `roi_header_check.py` and `scan_latency.py` still call it. Without it the link measured
->   **~44 MB/s ≈ 26 fps**, not the 325 MB/s / 120 fps of the kernel driver.
+>   `roi_header_check.py` and `scan_latency.py` still call it. Without it the link still carries
+>   the full camera rate: **196.5 MB/s = 119.9 fps**, no frame-index gaps (2026-10-05).
+> - **Check the link is actually USB 3.** A first run read ~42 MB/s ≈ 26 fps and looked like a driver
+>   limit; it was the FT601 enumerating at **USB 2** (`getDeviceDescriptor().bcdUSB` = `0x0210`) on a
+>   port/cable without SuperSpeed. `0x0300`/`0x0310` is USB 3.
 
 > **There is exactly one viewer: `cam_live.py`.** Because only one process can hold the D3XX handle,
 > a second viewer could only ever be the wrong one to have open. `ft_video_grab.py` used to default
@@ -584,7 +615,7 @@ Needs `ftd3xx`; only **one** process may hold the D3XX handle at a time.
 
 | Tool | Does |
 |---|---|
-| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; **colour** checkbox + Bayer-phase picker + gray-world auto WB (`--color`, `--bayer RGGB/GRBG/GBRG/BGGR`; 2×2 demosaic to 640×512, display only — Save TIFF stays the raw mosaic); exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. The exposure ceiling tracks the measured rate. Draws the **ROI box** and shows the fabric's ROI mean beside the host's own mean of the same 16×16 pixels — the box goes red when they disagree. `--roi-col8/--roi-row8` if the ROI has been moved off its default |
+| `cam_live.py` | **The live viewer — the only one in this repo.** tkinter; **colour** checkbox + Bayer-phase picker + gray-world auto WB (`--color`, `--bayer RGGB/GRBG/GBRG/BGGR`; 2×2 demosaic to 640×512, display only — Save TIFF stays the raw mosaic); exposure slider, plus a second row with a *sync to projector* checkbox and a trigger-delay slider. **Sends its own exposure and sync settings at startup**, so the sliders match the video. The exposure slider's top is the **FPGA's MAXEXP**, read over the control tunnel, and the slider follows the exposure the FPGA actually applied. **Scroll** to zoom about the pointer, **drag** to pan (let go mid-drag to throw it), **double-click** to fit. Save TIFF writes the 10 bits **MSB-aligned** in 16-bit (`>> 6` for counts). Draws the **ROI box** and shows the fabric's ROI mean beside the host's own mean of the same 16×16 pixels — the box goes red when they disagree. `--roi-col8/--roi-row8` if the ROI has been moved off its default |
 | `cam_ctl.py` | Exposure, frame rate and re-arm from the command line |
 | `campack.py` | Frame geometry, header parsing and 10-bit unpacking — **shared** by the other tools |
 | `cam_rate_bench.py` | Frame rate over repeated 24-frame runs |
@@ -713,7 +744,10 @@ the HDMI path.
 | **`0x3E`/`0x3F` wraps below 68.67 Hz** | Period ÷ 16 in 16 bits. Never infer genlock from it |
 | **FWFT FIFO + `rd <= !empty`** | Duplicates the last item every burst; a doubled stream fails exactly like a dead one |
 | **"Sensor damage" at the top of the frame — it was never damage** | The CDS / timing program (`cam_cds_rom.v`) was committed but **never uploaded**, so the pixel array ran on power-on defaults. The exposure never reached the storage node: with no lens in direct sun the top ~1/3 read the **dark** level and the rest ramped to saturation by row — light leaking in while each row waited for readout. Blamed on soldering for the mono sensor; a new colour sensor in a socket showed the same thing. Fixed 2026-10-05 (`cam_boot_seq` `CDS=1`): rows flat, level linear in exposure |
-| **The build script's "transient glitch" retry can hide real errors** | `synth_design` failures were reported as the `.tcl`-read glitch while the log held a port-width mismatch. Read `build.log` for `ERROR:` before retrying. It also gates only on **setup** WNS — check WHS in `timing.rpt` |
+| **The build script's "transient glitch" retry can hide real errors** | `synth_design` failures were reported as the `.tcl`-read glitch while the log held a port-width mismatch. Read `build.log` for `ERROR:` before retrying |
+| **`get_timing_paths -delay_type min_max` is setup only** | The post-route check used it, so a **−4 ps hold** violation shipped as a "successful" build. `build_merged.tcl` now asks setup and hold separately, re-routes with `ExploreWithHoldFix` if either fails, and prints `WHS` |
+| **A measured sensor margin is only good for the configuration it was measured on** | The 44.1 µs exposure gap predated the CDS timing program; afterwards the FPGA's own MAXEXP wedged the sensor. Re-measured: 78 µs (§7.4) |
+| **Back-to-back register reads over the Ft+ lose replies** | Five reads in one burst returned three (`0x41` and `0x55` missing, every time). One read in flight at a time — `cam_live.py` sends one per 0.2 s |
 | **720 Mbps LVDS needs IDELAYE2** | Without eye-centring the isolated bit drops and it looks exactly like bad solder |
 | **The FT601 can enumerate and not clock** | It can read an EEPROM back perfectly while driving no `ft_clk`. Pulse `RESET_N` |
 | **The FT601 can stream fast and lie** | A build measured 192 fps / 0 drops while corrupting `ft_data[31:16]`. An unconstrained source-synchronous bus is invisible to timing *and* to throughput tests. **Verify bytes** |

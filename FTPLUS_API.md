@@ -181,7 +181,12 @@ floor.
 
 ### Max usable exposure *(added 2026-08-24)*
 
-`max_exposure = vsync_period − 44.1 µs (measured sensor gap) − 10 µs (margin)`
+`max_exposure = period − 80 µs (measured sensor gap) − 10 µs (margin)` — **8243 µs at 120 Hz**
+
+The period is the vsync period when genlocked, the free-running trigger period otherwise. The gap
+was 44.1 µs until the CDS timing program went in (2026-10-05); re-measured 2026-10-07 at ~78 µs,
+flat from 60 to 120 Hz (README §7.4). **The FPGA enforces this figure**: opcode 1 is clamped to
+it, so read `0x40`/`0x41` for the exposure actually applied.
 
 | Addr | Access | Parameter | Units |
 |---|---|---|---|

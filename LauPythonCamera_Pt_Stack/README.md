@@ -222,15 +222,23 @@ Three things had to be true at once, and each was a separate fault:
 
 #### Usable exposure range at 120 Hz — and a state that needs a reflash to escape
 
-**Maximum exposure is 8280 µs, and the boundary is a cliff, not a slope.** The sensor
+**Maximum exposure is 8243 µs, and the boundary is a cliff, not a slope.** The sensor
 cannot integrate for a whole frame period *and* still answer the next trigger, so past
-the limit it skips triggers. Measured against the DELIVERED rate:
+the limit it wedges. Measured against the DELIVERED rate:
 
 ```
+2026-10-07, with the CDS timing program loaded (the current sensor configuration):
+ 600..8254 us   121 fps       full rate
+      8256 us     0.0 fps     wedges            -> the sensor needs ~78 us after an exposure
+
+before 2026-10-05, without it (kept for history -- NOT valid now):
  600..8280 us   111-122 fps   full rate, ldrop 0 at every setting
       8300 us      0.0 fps    collapses
       8333 us     59.8 fps    every other trigger missed
 ```
+
+The old 8280 µs figure wedged the sensor once the CDS program went in. The limit is now
+`period − 80 µs − 10 µs` (`usb_link.v` publishes it as MAXEXP; `cam_expo_safety.v` enforces it).
 
 > **The status UART cannot see this.** It reports a healthy 120.00 Hz throughout,
 > because the FPGA goes on triggering whether or not the sensor answers. Only the
@@ -241,8 +249,10 @@ the limit it skips triggers. Measured against the DELIVERED rate:
 > valid exposure did NOT recover it: `expo_cur` read back correctly and frame_start kept
 > arriving at 120.000 Hz, but no frame ever completed (`rdBusy = 0`) and no bytes
 > reached USB. A re-arm (opcode 3) did not help either. It took a full FPGA reconfigure
-> to re-run the sensor's SPI boot sequence. So the host-side cap is a SAFETY feature,
-> not a convenience — `cam_live.py` limits the slider to 8280 µs for this reason.
+> to re-run the sensor's SPI boot sequence. That is why the cap is now **enforced in the
+> FPGA** (`ddr/cam_expo_safety.v`): every exposure command is clamped, the exposure is
+> shortened when the rate rises, and the trigger is held while a longer exposure may still
+> be in effect. `cam_live.py` takes its slider top from the FPGA's MAXEXP.
 
 > **The 120 Hz is the right RATE but not a locked PHASE.** The trigger comes from the
 > FPGA's own 100 MHz crystal, so it drifts against a projector on a different
