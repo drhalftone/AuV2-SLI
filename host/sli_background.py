@@ -95,9 +95,15 @@ def edge(ser):
 
 
 def decode_tag(tlp):
-    """A valid tag is three equal bytes below 32. Anything else is not a tag."""
+    """A valid tag is three equal bytes below 32. Anything else is not a tag.
+
+    The merged bitstream latches only RED of the transmitted pixel (cam_frame_ft
+    takes 23:16), so there a tag arrives as {r, 0, 0}; that is accepted too.
+    """
     r, g, b = (tlp >> 16) & 0xFF, (tlp >> 8) & 0xFF, tlp & 0xFF
-    return r if (r == g == b and r < N_TAG) else None
+    if r >= N_TAG:
+        return None
+    return r if (r == g == b or g == b == 0) else None
 
 
 def main():
@@ -255,6 +261,7 @@ def main():
     q = [0.0] * N_TAG
     prev_tag, nframes, nbadpx, nbadtag, cycles = None, 0, 0, 0, 0
     prev_lit, prev_tcnt, nlost, nlag = None, None, 0, 0
+    tcnt_live = False                    # does this bitstream count frames at all?
     buf = b""
     ser.timeout = 0
     ser.reset_input_buffer()
@@ -286,10 +293,31 @@ def main():
                         # shift-1 label taken across a gap names the wrong
                         # pattern, so those samples are dropped rather than
                         # averaged in.
-                        consec = (prev_tcnt is not None
-                                  and (tcnt - prev_tcnt) % 256 == 1)
-                        if prev_tcnt is not None:
-                            nlost += ((tcnt - prev_tcnt) % 256) - 1
+                        #
+                        # THE MERGED BITSTREAM SENDS tcnt = 0 ON EVERY LINE, so
+                        # there the ordinal cannot say anything and every frame
+                        # read as "gap before" -- 11109 of 11109 dropped. The
+                        # tags then do the job instead: the sequence advances
+                        # one pattern per frame, so the previous line was the
+                        # previous frame exactly when this tag is the NEXT one
+                        # after the previous tag. A lost line shows as a skipped
+                        # tag and is dropped as before; a late advance (a tag
+                        # repeated) is dropped too, which is the safe side.
+                        if prev_tcnt is not None and tcnt != prev_tcnt:
+                            tcnt_live = True
+                        if tcnt_live:
+                            consec = (prev_tcnt is not None
+                                      and (tcnt - prev_tcnt) % 256 == 1)
+                            if prev_tcnt is not None:
+                                nlost += ((tcnt - prev_tcnt) % 256) - 1
+                        else:
+                            # Octet mode loops its eight; otherwise the whole
+                            # 32-frame cycle runs, flash block (24..31) included.
+                            seq = tags if a.octet is not None else list(range(N_TAG))
+                            consec = (tag is not None and prev_tag is not None
+                                      and prev_tag in seq
+                                      and tag == seq[(seq.index(prev_tag) + 1)
+                                                     % len(seq)])
                         prev_tcnt = tcnt
                         if tag is None:
                             nbadtag += 1
