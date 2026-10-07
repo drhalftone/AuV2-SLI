@@ -13,20 +13,22 @@ stack and closes underneath. Together they are one enclosure, split on the
 camera PCB's bottom face.
 
     +18.786  ---- top face = OPTICAL DATUM  --.   (+19.786 before the flat seat)
+     +2.500  ---- screw heads, on the lens box washers
                                               |  camera_lens_box.step
-     -1.600  ==== MATING PLANE ===============:  (already committed, UNCHANGED)
-                                              |
-                 [ camera PCB ] sits above     |  camera_base_box.step
-                 [ Pt V2 ]                     |   <- this file
-                 [ Ft+ ]                       |
-    -19.000  ---- Hd+ bottom face              |
-    -21.000  ---- floor top (support bosses)   |
-    -24.000  ---- floor bottom               --'
+     -7.100  ==== MATING PLANE ===============:  (spacer stack, d6201f5)
+                 [ camera PCB + 5.5 spacer ]   |
+                 [ Pt V2 ]                     |  camera_base_box.step
+                 [ Ft+ ]                       |   <- this file
+    -24.500  ---- Hd+ bottom face              |
+    -25.100  ---- nut pocket top, in the boss  |
+    -26.500  ---- floor top (support bosses)   |
+    -27.500  ---- M2 x 30 tip, through the nut |
+    -29.500  ---- floor bottom               --'
 
 =============================================================================
 THE STACK HEIGHT IS MEASURED, NOT DERIVED
 =============================================================================
-MEASURED   19.00 mm, camera PCB top surface -> Hd+ bottom surface. Given
+MEASURED   24.50 mm with the spacer PCB (was 19.00 without). Camera PCB top -> Hd+ bottom. Given
            directly; this file does NOT rebuild it from board thickness times
            gap, because that product is what was wrong before.
 
@@ -96,8 +98,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "3dmodels", "camera_base_box.step")
 UPPER = os.path.join(HERE, "..", "3dmodels", "camera_lens_box.step")
 
-STACK_H = 19.00          # MEASURED: camera PCB top -> Hd+ bottom. See header.
-Z_SPLIT = -1.60          # mating plane = camera PCB bottom = lens box wall bottom
+STACK_H = 24.50          # MEASURED with the 5.5 mm spacer PCB (d6201f5). See header.
+Z_SPLIT = -7.10          # mating plane = lens box wall bottom (--pcb-t 7.1 there)
 
 COLORS = {"box": (0.32, 0.34, 0.38), "boss": (0.28, 0.30, 0.33)}
 EDGE_MIN = 0.80          # minimum material from a hole to the edge of its bar
@@ -253,7 +255,13 @@ def upper_half():
     # of the groove and silently shift this whole part by the groove depth.
     xs, ys, zs = [], [], []
     groove = {}
+    washer_top = []
     for name, faces in model.solids():
+        if name.startswith("washer"):              # where the screw heads bear
+            washer_top.append(max(p[2] for f in faces
+                                  for lp in ([model.face(f)[0]] if model.face(f)[0] else [])
+                                  for p in lp))
+            continue
         if not (name == "walls" or name.startswith("wall_")):
             continue
         sx, sy, inner_x, inner_y = [], [], [], []
@@ -267,12 +275,20 @@ def upper_half():
                 for p in loop:
                     xs.append(p[0]); ys.append(p[1]); zs.append(p[2])
                     inner_x.append(p[0]); inner_y.append(p[1])
-        if name == "wall_seam_outer" and inner_x:      # its hole IS the groove's outer face
-            groove["out_w"] = max(inner_x) - min(inner_x)
-            groove["out_h"] = max(inner_y) - min(inner_y)
-        if name == "wall_seam_inner" and sx:           # its outline IS the groove's inner face
-            groove["in_w"] = max(sx) - min(sx)
-            groove["in_h"] = max(sy) - min(sy)
+        # A --port-notch turns a seam ring into a C with no hole, so the groove
+        # faces cannot be told apart by loop. They CAN by plane: the faces normal
+        # to x sit at four distinct x -- outer wall, groove, groove, outer wall --
+        # and a notch through an E/W wall only adds faces normal to y.
+        xf = sorted(set(round(lp[0][0], 4) for f in faces
+                        for lp in ([model.face(f)[0]] if model.face(f)[0] else [])
+                        if max(p[0] for p in lp) - min(p[0] for p in lp) < 1e-4))
+        if name == "wall_seam_outer":                  # its INNER x-faces are the groove's outer face
+            if inner_x:
+                groove["out_w"] = max(inner_x) - min(inner_x)
+            elif len(xf) == 4:
+                groove["out_w"] = xf[2] - xf[1]
+        if name == "wall_seam_inner" and sx:           # its OUTER x-faces are the groove's inner face
+            groove["in_w"] = (max(sx) - min(sx)) if inner_x or len(xf) != 4 else xf[3] - xf[0]
         if name.startswith("wall_seam_fill") and sx:
             groove.setdefault("fills", []).append(
                 (name, min(sx), max(sx), min(sy), max(sy)))
@@ -282,8 +298,11 @@ def upper_half():
                                   for p in lp))
     if not xs:
         sys.exit("no wall solids in %s" % UPPER)
+    if len(washer_top) != 4 or max(washer_top) - min(washer_top) > 1e-3:
+        sys.exit("expected 4 equal washers in %s (built with --bosses?), found tops %s"
+                 % (UPPER, washer_top))
     return dict(x0=min(xs), x1=max(xs), y0=min(ys), y1=max(ys),
-                z_bot=min(zs), z_top=max(zs), groove=groove)
+                z_bot=min(zs), z_top=max(zs), groove=groove, washer_top=washer_top[0])
 
 
 def parse_window(text, board, stack_bot):
@@ -353,10 +372,38 @@ def build(args):
     z_stack_bot = -args.stack_h                  # Hd+ bottom face (MEASURED)
     z_floor_top = z_stack_bot - args.floor_clear
     z_floor_bot = z_floor_top - args.floor_t
-    z_nut_top = z_floor_bot + args.nut_depth
+
+    # ---- the screw sets the nut height, not the floor ----------------------
+    # The screw length is FIXED (the ones in hand), and so is where its head
+    # seats -- on the lens box washers, read out of that file below. So the tip
+    # lands at one known z, and the nut has to be put where the tip can get all
+    # the way through it. With the nut pocket in the floor's underside, the
+    # spacer stack put the nut's top face exactly at the 30 mm tip: the screw
+    # touched the nut and engaged nothing.
+    #
+    # Instead the hex pocket opens from below and runs UP INTO THE BOSS, stopping
+    # --nut-ceiling under the Hd+. The screw pulls the nut up against that
+    # ceiling, which is a short annulus in pure compression between the nut and
+    # the board -- the same load the boss carried anyway.
+    up = upper_half()
+    z_head = up["washer_top"]                    # screw head bearing face
+    z_tip = z_head - args.screw_len
+    z_nut_top = z_stack_bot - args.nut_ceiling
+    z_nut_bot = z_nut_top - args.nut_t
+    if z_tip > z_nut_bot - args.min_overrun:
+        sys.exit("SCREW TOO SHORT: an M2 x %g seated at z %.2f ends at %.2f, but the nut "
+                 "spans %.2f..%.2f.\nIt needs to pass the nut's lower face by %.2f mm. "
+                 "Reduce --nut-ceiling or --floor-clear, or use a longer screw."
+                 % (args.screw_len, z_head, z_tip, z_nut_bot, z_nut_top, args.min_overrun))
+    if z_tip < z_floor_bot:
+        sys.exit("SCREW PROTRUDES: an M2 x %g ends at %.2f, %.2f mm below the floor "
+                 "underside at %.2f. Thicken --floor-t or use a shorter screw."
+                 % (args.screw_len, z_tip, z_floor_bot - z_tip, z_floor_bot))
+    if z_nut_top > z_stack_bot - 0.5:
+        sys.exit("NUT CEILING TOO THIN: %.2f mm between the nut and the Hd+"
+                 % (z_stack_bot - z_nut_top))
 
     # ---- assert we actually mate -----------------------------------------
-    up = upper_half()
     for what, mine, theirs in (("outer width", out_w, up["x1"] - up["x0"]),
                                ("outer depth", out_h, up["y1"] - up["y0"]),
                                ("outer x0", x0, up["x0"]), ("outer x1", x1, up["x1"]),
@@ -469,9 +516,6 @@ def build(args):
         sys.exit("NUT POCKET TOO WIDE: --boss-dia %.2f minus --nut-af %.2f leaves %.2f mm "
                  "of web, need %.2f" % (args.boss_dia, args.nut_af,
                                         (args.boss_dia - args.nut_af) / 2.0, args.min_web))
-    if args.floor_t <= args.nut_depth:
-        sys.exit("FLOOR TOO THIN: --floor-t %.2f must exceed --nut-depth %.2f, or the "
-                 "nut pocket breaks through" % (args.floor_t, args.nut_depth))
 
     # ---- geometry ---------------------------------------------------------
     desc = "Base box -- lower half, encloses the board stack, mates to camera_lens_box"
@@ -517,23 +561,26 @@ def build(args):
                 expected[nm] = abs(sw.signed_area(poly)) * (zc - za)
                 nbar += 1
 
-    # The floor, in two bands: a nut pocket underneath, a screw bore above.
+    # The floor and the bosses, cut in Z bands at the nut pocket's top: hex
+    # pocket below z_nut_top, screw bore above it. The pocket opens through the
+    # floor's underside, so the nut drops in from below.
     floor_outer = sw.rounded_rect(cx, cy, out_w, out_h, args.corner_r, args.arc_seg)
 
-    nm = "floor_lower"
-    pockets = [sw.reverse(hexagon(px, py, args.nut_af)) for px, py in mh]
-    step.prism(floor_outer, z_floor_bot, z_nut_top, nm, COLORS["box"], holes=pockets)
-    expected[nm] = ((abs(sw.signed_area(floor_outer))
-                     - sum(abs(sw.signed_area(h)) for h in pockets))
-                    * (z_nut_top - z_floor_bot))
+    def holed(cx_, cy_, za, zc):
+        if zc <= z_nut_top + EPS:
+            return [sw.reverse(hexagon(cx_, cy_, args.nut_af))]
+        return [sw.reverse(sw.circle(cx_, cy_, args.screw_dia / 2.0, args.segments))]
 
-    nm = "floor_upper"
-    bores = [sw.reverse(sw.circle(px, py, args.screw_dia / 2.0, args.segments))
-             for px, py in mh]
-    step.prism(floor_outer, z_nut_top, z_floor_top, nm, COLORS["box"], holes=bores)
-    expected[nm] = ((abs(sw.signed_area(floor_outer))
-                     - sum(abs(sw.signed_area(h)) for h in bores))
-                    * (z_floor_top - z_nut_top))
+    def banded(lo, hi):
+        cuts = [lo] + ([z_nut_top] if lo + EPS < z_nut_top < hi - EPS else []) + [hi]
+        return list(zip(cuts[:-1], cuts[1:]))
+
+    for bi, (za, zc) in enumerate(banded(z_floor_bot, z_floor_top)):
+        nm = "floor_%d" % bi
+        holes = [h for px, py in mh for h in holed(px, py, za, zc)]
+        step.prism(floor_outer, za, zc, nm, COLORS["box"], holes=holes)
+        expected[nm] = ((abs(sw.signed_area(floor_outer))
+                         - sum(abs(sw.signed_area(h)) for h in holes)) * (zc - za))
 
     # The tongue, standing on the rim and reaching up across the seam gap into
     # the lens box's groove. Its profile comes from seam_profile() in
@@ -598,12 +645,13 @@ def build(args):
 
     # Four support bosses: the surface the whole board stack actually rests on.
     for i, (px, py) in enumerate(mh):
-        nm = "boss%d" % (i + 1)
         ring = sw.circle(px, py, boss_r, args.segments)
-        bore = sw.reverse(sw.circle(px, py, args.screw_dia / 2.0, args.segments))
-        step.prism(ring, z_floor_top, z_stack_bot, nm, COLORS["boss"], holes=[bore])
-        expected[nm] = ((abs(sw.signed_area(ring)) - abs(sw.signed_area(bore)))
-                        * (z_stack_bot - z_floor_top))
+        for bi, (za, zc) in enumerate(banded(z_floor_top, z_stack_bot)):
+            nm = "boss%d_%d" % (i + 1, bi)
+            holes = holed(px, py, za, zc)
+            step.prism(ring, za, zc, nm, COLORS["boss"], holes=holes)
+            expected[nm] = ((abs(sw.signed_area(ring)) - abs(sw.signed_area(holes[0])))
+                            * (zc - za))
 
     text = step.dumps()
     tries = sw.write_verified(OUT, text)
@@ -617,13 +665,6 @@ def build(args):
         ntri, _ = step.write_stl(os.path.splitext(OUT)[0] + ".stl")
         w("wrote %s  (%d triangles)\n" % (os.path.splitext(OUT)[0] + ".stl", ntri))
 
-    # Screw length is quoted to FULL nut engagement -- head bearing on the lens
-    # box washer at +washer_t, tip flush with the underside of the floor. Short
-    # of that the nut is only partly engaged, which on an M2 is not much thread.
-    grip = args.washer_t - z_nut_top          # head face -> first thread of the nut
-    full = args.washer_t - z_floor_bot        # head face -> flush with floor bottom
-    stock = [10, 12, 14, 16, 18, 20, 22, 25, 30, 35, 40]
-    pick = next((s for s in stock if s >= full - 0.2), int(math.ceil(full)))
     overall_top = up["z_top"] + args.top_t_ref
     w("\nbase box   %.1f x %.1f mm outer, %.2f mm walls, cavity %.1f x %.1f, open top\n"
       % (out_w, out_h, t, cav_w, cav_h))
@@ -648,17 +689,22 @@ def build(args):
           % args.seam_relief)
         w("           that %.2f mm gap is baffled by the tongue, so it is not a light\n"
           "           path either -- which the plain butt joint was.\n" % args.seam_relief)
-    w("floor      z %.2f -> %.2f  (%.2f thick), nut pocket %.1f AF x %.1f deep\n"
-      % (z_floor_bot, z_floor_top, args.floor_t, args.nut_af, args.nut_depth))
+    w("floor      z %.2f -> %.2f  (%.2f thick)\n" % (z_floor_bot, z_floor_top, args.floor_t))
+    w("nut pocket %.1f AF, open from below, z %.2f -> %.2f (up into the boss); the nut\n"
+      "           is pulled up to its ceiling, %.2f mm under the Hd+, and spans %.2f..%.2f\n"
+      % (args.nut_af, z_floor_bot, z_nut_top, args.nut_ceiling, z_nut_bot, z_nut_top))
     w("bosses     4 x %.1f dia, z %.2f -> %.2f (%.2f tall) -- the stack rests on these\n"
       % (args.boss_dia, z_floor_top, z_stack_bot, args.floor_clear))
     w("           at the PCB corner holes (%s)\n"
       % ", ".join("%.1f/%.1f" % p for p in mh))
     w("clearance  %.2f mm under the Hd+ for its bottom-side parts (--floor-clear)\n"
       % args.floor_clear)
-    w("screws     4 x M2 x %d socket cap. Grip %.2f mm to the first thread, %.2f mm\n"
-      "           to flush with the floor underside (full nut engagement).\n"
-      % (pick, grip, full))
+    w("screws     4 x M2 x %g socket cap, head on the lens box washers at z %.2f (READ\n"
+      "           from that file), tip at %.2f: through the whole nut with %.2f mm\n"
+      "           to spare, and %.2f mm short of the floor underside -- nothing sticks out.\n"
+      "           Fits M2 from %.1f to %.1f mm long.\n"
+      % (args.screw_len, z_head, z_tip, z_nut_bot - z_tip, z_tip - z_floor_bot,
+         z_head - z_nut_bot + args.min_overrun, z_head - z_floor_bot))
     w("           in from the TOP through the lens box driver pockets, out into the\n"
       "           nuts under this floor. The stack is CAPTURED, never in tension.\n")
     w("assembly   %.2f mm tall overall (z %.3f -> %.3f), %.1f x %.1f footprint\n"
@@ -705,13 +751,17 @@ def main():
     p.add_argument("--screw-dia", type=float, default=2.40, help="M2 clearance bore, mm")
     p.add_argument("--nut-af", type=float, default=4.20,
                    help="M2 nut across-flats pocket, mm (the nut itself is 4.0)")
-    p.add_argument("--nut-depth", type=float, default=2.00, help="nut pocket depth, mm")
+    p.add_argument("--nut-t", type=float, default=1.60, help="M2 nut thickness, mm")
+    p.add_argument("--nut-ceiling", type=float, default=0.60,
+                   help="plastic left between the top of the nut pocket and the Hd+, mm")
+    p.add_argument("--screw-len", type=float, default=30.0,
+                   help="M2 socket cap length in hand, mm -- the nut is placed for it")
+    p.add_argument("--min-overrun", type=float, default=0.30,
+                   help="how far the screw tip must pass the nut's lower face, mm")
     p.add_argument("--min-web", type=float, default=1.00,
                    help="minimum material between the nut pocket and the boss OD, mm")
     p.add_argument("--wall-clear", type=float, default=0.40,
                    help="minimum gap from a boss to a wall, mm")
-    p.add_argument("--washer-t", type=float, default=1.20,
-                   help="lens box washer thickness -- where the screw head lands")
     p.add_argument("--top-t-ref", type=float, default=3.0,
                    help="lens box top face thickness, for the overall height report")
     p.add_argument("--open-face", action="append", default=[],

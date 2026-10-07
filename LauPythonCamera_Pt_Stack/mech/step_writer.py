@@ -309,6 +309,7 @@ class StepFile:
         self.solids = []      # (entity id, name, rgb)
         self.meshes = []      # (name, outline CCW, holes CW, z0, z1) -- for STL export
         self.frames = {}      # name -> (origin, ex, ey, ez) for a prism not built along +Z
+        self.polys = []       # (name, faces, triangles) -- solids built by polyhedron()
 
     @property
     def entity_count(self):
@@ -435,6 +436,29 @@ class StepFile:
             self.frames[name] = frame
         return solid
 
+    def polyhedron(self, faces, tris, name, rgb, frame=None):
+        """A closed solid from explicit planar faces, for shapes a prism cannot make --
+        a faceted helix, say.
+
+        `faces` is [(outer_pts, normal, inner_loops)], each point 3D in the LOCAL frame:
+        outer counter-clockwise seen from the outward `normal`, inner loops the other
+        way. Vertices and edges are shared by coordinate, exactly as for prisms, so
+        faces that meet must use identical points. `tris` is the same surface as a
+        triangle list (outward, counter-clockwise) for the STL; it is checked for
+        watertightness there like every other solid.
+        """
+        xf, xn = _frame_maps(frame)
+        built = [self.planar_face([xf(p) for p in outer], xn(normal),
+                                  [[xf(p) for p in h] for h in inner])
+                 for outer, normal, inner in faces]
+        shell = self._e("CLOSED_SHELL('',(%s))" % ",".join("#%d" % f for f in built))
+        solid = self._e("MANIFOLD_SOLID_BREP('%s',#%d)" % (name, shell))
+        self.solids.append((solid, name, rgb))
+        self.polys.append((name, faces, tris))
+        if frame is not None:
+            self.frames[name] = frame
+        return solid
+
     # -- STL ---------------------------------------------------------------------------
     @staticmethod
     def _solid_triangles(outer, holes, z0, z1):
@@ -465,6 +489,13 @@ class StepFile:
                 xf, _ = _frame_maps(self.frames[name])
                 tris = [tuple(xf(q) for q in t) for t in tris]
             out.append((name, tris))
+        for name, _, tris in self.polys:
+            if name in skip:
+                continue
+            if name in self.frames:
+                xf, _ = _frame_maps(self.frames[name])
+                tris = [tuple(xf(q) for q in t) for t in tris]
+            out.append((name, list(tris)))
         return out
 
     def stl_triangles(self, skip=()):

@@ -299,6 +299,298 @@ def seam_profile(cx, cy, out_w, out_h, wall, tongue_w, clear, corner_r, seg=6):
             prof(off - clear), prof(off + tongue_w + clear))
 
 
+def parse_port_notch(text):
+    """--port-notch FACE:LO:HI:ZTOP[:R] -> dict. LO/HI run along the face (y for
+    E/W) in the model frame; the notch runs up from the wall bottom to ZTOP, its
+    two top corners rounded to R (default 2.0)."""
+    parts = text.split(":")
+    if len(parts) not in (4, 5) or parts[0].upper() not in ("E", "W"):
+        sys.exit("--port-notch wants FACE:LO:HI:ZTOP[:R] with FACE E or W, got %r" % text)
+    try:
+        nums = [float(v) for v in parts[1:]]
+    except ValueError:
+        sys.exit("--port-notch %r: LO/HI/ZTOP/R must be numbers" % text)
+    lo, hi, zt = nums[:3]
+    r = nums[3] if len(nums) == 4 else 2.0
+    if hi - lo < 2 * r:
+        sys.exit("--port-notch %r: %.2f wide cannot carry two R%.2f corners" % (text, hi - lo, r))
+    return dict(face=parts[0].upper(), lo=lo, hi=hi, z_top=zt, r=r, spec=text)
+
+
+def notch_profile(notches, ya, yb, z0, z1, flare, step_mm=0.1):
+    """The wall's outline, seen face-on, with every notch on that face taken out.
+
+    Local (u, v) = (along the face, z). The block is [ya, yb] x [z0, z1]; each
+    notch removes a U opening up from z0 with its two top corners rounded to its
+    R, and its two lower corners -- where the slot meets the wall's bottom edge --
+    rounded to `flare` so there is no sharp edge for a cable to catch on. Notches
+    may overlap; the opening is their UNION, so a deep notch beside a shallow one
+    makes one stepped opening with rounded corners throughout.
+
+    Returned counter-clockwise, as step_writer wants.
+    """
+    def body(n, u):
+        """Height of this notch's own opening at u (no flare), or None."""
+        lo, hi, zt, r = n["lo"], n["hi"], n["z_top"], n["r"]
+        if not lo <= u <= hi:
+            return None
+        if u < lo + r:
+            return zt - r + math.sqrt(max(r * r - (lo + r - u) ** 2, 0.0))
+        if u > hi - r:
+            return zt - r + math.sqrt(max(r * r - (u - hi + r) ** 2, 0.0))
+        return zt
+
+    def base(n, side):
+        """What a notch's side stands on just outside it: the wall bottom, or the
+        floor of a neighbouring notch it rises out of."""
+        u = n["lo"] - 1e-3 if side < 0 else n["hi"] + 1e-3
+        return max([z0] + [h for h in (body(m, u) for m in notches if m is not n)
+                           if h is not None])
+
+    def top(n, u):
+        """Height of this notch's opening at u, flares included, or None."""
+        h = body(n, u)
+        if h is not None:
+            return h
+        # Outside a side: round the convex corner where the side meets whatever
+        # it stands on -- the wall bottom edge, or a shallower notch's floor. The
+        # radius is capped at the straight part of the side, or the flare would
+        # climb past where the top corner's arc begins.
+        for side, edge in ((-1, n["lo"]), (1, n["hi"])):
+            b = base(n, side)
+            f = min(flare, n["z_top"] - n["r"] - b)
+            if f > 1e-6 and 0 < (edge - u) * -side <= f:
+                d = abs(u - edge)                      # distance out from the side
+                return b + f - math.sqrt(max(f * f - (f - d) ** 2, 0.0))
+        return None
+
+    def bottom(u):
+        hs = [h for h in (top(n, u) for n in notches) if h is not None]
+        return max([z0] + hs)
+
+    # Sample finely, and put two points at every side -- just inside and just
+    # outside -- so the vertical side of each notch comes out vertical.
+    us = set()
+    k = 0
+    while ya + k * step_mm < yb:
+        us.add(round(ya + k * step_mm, 6)); k += 1
+    us.add(yb)
+    eps = 1e-4
+    for n in notches:
+        for e in (n["lo"], n["hi"]):
+            us.update((e - eps, e + eps))
+    edge = [(u, bottom(u)) for u in sorted(us) if ya <= u <= yb]
+    # drop collinear runs along the flat bottom and flat tops
+    pts = [edge[0]]
+    for i in range(1, len(edge) - 1):
+        a, b, c = pts[-1], edge[i], edge[i + 1]
+        if abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) > 1e-9:
+            pts.append(b)
+    pts.append(edge[-1])
+    if max(p[1] for p in pts) >= z1 - 0.3:
+        sys.exit("a --port-notch leaves less than 0.3 mm of wall above it")
+    return pts + [(yb, z1), (ya, z1)]
+
+
+def _face_edge(poly, face):
+    """Index i of the straight edge poly[i] -> poly[i+1] lying on FACE."""
+    ax = 0 if face in "EW" else 1
+    ext = (min if face in "WS" else max)(p[ax] for p in poly)
+    n = len(poly)
+    for i in range(n):
+        a, b = poly[i], poly[(i + 1) % n]
+        if abs(a[ax] - ext) < 1e-6 and abs(b[ax] - ext) < 1e-6:
+            return i
+    sys.exit("no straight edge on face %s" % face)
+
+
+def cut_ring(outer, inner, notch):
+    """A ring (CCW outer, CCW inner) with a slot cut clean through one face.
+
+    The result is a single C-shaped polygon with no hole: down the outer
+    boundary to the slot, across the wall, back round the inner boundary the
+    other way, and across again. Asserts the slot lies on the straight part of
+    the face -- a slot into a corner radius would need a different shape.
+    """
+    f, lo, hi = notch["face"], notch["lo"], notch["hi"]
+    along = 1 if f in "EW" else 0
+
+    def pieces(poly):
+        i = _face_edge(poly, f)
+        a, b = poly[i], poly[(i + 1) % len(poly)]
+        if not (min(a[along], b[along]) + 1e-6 < lo and hi < max(a[along], b[along]) - 1e-6):
+            sys.exit("--port-notch %s spans %.2f..%.2f but the straight part of that face "
+                     "is only %.2f..%.2f" % (notch["spec"], lo, hi,
+                                             min(a[along], b[along]), max(a[along], b[along])))
+        def at(v):
+            q = list(a)
+            q[along] = v
+            return tuple(q)
+        first, second = (at(hi), at(lo)) if b[along] < a[along] else (at(lo), at(hi))
+        return i, first, second
+
+    n_o, n_i = len(outer), len(inner)
+    io, f_o, s_o = pieces(outer)
+    ii, f_i, s_i = pieces(inner)
+    poly = [s_o]
+    poly += [outer[(io + 1 + k) % n_o] for k in range(n_o)]     # ends on outer[io]
+    poly += [f_o, f_i]
+    poly += [inner[(ii - k) % n_i] for k in range(n_i)]          # backwards, ends on inner[ii+1]
+    poly += [s_i]
+    if sw.signed_area(poly) <= 0:
+        sys.exit("cut_ring produced a clockwise polygon -- face %s" % f)
+    return poly
+
+
+def cut_rect(rect, notch):
+    """Split an axis-aligned rectangle (x0, y0, x1, y1) around a notch on its face."""
+    along = 1 if notch["face"] in "EW" else 0
+    a0, a1 = rect[along], rect[along + 2]
+    out = []
+    for s0, s1 in ((a0, min(a1, notch["lo"])), (max(a0, notch["hi"]), a1)):
+        if s1 - s0 > 1e-6:
+            r = list(rect)
+            r[along], r[along + 2] = s0, s1
+            out.append(tuple(r))
+    return out
+
+
+def threaded_boss(x0, x1, y0, y1, depth, hx, hy, core_r, pitch, root_w, tip_w,
+                  thread_h, interference, nseg, phase=0.0937):
+    """A rectangular boss (local x0..x1, y0..y1, z 0..depth) with an INTERNAL helical
+    thread along local z, as explicit planar faces for StepFile.polyhedron().
+
+    The thread is the negative of gen_insert_quarter20.py's ridge: a groove 1.0 wide
+    at the core (root_w) narrowing to tip_w at full thread_h, right-handed, rising
+    toward +z going counter-clockwise about +z. It is cut `interference` SHALLOWER
+    than the insert's thread is tall, and the core is the insert's body diameter
+    line-to-line, so the insert screws in tight and is then heated home.
+
+    The surface is meshed on a grid that FOLLOWS THE HELIX -- rows are helices, so
+    the groove's corners are exact on every row -- then each facet is clipped flat
+    at z = 0 and z = depth. Clip points are computed per edge from a canonically
+    ordered pair, so two facets sharing an edge get the same point and the end
+    faces close the shell exactly.
+
+    Returns (faces, triangles, max radius).
+    """
+    hg = thread_h - interference                 # groove depth actually cut
+    ug = (root_w - hg * (root_w - tip_w) / thread_h) / 2.0
+    pattern = [(-root_w / 2.0, core_r), (-ug, core_r + hg), (ug, core_r + hg),
+               (root_w / 2.0, core_r)]
+    K = len(pattern)
+    S = []                                       # (s, r) rows, periodic with period K
+    k = int(math.floor(-2.0 * pitch / pitch)) - 1
+    while True:
+        row = [(phase + k * pitch + b, r) for b, r in pattern]
+        if row[0][0] > depth + 2.0 * pitch:
+            break
+        S += row
+        k += 1
+    N = nseg
+
+    def key(p):
+        return (round(p[0], 9), round(p[1], 9), round(p[2], 9))
+
+    def pt(i, j):
+        if i == N:                               # the seam: same point, one period on
+            return pt(0, j + K)
+        s, r = S[j]
+        th = 2.0 * math.pi * i / N
+        return (hx + r * math.cos(th), hy + r * math.sin(th), s + pitch * i / N)
+
+    def cut(p, q, zc):
+        a, b = (p, q) if key(p) <= key(q) else (q, p)
+        t = (zc - a[2]) / (b[2] - a[2])
+        return (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]), zc)
+
+    def clip(poly, zc, keep_above):
+        out = []
+        for i in range(len(poly)):
+            p, q = poly[i], poly[(i + 1) % len(poly)]
+            pin = (p[2] >= zc) if keep_above else (p[2] <= zc)
+            qin = (q[2] >= zc) if keep_above else (q[2] <= zc)
+            if pin:
+                out.append(p)
+            if pin != qin:
+                out.append(cut(p, q, zc))
+        return out
+
+    def newell(pts):
+        n = [0.0, 0.0, 0.0]
+        for i in range(len(pts)):
+            a, b = pts[i], pts[(i + 1) % len(pts)]
+            n[0] += (a[1] - b[1]) * (a[2] + b[2])
+            n[1] += (a[2] - b[2]) * (a[0] + b[0])
+            n[2] += (a[0] - b[0]) * (a[1] + b[1])
+        m = math.sqrt(sum(c * c for c in n))
+        return tuple(c / m for c in n), m
+
+    faces, tris = [], []
+    rim = {0.0: {}, depth: {}}                   # boundary edges on each end plane
+    for j in range(len(S) - 1 - K):
+        for i in range(N):
+            A, B, C, D = pt(i, j), pt(i + 1, j), pt(i + 1, j + 1), pt(i, j + 1)
+            for tri in ((A, D, C), (A, C, B)):   # normal toward the axis: out of the solid
+                if max(p[2] for p in tri) <= 0.0 or min(p[2] for p in tri) >= depth:
+                    continue
+                poly = clip(clip(list(tri), 0.0, True), depth, False)
+                if len(poly) < 3:
+                    continue
+                n, area2 = newell(poly)
+                if area2 < 1e-12:
+                    continue
+                faces.append((poly, n, []))
+                tris += [(poly[0], poly[m], poly[m + 1]) for m in range(1, len(poly) - 1)]
+                for m in range(len(poly)):
+                    p, q = poly[m], poly[(m + 1) % len(poly)]
+                    for zc in (0.0, depth):
+                        if p[2] == zc and q[2] == zc:
+                            rim[zc][key(q)] = (q, p)     # end face runs it the other way
+
+    def chain(edges):
+        start = next(iter(edges))
+        loop, k0 = [], start
+        while True:
+            q, p = edges[k0]
+            loop.append(q)
+            k0 = key(p)
+            if k0 == start:
+                break
+            if k0 not in edges or len(loop) > len(edges):
+                sys.exit("threaded_boss: the end-face rim does not close")
+        if len(loop) != len(edges):
+            sys.exit("threaded_boss: the end-face rim is %d edges in %d loops"
+                     % (len(edges), 2))
+        return loop
+
+    front, back = chain(rim[depth]), chain(rim[0.0])
+    rect = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    faces.append(([(x, y, depth) for x, y in rect], (0.0, 0.0, 1.0), [front]))
+    faces.append(([(x, y, 0.0) for x, y in reversed(rect)], (0.0, 0.0, -1.0), [back]))
+    for (ax, ay), (bx, by) in zip(rect, rect[1:] + rect[:1]):
+        side = [(ax, ay, 0.0), (bx, by, 0.0), (bx, by, depth), (ax, ay, depth)]
+        dx, dy = bx - ax, by - ay
+        m = math.hypot(dx, dy)
+        faces.append((side, (dy / m, -dx / m, 0.0), []))
+        tris += [(side[0], side[1], side[2]), (side[0], side[2], side[3])]
+    for z, loop, up in ((depth, front, True), (0.0, back, False)):
+        outer = rect if up else list(reversed(rect))
+        hole = [(p[0], p[1]) for p in loop]
+        if up:
+            caps = sw.cap_triangles(rect, [hole])
+        else:                                    # triangulate seen from +z, then flip
+            caps = [(c, b, a) for a, b, c in sw.cap_triangles(rect, [list(reversed(hole))])]
+        tris += [tuple((q[0], q[1], z) for q in t) for t in caps]
+    return faces, tris, core_r + hg
+
+
+def mesh_volume(tris):
+    return sum((t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
+                - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
+                + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0 for t in tris)
+
+
 def build(args):
     edge, pcb_holes, comps, u1 = read_pcb()
     xs = [v for e in edge for v in (e[0], e[2])]
@@ -553,6 +845,51 @@ def build(args):
     # vertical walls and cannot change profile with height. So the wall is built
     # in two Z bands and the lower one is two concentric rings -- the same
     # stacking gen_socket_tile.py uses to turn a slot onto another face.
+    # PORT NOTCHES cut through the wall from its bottom edge so a cable can reach
+    # a connector on a board below the camera PCB. A prism along Z cannot carry
+    # a rounded corner in the wall's own plane, so the wall is built differently
+    # where a notch is: every ring is cut CLEAN through over a span a little
+    # wider than the notches (each ring a C, see cut_ring), from the wall bottom
+    # up to --board-relief, and that gap is filled with one block extruded
+    # THROUGH the wall thickness, whose face-on outline is notch_profile() --
+    # rounded corners, overlapping notches merged into one stepped opening.
+    notches = [parse_port_notch(s) for s in args.port_notch]
+    for nt in notches:
+        if nt["z_top"] <= z_table + nt["r"]:
+            sys.exit("--port-notch %s: ZTOP is within R of the wall bottom %.2f"
+                     % (nt["spec"], z_table))
+        if nt["z_top"] > args.board_relief - 0.3 and args.thick_wall:
+            sys.exit("--port-notch %s: ZTOP %.2f reaches the thick wall at %.2f. Above the\n"
+                     "board's top face the wall is the stray-light baffle; keep the notch "
+                     "below it." % (nt["spec"], nt["z_top"], args.board_relief))
+    if notches and not args.thick_wall:
+        sys.exit("--port-notch needs the thick wall (it fills up to --board-relief)")
+    blocks = []                                 # one per face: the span every ring is cut over
+    for f in sorted(set(nt["face"] for nt in notches)):
+        on = [nt for nt in notches if nt["face"] == f]
+        ya = min(nt["lo"] for nt in on) - args.notch_flare - 1.0
+        yb = max(nt["hi"] for nt in on) + args.notch_flare + 1.0
+        blocks.append(dict(face=f, lo=ya, hi=yb, z_top=args.board_relief, notches=on,
+                           spec="%s block %.2f..%.2f" % (f, ya, yb)))
+    notches_raw, notches = notches, blocks      # ring() cuts at the BLOCK span
+
+    def ring(o, i, z0, z1, name):
+        """A wall ring o-minus-i from z0 to z1, notched where a --port-notch reaches."""
+        live = [nt for nt in notches if nt["z_top"] > z0 + EPS]
+        if not live:
+            step.prism(o, z0, z1, name, COLORS["box"], holes=[sw.reverse(i)])
+            expected[name] = (abs(sw.signed_area(o)) - abs(sw.signed_area(i))) * (z1 - z0)
+            return
+        if len(live) > 1:
+            sys.exit("only one --port-notch per wall band is supported")
+        nt = live[0]
+        zc = min(z1, nt["z_top"])
+        c = cut_ring(o, i, nt)
+        step.prism(c, z0, zc, name, COLORS["box"])
+        expected[name] = abs(sw.signed_area(c)) * (zc - z0)
+        if z1 - zc > EPS:
+            ring(o, i, zc, z1, name + "_above_notch")
+
     wall_bot = z_table
     seam_open = set(f.upper() for f in args.open_face)
     for f in seam_open:
@@ -562,14 +899,8 @@ def build(args):
         z_gt = z_table + args.groove_depth
         _, _, g_out, g_in = seam_profile(cx, cy, out_w, out_h, t, args.tongue_w,
                                          args.seam_clear, args.corner_r, args.arc_seg)
-        n = "wall_seam_outer"
-        step.prism(outer, z_table, z_gt, n, COLORS["box"], holes=[sw.reverse(g_out)])
-        expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(g_out)))
-                       * args.groove_depth)
-        n = "wall_seam_inner"
-        step.prism(g_in, z_table, z_gt, n, COLORS["box"], holes=[sw.reverse(inner)])
-        expected[n] = ((abs(sw.signed_area(g_in)) - abs(sw.signed_area(inner)))
-                       * args.groove_depth)
+        ring(outer, g_out, z_table, z_gt, "wall_seam_outer")
+        ring(g_in, inner, z_table, z_gt, "wall_seam_inner")
 
         # A GROOVE WITH NO TONGUE IN IT IS JUST A SLOT. gen_base_box.py omits the
         # tongue across an --open-face, because there it would bar the opening
@@ -599,11 +930,16 @@ def build(args):
                 r = (cx + out_w / 2.0 - gi, lo, cx + out_w / 2.0 - go, hi)
             else:
                 r = (cx - out_w / 2.0 + go, lo, cx - out_w / 2.0 + gi, hi)
-            poly = sw.rect((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0,
-                           r[2] - r[0], r[3] - r[1])
-            nm = "wall_seam_fill_%s" % f
-            step.prism(poly, z_table, z_gt, nm, COLORS["box"])
-            expected[nm] = abs(sw.signed_area(poly)) * args.groove_depth
+            rects = [r]
+            for nt in notches:
+                if nt["face"] == f:
+                    rects = [q for rr in rects for q in cut_rect(rr, nt)]
+            for k, q in enumerate(rects):
+                poly = sw.rect((q[0] + q[2]) / 2.0, (q[1] + q[3]) / 2.0,
+                               q[2] - q[0], q[3] - q[1])
+                nm = "wall_seam_fill_%s" % f + ("" if len(rects) == 1 else "_%d" % k)
+                step.prism(poly, z_table, z_gt, nm, COLORS["box"])
+                expected[nm] = abs(sw.signed_area(poly)) * args.groove_depth
         wall_bot = z_gt
 
     # ABOVE THE BOARD THE WALL IS SIMPLY THICKER. The cavity has to be the board
@@ -615,15 +951,30 @@ def build(args):
     if args.thick_wall:
         n = "wall_lower"                       # the rebate that clears the board
         if args.board_relief - wall_bot > EPS:
-            step.prism(outer, wall_bot, args.board_relief, n, COLORS["box"],
-                       holes=[sw.reverse(inner)])
-            expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(inner)))
-                           * (args.board_relief - wall_bot))
+            ring(outer, inner, wall_bot, args.board_relief, n)
         n = "walls"
         step.prism(outer, args.board_relief, top_under, n, COLORS["box"],
                    holes=[sw.reverse(aperture)])
         expected[n] = ((abs(sw.signed_area(outer)) - abs(sw.signed_area(aperture)))
                        * (top_under - args.board_relief))
+
+        # THE PORT-NOTCH BLOCKS: the wall put back over each cut span, extruded
+        # through the wall thickness, with the notches in its outline.
+        for b in blocks:
+            if b["face"] == "W":
+                org = (cx - out_w / 2.0, 0.0, 0.0)
+                ex, ez, sgn = (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), 1.0
+            else:
+                org = (cx + out_w / 2.0, 0.0, 0.0)
+                ex, ez, sgn = (0.0, -1.0, 0.0), (-1.0, 0.0, 0.0), -1.0
+            # local u = sgn * y, so an E face reads its spans mirrored
+            loc = [dict(n, lo=min(sgn * n["lo"], sgn * n["hi"]),
+                        hi=max(sgn * n["lo"], sgn * n["hi"])) for n in b["notches"]]
+            ua, ub = sorted((sgn * b["lo"], sgn * b["hi"]))
+            prof = notch_profile(loc, ua, ub, z_table, args.board_relief, args.notch_flare)
+            n = "wall_port_block_%s" % b["face"]
+            step.prism(prof, 0.0, t, n, COLORS["box"], frame=(org, ex, (0.0, 0.0, 1.0), ez))
+            expected[n] = abs(sw.signed_area(prof)) * t
 
         # THE NOTCH PLUG. The thick wall stops at --board-relief above the PCB,
         # but over the notch there is no board to stop at: the Pt's LEDs see the
@@ -691,6 +1042,8 @@ def build(args):
         origin = (cx + outward[0] * half, cy + outward[1] * half, 0.0)
         ins_z = (z_table + top_surf) / 2.0 if args.insert_z is None else args.insert_z
         hole_r = args.insert_hole / 2.0
+        if args.insert_thread:                   # the groove reaches past the core
+            hole_r += args.thread_h - args.thread_interference
         if (ins_z - hole_r < z_table + args.insert_wall
                 or ins_z + hole_r > top_surf - args.insert_wall
                 or hole_r > args.insert_boss_w / 2.0 - args.insert_wall):
@@ -698,13 +1051,27 @@ def build(args):
                      "z %.2f..%.2f" % (args.insert_hole, ins_z, args.insert_boss_w,
                                        z_table, top_surf))
         n = "insert_boss"
-        prof = sw.rect(args.insert_x, (z_table + top_surf) / 2.0, args.insert_boss_w,
-                       top_surf - z_table)
-        hole = sw.reverse(sw.circle(args.insert_x, ins_z, hole_r, args.segments))
-        step.prism(prof, 0.0, args.insert_depth, n, COLORS["boss"], holes=[hole],
-                   frame=(origin, ex, ey, ez))
-        expected[n] = ((abs(sw.signed_area(prof)) - abs(sw.signed_area(hole)))
-                       * args.insert_depth)
+        if args.insert_thread:
+            # THE HOLE IS THREADED TO THE INSERT (gen_insert_quarter20.py): its
+            # 8.0 body line-to-line, and a groove matching its 3.5-pitch ridge cut
+            # --thread-interference shallower, so the insert screws in TIGHT and is
+            # then heated home. Depth = insert length, so it finishes flush.
+            bx0, bx1 = args.insert_x - args.insert_boss_w / 2.0, args.insert_x + args.insert_boss_w / 2.0
+            faces, tris, _ = threaded_boss(bx0, bx1, z_table, top_surf, args.insert_depth,
+                                           args.insert_x, ins_z, args.insert_hole / 2.0,
+                                           args.thread_pitch, args.thread_root,
+                                           args.thread_tip, args.thread_h,
+                                           args.thread_interference, args.thread_segments)
+            step.polyhedron(faces, tris, n, COLORS["boss"], frame=(origin, ex, ey, ez))
+            expected[n] = mesh_volume(tris)
+        else:
+            prof = sw.rect(args.insert_x, (z_table + top_surf) / 2.0, args.insert_boss_w,
+                           top_surf - z_table)
+            hole = sw.reverse(sw.circle(args.insert_x, ins_z, hole_r, args.segments))
+            step.prism(prof, 0.0, args.insert_depth, n, COLORS["boss"], holes=[hole],
+                       frame=(origin, ex, ey, ez))
+            expected[n] = ((abs(sw.signed_area(prof)) - abs(sw.signed_area(hole)))
+                           * args.insert_depth)
         ins = (f, ins_z)
 
     # Optional locating bosses on the PCB's own corner holes.
@@ -851,6 +1218,21 @@ def main():
                    help="hole depth = buttress protrusion, mm (an insert up to 12.7 long)")
     p.add_argument("--insert-boss-w", type=float, default=16.0,
                    help="buttress width along the face, mm")
+    p.add_argument("--no-insert-thread", dest="insert_thread", action="store_false",
+                   help="plain --insert-hole bore instead of the printed thread")
+    p.add_argument("--thread-pitch", type=float, default=3.5,
+                   help="insert thread pitch, mm -- MEASURED; = gen_insert_quarter20.py")
+    p.add_argument("--thread-root", type=float, default=1.0,
+                   help="insert thread width at the root, mm")
+    p.add_argument("--thread-tip", type=float, default=0.3,
+                   help="insert thread flat at the tip, mm")
+    p.add_argument("--thread-h", type=float, default=1.0,
+                   help="insert thread height off the 8.0 body, mm")
+    p.add_argument("--thread-interference", type=float, default=0.15,
+                   help="how much SHALLOWER the printed groove is than the insert's "
+                        "thread, mm -- the tightness; the insert is heated to finish")
+    p.add_argument("--thread-segments", type=int, default=72,
+                   help="facets per turn of the printed thread")
     p.add_argument("--insert-wall", type=float, default=2.5,
                    help="minimum plastic round the insert hole, mm")
     p.add_argument("--insert-x", type=float, default=0.0,
@@ -876,6 +1258,14 @@ def main():
                    help="pocket the box arches over the screw head with, mm "
                         "(M2 socket head is 3.8, pan head 4.0)")
     p.add_argument("--screw-dia", type=float, default=2.40)
+    p.add_argument("--port-notch", action="append", default=[],
+                   help="FACE:LO:HI:ZTOP[:R] -- cut the E or W wall from its bottom up to "
+                        "ZTOP between y=LO and y=HI, top corners rounded to R (default 2), "
+                        "for a cable to reach a port below the camera PCB. Repeatable; "
+                        "overlapping notches merge. See README for the Pt V2 / Ft+ values")
+    p.add_argument("--notch-flare", type=float, default=1.0,
+                   help="radius rounding each notch's lower corners into the wall's "
+                        "bottom edge, mm (0 = sharp)")
     p.add_argument("--open-face", action="append", default=[],
                    help="N/S/E/W -- face(s) where gen_base_box.py leaves the wall "
                         "off. The WALL here is never opened (this is the optical "

@@ -8,6 +8,7 @@
 | `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens. Also the **upper half** of the two-part enclosure |
 | `gen_base_box.py` | `../3dmodels/camera_base_box.step` | **base box** — the lower half: encloses the Hd+/Ft+/Pt V2 and sandwiches to the lens box |
 | `gen_enclosure_assembly.py` | `../3dmodels/camera_enclosure_assembly.step` | **both halves in one file** — what you open to check they meet; not a printed part |
+| `gen_stack_assembly.py` | `../3dmodels/stack/*.step` | **the real boards**: camera + ESP32 card exported from KiCad, Pt V2 / Ft+ / Hd from Alchitry's STEPs, mated on the DF40 sites into `board_stack.step`, and with both case halves into `camera_stack_enclosure.step`. Needs OCP (cadquery) and kicad-cli; not a printed part |
 | `gen_lens_holder.py` | `../3dmodels/camera_lens_holder.step` | M12 / S-mount alternative: plate on four posts with a threaded barrel |
 | `step_writer.py` | — | shared AP214 writer and 2D helpers |
 | `check_step.py` | — | validates any of the above |
@@ -19,15 +20,16 @@ that differs is a real change.
 python gen_sensor_step.py                    # typical dimensions
 python gen_sensor_step.py --tolerance max    # worst-case envelope
 python gen_socket_tile.py
-python gen_lens_box.py --bosses --open-face W --pcb-t 7.1 --washer-t 2.5   # the C-mount box as committed (spacer stack, d6201f5)
-python gen_base_box.py --open-face E         # ...and the lower half that sandwiches to it
+python gen_lens_box.py --bosses --open-face W --pcb-t 7.1 --washer-t 2.5 --port-notch W:2.5:20.5:-0.5:2.5 --port-notch W:-8.0:7.0:-5.0:1.0   # spacer stack (d6201f5) + USB-C notches
+python gen_base_box.py --open-face W         # ...and the lower half: 24.5 mm spacer stack, nut raised for M2 x 30
 python gen_enclosure_assembly.py             # both halves in ONE file, to check the fit
+python gen_stack_assembly.py                 # real board stack (camera/Pt/Ft+/ESP32/Hd) + both halves, ~1.5 min
 python gen_lens_holder.py                    # the M12 alternative
 python check_step.py
 ```
 
 The **printed enclosure is those two commands** — `gen_lens_box.py` is the upper half and
-`gen_base_box.py` the lower, split on the camera PCB's bottom face at z = −1.60. Run them in
+`gen_base_box.py` the lower, split on the lens box skirt bottom at z = −7.10 (spacer stack). Run them in
 that order: the base box reads the lens box's STEP and refuses to emit if the halves would not
 meet. See [the base box](#gen_base_boxpy--the-base-box-and-the-two-part-enclosure) at the end.
 
@@ -55,12 +57,23 @@ own thread until the shoulder lands on the top face. The number came off a print
 (`gen_bore_test_plate.py`, ten holes 26.0 → 24.2 mm): 25.2 threads, 25.3 is the better fit.
 `--bore-clear 0.80` restores the old 26.2 mm clearance hole.
 
+**USB-C cable notches** (`--port-notch`) are cut up from the bottom of the **west** skirt, where the stack's USB-C ports face. Positions come from Alchitry's own STEP models, placed by `gen_stack_assembly.py`:
+
+| port | receptacle (y, z) | notch | why |
+|---|---|---|---|
+| Pt V2 `J2` | y 6.97..16.03, z -6.59..-2.32 | `W:2.5:20.5:-0.5:2.5` -- 18 wide, to z -0.5, R2.5 | the port is entirely behind the skirt; a 12.4 x 6.6 overmold needs y 5.3..17.7, z -7.8..-1.2 |
+| Ft+ `X1` | y -4.97..3.97, z -12.50..-8.40 | `W:-8.0:7.0:-5.0:1.0` -- 15 wide, 2.1 tall, R1.0 | the base box is open here, but an overmold's top (z -7.15) passed 0.05 mm under the skirt |
+
+The two overlap, so they are cut as ONE stepped opening. Every corner is rounded -- the top corners to each notch's R, and the convex corners where a side meets the wall bottom or the shallower notch's floor to `--notch-flare` (1.0). A prism along Z cannot carry a radius in the wall's own plane, so the rings are cut clean over the span and the wall is put back as one block extruded THROUGH its thickness (`wall_port_block_W`) with that outline. The notch stays below `--board-relief`, so the stray-light baffle above the board is untouched.
+
 **A 1/4-20 tripod insert** sits on the **south** wall — the side nearest `J2`, the lone 80-pin
 DF40 (the north edge has `J1` *and* the 50-pin `J3`). It is a 16 mm buttress running the box's
 full height (table to top face, so no overhang printed either way up) with a horizontal,
 **blind** Ø8.0 × 13 mm hole for a melt-in brass insert; the wall closes the bottom, so it never
 opens the cavity to light. `--insert-hole/-depth` come from the insert's datasheet;
-`--insert-face none` removes it. It is built with `step_writer`'s `frame=`, which lets a prism
+`--insert-face none` removes it.
+
+**The hole is THREADED to the insert** (`gen_insert_quarter20.py`: 8.0 body, 1.0-high ridge 1.0 wide at the root to a 0.3 flat, 3.5 mm MEASURED pitch, right-hand, 13.0 long). The core is 8.0 line-to-line with the body, the groove is the ridge's exact negative but cut `--thread-interference` (0.15) SHALLOWER, and the hole is 13.0 deep so the insert finishes flush. It screws in tight by hand and is heated home. Verified by placing the insert model in the hole: every crest point is in plastic, no flank or core point is. The boss is built face by face (`StepFile.polyhedron`) on a grid that follows the helix, clipped flat at both ends. `--no-insert-thread` restores the plain bore. It is built with `step_writer`'s `frame=`, which lets a prism
 point along any axis.
 
 **The top face is the optical datum.** C-mount flange focal distance is 17.526 mm from the

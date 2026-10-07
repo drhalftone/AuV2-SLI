@@ -40,8 +40,13 @@ from gen_lens_holder import read_pcb
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "3dmodels", "camera_enclosure_assembly.step")
 
-STACK_H = 19.00          # MEASURED camera PCB top -> Hd+ bottom
+STACK_H = 24.50          # MEASURED camera PCB top -> Hd+ bottom, spacer stack
 BOARD_T = 1.60           # ASSUMED -- see header
+SPACER_GAP = 5.50        # the spacer PCB sits under the camera board (d6201f5)
+LENS_PCB_T = 7.10        # lens box skirt depth = camera PCB + spacer
+LENS_WASHER_T = 2.50     # lens box washer -> screw head seat, set for 30 mm screws
+PT_USB_NOTCH = "W:2.5:20.5:-0.5:2.5"   # cable access to the Pt V2 USB-C (see mech README)
+FT_USB_NOTCH = "W:-8.0:7.0:-5.0:1.0"   # overmold relief over the Ft+ USB-C
 BOARDS = ["camera", "pt", "ftplus", "hd"]       # top to bottom
 REF_RGB = (0.18, 0.42, 0.24)                    # green, obviously not a printed part
 
@@ -96,14 +101,24 @@ def replay(dst, src, prefix, expected):
         expected[nm] = ((abs(sw.signed_area(pts))
                          - sum(abs(sw.signed_area(h)) for h in holes)) * (z1 - z0))
         n += 1
+    # Solids built face by face (the threaded insert boss) replay the same way.
+    for name, faces, tris in src.polys:
+        nm = "%s_%s" % (prefix, name)
+        dst.polyhedron(faces, tris, nm, rgb.get(name, (0.5, 0.5, 0.5)),
+                       frame=src.frames.get(name))
+        expected[nm] = sum((t[0][0] * (t[1][1] * t[2][2] - t[1][2] * t[2][1])
+                            - t[0][1] * (t[1][0] * t[2][2] - t[1][2] * t[2][0])
+                            + t[0][2] * (t[1][0] * t[2][1] - t[1][1] * t[2][0])) / 6.0
+                           for t in tris)
+        n += 1
     return n
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--open-face", action="append", default=["E"],
-                   help="passed through to gen_base_box.py (default E)")
+    p.add_argument("--open-face", action="append", default=None,
+                   help="passed through to both halves (default W, as committed)")
     p.add_argument("--alchitry-ports", action="store_true",
                    help="pass through to gen_base_box.py: the measured WEST-face "
                         "HDMI and USB-C openings")
@@ -115,6 +130,8 @@ def main():
     p.add_argument("--timestamp", default="2026-08-25T00:00:00")
     p.add_argument("--no-stl", dest="stl", action="store_false")
     args = p.parse_args()
+    if args.open_face is None:
+        args.open_face = ["W"]
 
     w = sys.stdout.write
 
@@ -123,7 +140,11 @@ def main():
     # tongue there; the lens box fills its groove to match. Passing it to only
     # one of them leaves the tongue and the groove fill occupying the same
     # millimetre, which gen_base_box.py refuses -- but only if it is told.
-    lens_argv = ["gen_lens_box.py", "--bosses"]
+    # The spacer stack (d6201f5): skirt down to -7.10, screw heads on 2.5 mm
+    # washers. These MUST match how camera_lens_box.step was committed, or this
+    # script silently regenerates the old 19 mm-stack box over it.
+    lens_argv = ["gen_lens_box.py", "--bosses", "--pcb-t", "%.2f" % LENS_PCB_T,
+                 "--washer-t", "%.2f" % LENS_WASHER_T, "--port-notch", PT_USB_NOTCH, "--port-notch", FT_USB_NOTCH]
     base_argv = ["gen_base_box.py"] + (["--alchitry-ports"] if args.alchitry_ports else [])
     for f in args.open_face:
         lens_argv += ["--open-face", f]
@@ -133,7 +154,7 @@ def main():
 
     step = sw.StepFile(
         "camera_enclosure_assembly",
-        "Two-part printed enclosure -- lens box + base box, split at z=-1.60"
+        "Two-part printed enclosure -- lens box + base box, split at z=-7.10"
         + (" | board plates are REFERENCE, intermediate pitch assumed"
            if args.reference else ""),
         args.timestamp, tool="gen_enclosure_assembly.py")
@@ -152,9 +173,11 @@ def main():
         mx1, my0 = bx1 - u1["x"], u1["y"] - by1
         cx, cy = (mx0 + mx1) / 2.0, (my0 + my1) / 2.0
         bw, bh = mx1 - mx0, my1 - my0
-        pitch = (args.stack_h - args.board_t) / (len(BOARDS) - 1)
+        # The spacer sits between the camera board and the Pt; the other three
+        # share what is left of the measured stack.
+        pitch = (args.stack_h - SPACER_GAP - args.board_t) / (len(BOARDS) - 1)
         for i, nm in enumerate(BOARDS):
-            top = -i * pitch
+            top = -i * pitch - (SPACER_GAP if i else 0.0)
             n = "board_REF_%s" % nm
             step.prism(sw.rect(cx, cy, bw, bh), top - args.board_t, top, n, REF_RGB)
             expected[n] = bw * bh * args.board_t
@@ -178,7 +201,7 @@ def main():
       % (len(step.meshes), n_lens, n_base,
          ", %d reference plates" % len(skip) if skip else ""))
     w("           z %.3f -> %.3f  (%.2f mm tall)\n" % (min(zs), max(zs), max(zs) - min(zs)))
-    w("split      the two halves meet at z = -1.600, the camera PCB's bottom face\n")
+    w("split      the two halves meet at z = -%.3f, the lens box skirt bottom\n" % LENS_PCB_T)
     if args.reference:
         w("boards     4 x %.1f x %.1f x %.2f plates, pitch %.3f mm (gap %.3f)\n"
           % (bw, bh, args.board_t, pitch, pitch - args.board_t))
