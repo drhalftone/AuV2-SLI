@@ -34,9 +34,25 @@ import campack
 # Pillow moved the resampling constants to an enum in 9.1 and removed the old
 # aliases in 10. Resolve once rather than let the viewer die on the first frame.
 RESAMPLE = getattr(getattr(Image, "Resampling", Image), "BILINEAR")
+# Zoomed far enough that one image pixel covers several screen pixels, bilinear
+# smears exactly the pixel-to-pixel structure you zoomed in to look at.
+NEAREST = getattr(getattr(Image, "Resampling", Image), "NEAREST")
+
+# ---- zoom / pan -------------------------------------------------------------
+ZOOM_STEP = 1.25          # per wheel notch
+ZOOM_MAX = 64.0           # x the fit-to-window scale
+FLING_TAU = 0.35          # s, momentum decay time constant after a throw
+FLING_MIN = 20.0          # screen px/s, below this the image stops
+FLING_WINDOW = 0.08       # s of drag history the release velocity is taken from
 
 IN_PIPE, OUT_PIPE = 0x82, 0x02
 MAGIC = 0x30494C53
+# Control replies share the IN pipe with video: same 32-byte header shape,
+# RMAGIC ("SLI1"), format 4, w2 = true byte count, w4 = padded count to skip.
+# See host/ftlink.py for the full protocol notes.
+RMAGIC = 0x31494C53
+RPL_FMT = 4
+SYNC, OP_R = 0xA5, 0x52
 NCOL, NROW = 1280, 1024
 NPIX = NCOL * NROW
 # Payload is DENSE PACKED 10-BIT now (4 px in 5 bytes), not 10-bit in u16, so a
@@ -60,21 +76,28 @@ DISP_W, DISP_H = 800, 640        # initial preview size; the image now follows t
 #          8300 us       0.0 fps    collapses
 #          8333 us      59.8 fps    every other trigger missed
 #
-# The limit is the LAST MEASURED-GOOD VALUE, 8280 us. That is deliberate but
-# tight: the collapse at 8300 us is only 20 us away, and the edge behaved
-# differently between runs (8333 us gave 59.8 fps once and 0 another time). If
-# full-rate capture ever becomes intermittent near the top of the slider, this
-# margin is the first thing to suspect -- back it off toward 8000 us, which
-# still buys 96% of the light a full period could give.
+# 8280 us WAS THE LAST MEASURED-GOOD VALUE, AND IT WEDGED THE SENSOR on
+# 2026-10-07: dragged to the top of the slider, the part stopped integrating with
+# its last exposure at 8.29 ms and only a reconfiguration brought it back. The
+# FPGA's limit (MAXEXP, reg 0x53) said 8279 us, and that wedged it too: the gap
+# behind it predated the CDS timing program. Re-measured: the sensor needs ~78 us
+# after an exposure, so MAXEXP is now period - 90 us = 8243 us at 120 Hz.
+#
+# THE SLIDER NOW TAKES ITS TOP FROM THE FPGA. The viewer reads 0x53..0x55 over the
+# Ft+ control tunnel once a second (see poll_regs), so the ceiling is the board's
+# figure for the rate it is actually running at, genlocked or not. The FPGA also
+# CLAMPS every exposure command to that figure (cam_expo_safety.v), so even a
+# wrong number here cannot wedge it any more. EXPO_MAX_US is only the fallback
+# until the first reply arrives -- deliberately below the edge, not at it.
 FRAME_HZ = 120.0
 PERIOD_US = 1e6 / FRAME_HZ
-EXPO_MAX_US = 8280               # us, measured at 120 Hz; 8300 collapses
+EXPO_MAX_US = 8200               # us, fallback only; the FPGA's MAXEXP replaces it
 DLY_MAX_MS  = 50.0               # G3 asks for >= 0-50 ms; the register holds 167 ms
 # The exposure ceiling is FRAME PERIOD MINUS A RESERVE, so it moves with the rate.
 # Genlocked to a slower display the budget GROWS -- 13.3 ms at 75 Hz, 16.6 ms at
 # 60 Hz -- and capping at the free-running 8280 us would throw that light away.
-# 54.1 us is the FPGA's own figure: GAP_TICKS (44.1 us, measured) + MARGIN_TICKS.
-EXPO_RESERVE_US = 54.1
+# 90 us is the FPGA's own figure: GAP_TICKS (80 us, measured 2026-10-07) + MARGIN_TICKS.
+EXPO_RESERVE_US = 90.0
 EXPO_REG_MAX_US = 65535 * 0.375  # 24576 us -- the 16-bit exposure register itself
 SAT_LEVEL = 1020                 # 10-bit full scale is 1023
 CAPTURE_DIR = "captures"         # created on demand, next to the script
@@ -164,6 +187,22 @@ class Cam:
             except Exception:
                 return False
 
+    def send_bytes(self, payload):
+        """0xA5 control-protocol bytes, tunnelled as opcode-0 words.
+
+        Three bytes per word with an explicit count: {4'd0, count, b2, b1, b0}.
+        They cannot go down raw: a protocol byte landing in the top nibble would
+        fire a camera opcode -- 0x1? is opcode 1 and rewrites the exposure.
+        """
+        ok = True
+        for i in range(0, len(payload), 3):
+            chunk = payload[i:i + 3]
+            w = len(chunk) << 24
+            for j, b in enumerate(chunk):
+                w |= b << (8 * j)
+            ok = self.command(0, w) and ok
+        return ok
+
     def close(self):
         with self.lock:
             try:
@@ -186,6 +225,7 @@ class Reader(threading.Thread):
         self.stop = threading.Event()
         self.lock = threading.Lock()
         self.latest = None            # (slot, frame_idx, bytes, fmt, ldrop, roiw)
+        self.rx = bytearray()         # control-reply byte stream (see take_rx)
         self.bytes_total = 0
         self.frames_seen = 0
         self.frames_shown = 0
@@ -194,12 +234,33 @@ class Reader(threading.Thread):
     def run(self):
         acc = bytearray()
         magic = struct.pack("<I", MAGIC)
+        rmagic = struct.pack("<I", RMAGIC)
         while not self.stop.is_set():
             chunk = self.cam.read()
             if not chunk:
                 continue
             self.bytes_total += len(chunk)
             acc += chunk
+
+            # CONTROL REPLIES FIRST, AND CUT OUT OF THE STREAM. They leave only at
+            # frame boundaries, so one never sits inside a frame's payload; taking
+            # them out here means the frame search below never has to know they
+            # exist. A reply is a transport chunk, not a message -- the bytes are
+            # appended to a stream and the 0xA5 framing is parsed on the GUI side.
+            rpos = acc.find(rmagic)
+            while rpos >= 0 and rpos + HDR <= len(acc):
+                h = struct.unpack_from("<8I", acc, rpos)
+                if (h[7] == (~RMAGIC & 0xFFFFFFFF) and h[6] == RPL_FMT
+                        and h[4] <= 4096):
+                    end = rpos + HDR + h[4]
+                    if end > len(acc):
+                        break                    # rest of it is still in flight
+                    with self.lock:
+                        self.rx += acc[rpos + HDR: rpos + HDR + min(h[2], h[4])]
+                    del acc[rpos:end]
+                    rpos = acc.find(rmagic, rpos)
+                else:
+                    rpos = acc.find(rmagic, rpos + 4)
 
             # Keep only the LAST complete frame in the buffer. Scanning from the
             # end means a slow GUI cannot make us fall behind the camera.
@@ -230,7 +291,11 @@ class Reader(threading.Thread):
                 with self.lock:
                     self.latest = last
                     self.frames_seen += 1
-                acc = bytearray()          # drop everything consumed or stale
+                # Drop everything up to the end of that frame, but KEEP what
+                # follows: a control reply leaves right after a frame, and
+                # clearing the whole buffer here threw away any that had only
+                # partly arrived.
+                del acc[:pos + HDR + FBYTES]
             elif len(acc) > 3 * (FBYTES + HDR):
                 del acc[:len(acc) - (FBYTES + HDR)]   # bound the buffer
 
@@ -239,6 +304,12 @@ class Reader(threading.Thread):
             f = self.latest
             self.latest = None
             return f
+
+    def take_rx(self):
+        with self.lock:
+            b = bytes(self.rx)
+            self.rx.clear()
+            return b
 
 
 class App:
@@ -267,6 +338,15 @@ class App:
         self.wb = None                        # eased (r, g, b) gains
 
         self.dw, self.dh = DISP_W, DISP_H     # current preview area, tracked live
+        # View: zoom relative to fit-to-window, centred on sensor pixel (cx, cy).
+        self.zoom = 1.0
+        self.cx, self.cy = NCOL / 2.0, NROW / 2.0
+        self.vel = (0.0, 0.0)                 # fling velocity, screen px/s
+        self.drag = None                      # last (x_root, y_root) while dragging
+        self.drag_hist = []                   # recent (t, x_root, y_root)
+        self.last_anim = time.time()
+        self.view_dirty = False               # repaint the last frame without a new one
+        self.last_img = None
         self.save_dir = os.path.abspath(CAPTURE_DIR)   # remembered between saves
         self.ldrop0 = None                    # ldrop at start, to report GROWTH
         self.ldrop = 0
@@ -274,6 +354,16 @@ class App:
         self.rate_idx0 = None
         self.rate_t0 = 0.0
         self.expo_ceil = None
+        # Read back from the FPGA over the control tunnel (poll_regs). None until
+        # the first reply: MAXEXP in exposure units, and the exposure the sensor
+        # was actually given -- which the FPGA may have clamped or shortened.
+        self.fpga_max_units = None
+        self.fpga_expo = None
+        self.regs = {}
+        self.rx_buf = b""
+        self.last_poll = 0.0
+        self.poll_i = 0
+        self.expo_sent_t = 0.0               # readback is stale for a moment after
         self.sat = 0.0
         # ROI state, defaulted so the status line renders before the first frame.
         self.roi_valid = 0
@@ -329,6 +419,16 @@ class App:
         self.canvas = tk.Label(self.view, bg="black")
         self.canvas.pack(expand=True)
         self.view.bind("<Configure>", self.on_resize)
+        # The Label only covers the picture; the Frame covers the letterbox
+        # margins. Bind both so the gestures work anywhere in the view.
+        for w in (self.view, self.canvas):
+            w.bind("<MouseWheel>", self.on_wheel)                       # Windows / macOS
+            w.bind("<Button-4>", lambda e: self.on_wheel(e, +120))      # X11
+            w.bind("<Button-5>", lambda e: self.on_wheel(e, -120))
+            w.bind("<ButtonPress-1>", self.on_press)
+            w.bind("<B1-Motion>", self.on_motion)
+            w.bind("<ButtonRelease-1>", self.on_release)
+            w.bind("<Double-Button-1>", self.on_reset_view)
 
         ttk.Checkbutton(bar, text="auto contrast", variable=self.auto).pack(side=tk.LEFT)
         ttk.Checkbutton(bar, text="colour", variable=self.color).pack(side=tk.LEFT, padx=(6, 0))
@@ -348,7 +448,9 @@ class App:
         # Apply on RELEASE, not on every pixel of drag: each change is a USB
         # command and the sensor needs a frame to act on it, so streaming
         # hundreds of them while dragging just floods the control channel.
-        sc.bind("<ButtonRelease-1>", lambda _e: self.set_expo())
+        self.expo_dragging = False
+        sc.bind("<ButtonPress-1>", lambda _e: setattr(self, "expo_dragging", True))
+        sc.bind("<ButtonRelease-1>", self.on_expo_release)
         self.expo_lbl = ttk.Label(bar, text="", width=22)
         self.expo_lbl.pack(side=tk.LEFT, padx=4)
         # No "set" button: the exposure is sent when the slider is RELEASED, so a
@@ -379,11 +481,167 @@ class App:
 
         self.on_expo_move(None)
         self.on_dly_move(None)
+        # MAKE THE CAMERA MATCH THE SLIDERS. The camera keeps whatever the last
+        # session (or script) left in it, and the controls only send on release,
+        # so without this the UI can show 600 us / sync off while the video is
+        # something else entirely. Push the UI's values rather than read the
+        # camera's: readback lives on the UART, which this viewer does not own.
+        # Exposure FIRST -- 600 us is safe at any rate -- THEN genlock, so a long
+        # exposure left over from a genlocked 60 Hz session is shortened before
+        # the sensor drops back to the 8.33 ms free-running period (see
+        # set_genlock).
+        if not (self.set_expo() and self.set_genlock()):
+            self.save_lbl.configure(text="could not send exposure/sync to camera")
         root.protocol("WM_DELETE_WINDOW", self.quit)
         self.tick()
 
     def on_resize(self, ev):
         self.dw, self.dh = max(ev.width, 1), max(ev.height, 1)
+        self.clamp_view()
+
+    # ---- zoom / pan ---------------------------------------------------------
+    # The view is (zoom, cx, cy): screen px per sensor px is fit_scale * zoom,
+    # and sensor point (cx, cy) sits at the middle of the view. Everything below
+    # maps view coordinates through that, so the picture never needs to be
+    # rendered larger than the window -- only the visible crop is resampled.
+
+    def view_scale(self):
+        return min(self.dw / float(NCOL), self.dh / float(NROW)) * self.zoom
+
+    def clamp_view(self):
+        """Keep the picture covering the view on any axis where it can.
+
+        On an axis where the zoomed sensor is narrower than the view it is
+        centred instead, the same letterboxing as the unzoomed picture.
+        """
+        s = self.view_scale()
+        for ax, n, d in (("cx", NCOL, self.dw), ("cy", NROW, self.dh)):
+            half = d / (2.0 * s)
+            if half * 2.0 >= n:
+                setattr(self, ax, n / 2.0)
+            else:
+                setattr(self, ax, min(max(getattr(self, ax), half), n - half))
+
+    def view_xy(self, ev):
+        # Events arrive in the coordinates of whichever widget was hit; root
+        # coordinates make the Label and the Frame agree.
+        return (ev.x_root - self.view.winfo_rootx(),
+                ev.y_root - self.view.winfo_rooty())
+
+    def on_wheel(self, ev, delta=None):
+        """Zoom about the pointer: the sensor pixel under it stays under it."""
+        notches = (ev.delta if delta is None else delta) / 120.0
+        new = min(max(self.zoom * ZOOM_STEP ** notches, 1.0), ZOOM_MAX)
+        if new == self.zoom:
+            return
+        vx, vy = self.view_xy(ev)
+        s0 = self.view_scale()
+        px = self.cx + (vx - self.dw / 2.0) / s0
+        py = self.cy + (vy - self.dh / 2.0) / s0
+        self.zoom = new
+        s1 = self.view_scale()
+        self.cx = px - (vx - self.dw / 2.0) / s1
+        self.cy = py - (vy - self.dh / 2.0) / s1
+        self.clamp_view()
+        self.view_dirty = True
+
+    def on_press(self, ev):
+        self.vel = (0.0, 0.0)                 # grabbing a moving image stops it
+        self.drag = (ev.x_root, ev.y_root)
+        self.drag_hist = [(time.time(), ev.x_root, ev.y_root)]
+        self.canvas.configure(cursor="fleur")
+
+    def on_motion(self, ev):
+        if self.drag is None:
+            return
+        dx, dy = ev.x_root - self.drag[0], ev.y_root - self.drag[1]
+        self.drag = (ev.x_root, ev.y_root)
+        self.pan(dx, dy)
+        now = time.time()
+        self.drag_hist.append((now, ev.x_root, ev.y_root))
+        while len(self.drag_hist) > 2 and now - self.drag_hist[0][0] > FLING_WINDOW:
+            self.drag_hist.pop(0)
+
+    def on_release(self, ev):
+        """Throw: the release velocity is the pointer's speed over the last
+        FLING_WINDOW. A pointer held still before letting go throws nothing."""
+        self.canvas.configure(cursor="")
+        if self.drag is None:
+            return
+        self.drag = None
+        now = time.time()
+        h = [p for p in self.drag_hist if now - p[0] <= FLING_WINDOW]
+        if len(h) >= 2 and h[-1][0] > h[0][0]:
+            dt = h[-1][0] - h[0][0]
+            self.vel = ((h[-1][1] - h[0][1]) / dt, (h[-1][2] - h[0][2]) / dt)
+        self.last_anim = now
+
+    def on_reset_view(self, _ev):
+        self.zoom, self.vel = 1.0, (0.0, 0.0)
+        self.cx, self.cy = NCOL / 2.0, NROW / 2.0
+        self.view_dirty = True
+
+    def pan(self, dx, dy):
+        """Move the picture by (dx, dy) SCREEN pixels, as if dragged."""
+        s = self.view_scale()
+        ox, oy = self.cx, self.cy
+        self.cx -= dx / s
+        self.cy -= dy / s
+        self.clamp_view()
+        self.view_dirty = True
+        return self.cx != ox, self.cy != oy
+
+    def animate(self):
+        """Coast after a throw, decaying exponentially; an edge stops that axis."""
+        now = time.time()
+        dt, self.last_anim = now - self.last_anim, now
+        vx, vy = self.vel
+        if self.drag is not None or (vx == 0.0 and vy == 0.0):
+            return
+        movx, movy = self.pan(vx * dt, vy * dt)
+        k = np.exp(-dt / FLING_TAU)
+        vx = vx * k if movx else 0.0
+        vy = vy * k if movy else 0.0
+        if np.hypot(vx, vy) < FLING_MIN:
+            vx = vy = 0.0
+        self.vel = (vx, vy)
+
+    def render(self):
+        """Resample the visible part of the last mapped frame into the view."""
+        img = self.last_img
+        s = self.view_scale()
+        k = img.shape[1] / float(NCOL)        # image px per sensor px (colour is 1/2)
+        hw, hh = self.dw / (2.0 * s), self.dh / (2.0 * s)
+        sx0, sx1 = max(self.cx - hw, 0.0), min(self.cx + hw, float(NCOL))
+        sy0, sy1 = max(self.cy - hh, 0.0), min(self.cy + hh, float(NROW))
+        tw = max(1, int(round((sx1 - sx0) * s)))
+        th = max(1, int(round((sy1 - sy0) * s)))
+        im = Image.fromarray(img).resize(
+            (tw, th), NEAREST if s * k >= 3.0 else RESAMPLE,
+            box=(sx0 * k, sy0 * k, sx1 * k, sy1 * k))
+        # ---- SHOW WHERE THE ROI ACTUALLY IS -----------------------------------
+        # 16x16 out of 1280x1024 is a tenth of a percent of the frame, and at
+        # preview scale it is smaller than one screen pixel. The whole reason
+        # for putting a live picture behind this number is to see whether the
+        # patch is on the projected spot at all, so the box is drawn OUTSIDE
+        # the patch and deliberately oversized -- a marker, not a rectangle
+        # you are meant to read pixel values out of. Green when the fabric
+        # agrees with the host, red when it does not.
+        if im.mode != "RGB":
+            im = im.convert("RGB")
+        d = ImageDraw.Draw(im)
+        agree = (self.roi_valid and self.roi_host is not None
+                 and self.roi_mean == self.roi_host)
+        x0 = (ROI_COL8 * 8 - sx0) * s
+        y0 = (ROI_ROW8 * 8 - sy0) * s
+        x1 = x0 + campack.ROI_N * s
+        y1 = y0 + campack.ROI_N * s
+        pad = 6
+        d.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad],
+                    outline=(0, 255, 0) if agree else (255, 40, 40), width=2)
+        self.photo = ImageTk.PhotoImage(im)
+        self.canvas.configure(image=self.photo)
+        self.view_dirty = False
 
     def map_via_lut(self, a, lo, gain):
         """10-bit -> 8-bit through a LOOKUP TABLE rather than pixel arithmetic.
@@ -437,15 +695,73 @@ class App:
             rgb *= gain
         return np.clip(rgb, 0, 255).astype(np.uint8)
 
+    def on_expo_release(self, _ev):
+        self.expo_dragging = False
+        self.set_expo()
+
     def on_expo_move(self, _ev):
         """Live feedback while dragging -- no command sent until release."""
         self.expo_lbl.configure(
-            text="%d / %d us" % (int(self.expo.get()), self.expo_ceiling_us()))
+            text="%d / %d us%s" % (int(self.expo.get()), self.expo_ceiling_us(),
+                                   "" if self.fpga_max_units is not None else " (est)"))
 
     def set_expo(self):
         us = min(int(self.expo.get()), self.expo_ceiling_us())
-        units = int(round(us / EXPO_UNIT_US))
-        self.cam.command(1, max(1, min(units, 0xFFFF)))
+        units = int(us / EXPO_UNIT_US)           # floor: never round UP past the limit
+        if self.fpga_max_units is not None:
+            units = min(units, self.fpga_max_units)
+        self.expo_sent_t = time.time()
+        return self.cam.command(1, max(1, min(units, 0xFFFF)))
+
+    # ---- register readback over the Ft+ control tunnel ----------------------
+    # 0x40/0x41 EXPO0 (what the sensor was given), 0x53/0x54 MAXEXP in exposure
+    # units, 0x55 {7: valid, 6: register-limited}. Polled, not awaited: replies
+    # leave only at frame boundaries (~8 ms at 120 Hz), and the GUI must never
+    # block on the camera.
+    POLL_REGS = (0x40, 0x41, 0x53, 0x54, 0x55)
+
+    def poll_regs(self):
+        # ONE READ IN FLIGHT AT A TIME. Five requests sent back to back lost two
+        # replies on hardware (0x41 and 0x55 every time); spaced 50 ms apart, all
+        # five came back. So one register goes out every 0.2 s, round robin: the
+        # whole set refreshes once a second.
+        now = time.time()
+        if now - self.last_poll >= 0.2:
+            self.last_poll = now
+            a = self.POLL_REGS[self.poll_i % len(self.POLL_REGS)]
+            self.poll_i += 1
+            self.cam.send_bytes(bytes([SYNC, OP_R, a, (256 - ((OP_R + a) & 0xFF)) & 0xFF]))
+        # A read reply is {addr, value, checksum} with addr+value+ck == 0 mod 256.
+        buf = self.rx_buf + self.reader.take_rx()
+        i = 0
+        while i + 3 <= len(buf):
+            a, v, c = buf[i], buf[i + 1], buf[i + 2]
+            if a in self.POLL_REGS and (a + v + c) & 0xFF == 0:
+                self.regs[a] = v
+                i += 3
+            else:
+                i += 1
+        self.rx_buf = buf[i:][-64:]
+        r = self.regs
+        if all(k in r for k in (0x53, 0x54, 0x55)):
+            mx = r[0x53] | (r[0x54] << 8)
+            new = mx if (r[0x55] & 0x80) and mx > 0 else None
+            if new != self.fpga_max_units:
+                self.fpga_max_units = new
+                self.expo_ceil = None             # force the slider to re-range
+                self.retune_expo_ceiling()
+        if 0x40 in r and 0x41 in r:
+            self.fpga_expo = r[0x40] | (r[0x41] << 8)
+            # FOLLOW THE CAMERA, not the slider: the FPGA clamps over-long
+            # requests and shortens the exposure itself when the rate rises, and
+            # the slider has to say what the sensor is really doing. Skipped
+            # while the slider is held and just after a send, when the readback
+            # still describes the previous value.
+            if now - self.expo_sent_t > 1.5 and not self.expo_dragging:
+                us = int(round(self.fpga_expo * EXPO_UNIT_US))
+                if abs(us - int(self.expo.get())) > 1:
+                    self.expo.set(us)
+                    self.on_expo_move(None)
 
     def track_rate(self, idx):
         """Measure the TRUE camera rate from frame_idx, not from display fps.
@@ -470,10 +786,18 @@ class App:
         self.retune_expo_ceiling()
 
     def expo_ceiling_us(self):
-        """Largest exposure the CURRENT frame period allows."""
+        """Largest exposure the CURRENT frame period allows.
+
+        The FPGA's MAXEXP when it has answered -- the figure the fabric itself
+        clamps to. Until then an estimate from the measured rate, kept 10 us
+        further from the edge than the FPGA's own margin, because a measured
+        rate is noisier than a measured period.
+        """
+        if self.fpga_max_units is not None:
+            return int(max(40.0, self.fpga_max_units * EXPO_UNIT_US))
         if self.cam_fps is None:
             return EXPO_MAX_US
-        us = 1e6 / self.cam_fps - EXPO_RESERVE_US
+        us = 1e6 / self.cam_fps - EXPO_RESERVE_US - 10.0
         return int(max(40.0, min(us, EXPO_REG_MAX_US)))
 
     def retune_expo_ceiling(self):
@@ -534,7 +858,7 @@ class App:
             self.expo_ceil = EXPO_MAX_US
             self.on_expo_move(None)
 
-        self.cam.command(7, (en << 27) | ticks)
+        return self.cam.command(7, (en << 27) | ticks)
 
     def save_tiff(self):
         """Write the frame currently on screen to a 16-bit TIFF.
@@ -649,33 +973,9 @@ class App:
             # THE ASPECT RATIO. Stretching to the raw widget size would distort a
             # 5:4 sensor into whatever shape the window happens to be, and on a
             # metrology camera a silently non-square pixel is worse than a small
-            # image.
-            scale = min(self.dw / float(NCOL), self.dh / float(NROW))
-            tw = max(1, int(NCOL * scale))
-            th = max(1, int(NROW * scale))
-            im = Image.fromarray(img).resize((tw, th), RESAMPLE)
-            # ---- SHOW WHERE THE ROI ACTUALLY IS -------------------------------
-            # 16x16 out of 1280x1024 is a tenth of a percent of the frame, and at
-            # preview scale it is smaller than one screen pixel. The whole reason
-            # for putting a live picture behind this number is to see whether the
-            # patch is on the projected spot at all, so the box is drawn OUTSIDE
-            # the patch and deliberately oversized -- a marker, not a rectangle
-            # you are meant to read pixel values out of. Green when the fabric
-            # agrees with the host, red when it does not.
-            if im.mode != "RGB":
-                im = im.convert("RGB")
-            d = ImageDraw.Draw(im)
-            agree = (self.roi_valid and self.roi_host is not None
-                     and self.roi_mean == self.roi_host)
-            x0 = ROI_COL8 * 8 * scale
-            y0 = ROI_ROW8 * 8 * scale
-            x1 = x0 + campack.ROI_N * scale
-            y1 = y0 + campack.ROI_N * scale
-            pad = 6
-            d.rectangle([x0 - pad, y0 - pad, x1 + pad, y1 + pad],
-                        outline=(0, 255, 0) if agree else (255, 40, 40), width=2)
-            self.photo = ImageTk.PhotoImage(im)
-            self.canvas.configure(image=self.photo)
+            # image. render() applies the zoom/pan on top of that fit.
+            self.last_img = img
+            self.render()
             self.shown += 1
             self.slot, self.idx = slot, idx
             self.lo, self.hi = int(sub.min()), int(sub.max())
@@ -683,6 +983,13 @@ class App:
             # writes sensor counts rather than a viewing decision. This is a
             # reference to the array we already have -- no copy.
             self.last_frame = a
+
+        self.poll_regs()
+        # Panning and coasting must move the picture between camera frames too,
+        # so the last mapped frame is re-rendered whenever the view changed.
+        self.animate()
+        if self.view_dirty and self.last_img is not None:
+            self.render()
 
         now = time.time()
         if now - self.last_stat >= 0.5:
