@@ -1,0 +1,58 @@
+Parallel_FP Test
+Module Version: 1.0.0.13
+Start Time: 10/7/2026 5:22:43 PM
+Test Result - PASS
+ 
+Module AVX.exe Completed - Pass
+Module Math_FP.exe Completed - Pass
+ 
+ 
+AVX Test
+Module Version: 2.1.0.64b.W
+Start Time: Wed Oct  7 17:22:43 2026
+Test Result - PASS
+
+DetectUtils64 DLL Version - 1.1.10
+
+  --- CPU Features Detection --- 
+..AVX is supported by this CPU..
+..AVX2 is supported by this CPU..
+..AVX512BW is NOT supported by this CPU..
+..AVX512CD is NOT supported by this CPU..
+..AVX512DQ is NOT supported by this CPU..
+..AVX512ER is NOT supported by this CPU..
+..AVX512F is NOT supported by this CPU..
+..AVX512IFMA52 is NOT supported by this CPU..
+..AVX512PF is NOT supported by this CPU..
+..AVX512VBMI is NOT supported by this CPU..
+..AVX512VL is NOT supported by this CPU..
+..AES is supported by this CPU..
+..PCLMULQDQ is supported by this CPU..
+
+..AVX is supported by this Operating System..
+
+Most Advanced AVX Feature Detected.. AVX2
+AVX2 Test Result --- PASS
+AES Test Result --- PASS
+PCLMULQDQ Test Result --- PASS
+
+End Time: Wed Oct  7 17:23:28 2026
+Total Time: in seconds: 45
+ 
+ 
+Floating Point Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:22:43 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+FMA3 supported
+Test Result - PASS
+Million Floating Points per Second, MFLOPS: 3908.125
+Error: 0
+--- Floating Point Test Passed!!!---
+End Time: Wed Oct  7 17:23:28 2026
+Total Time: in seconds: 45
+ 
+Parallel_FP
+End Time: 10/7/2026 5:23:28 PM

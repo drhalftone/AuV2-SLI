@@ -1,0 +1,9 @@
+CPU Brand String Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 16:51:27 2026
+Test Result - PASS 
+Expected: Intel(R) Core(TM) 
+Detected: Intel(R) Core(TM) i9-14900KF
+Intel(R) Core(TM) processor detected..!!..
+End Time: Wed Oct  7 16:51:27 2026
+Total Time: in seconds: 0

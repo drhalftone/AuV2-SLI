@@ -1,0 +1,8 @@
+Frequency Check
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:25:43 2026
+Test Result - NO COMPARE OPTION USED
+Processor Name: Intel(R) Core(TM) i9-14900KF
+Measured Processor Frequency: 3.184044
+End Time: Wed Oct  7 17:25:44 2026
+Total Time: in seconds: 1

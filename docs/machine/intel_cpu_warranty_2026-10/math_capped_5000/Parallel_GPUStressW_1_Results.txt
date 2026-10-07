@@ -1,0 +1,39 @@
+Parallel_GPUStressW Test
+Module Version: 1.0.0.13
+Start Time: 10/7/2026 5:24:13 PM
+Test Result - PASS
+ 
+Module Math_PrimeNum.exe Completed - Pass
+Module Math_FP.exe Completed - Pass
+ 
+ 
+Prime Number Generation Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:24:13 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+Test Result - PASS
+Operation Per Second: 235500
+Error: 0
+--- Prime Number Generation Test Passed!!!---
+End Time: Wed Oct  7 17:24:43 2026
+Total Time: in seconds: 30
+ 
+ 
+Floating Point Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:24:13 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+FMA3 supported
+Test Result - PASS
+Million Floating Points per Second, MFLOPS: 3990.87
+Error: 0
+--- Floating Point Test Passed!!!---
+End Time: Wed Oct  7 17:24:43 2026
+Total Time: in seconds: 30
+ 
+Parallel_GPUStressW
+End Time: 10/7/2026 5:24:43 PM

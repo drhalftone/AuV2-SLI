@@ -1,0 +1,17 @@
+Cache Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 16:51:27 2026
+Test Result - PASS
+
+ --- Reading Cache Size ---  
+
+- Detected L1 Data Cache Size --> 48
+- Detected L1 Inst Cache Size --> 32
+
+- Detected L2 Cache Size --> 2048
+- Detected L3 Cache Size --> 36864
+
+Cache Size Test Passed!!!
+
+End Time: Wed Oct  7 16:51:27 2026
+Total Time: in seconds: 0

@@ -1,0 +1,21 @@
+IMC Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 16:51:27 2026
+Test Result - PASS
+--- Reading Memory Size --- 
+Detected Memory Size is --> 96.00GB
+--- Subtest - Memory Size Test Passed!!!  ---
+--- Integrated Memory Controller Stress Test --- 
+Memory to be allocated = 1048576 bytes
+Memory Allocated.
+Test 1 Ones and Zeros Moving Inversions write operations - Passed
+Test 1 Ones and Zeros Moving Inversions verification operations - Passed
+Test 2 32Bits Sliding Ones write operations - Passed
+Test 2 32Bits Sliding Ones verification operations - Passed
+Test 3 32Bits Sliding Zero write operations - Passed
+Test 3 32Bits Sliding Zero verification operations - Passed
+Memory Deallocated.
+--- Subtest - Memory Stress Test Passed!!!  ---
+Integrated Memory Controller Test Passed!!!
+End Time: Wed Oct  7 16:51:27 2026
+Total Time: in seconds: 0

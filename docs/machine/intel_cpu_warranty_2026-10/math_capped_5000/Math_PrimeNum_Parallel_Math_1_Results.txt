@@ -1,0 +1,12 @@
+Prime Number Generation Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:23:28 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+Test Result - PASS
+Operation Per Second: 235500
+Error: 0
+--- Prime Number Generation Test Passed!!!---
+End Time: Wed Oct  7 17:24:13 2026
+Total Time: in seconds: 45

@@ -1,0 +1,15 @@
+FMA3 Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 16:52:58 2026
+Test Result - FAIL
+
+DetectUtils64 DLL Version - 1.1.10
+
+  --- CPU Features Detection --- 
+..FMA3 is supported by this CPU..
+..FMA3 is supported by this Operating System..
+
+FMA3 Test Result --- FAIL
+
+End Time: Wed Oct  7 16:53:43 2026
+Total Time: in seconds: 45

@@ -1,0 +1,25 @@
+MMXSSE Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 16:51:27 2026
+Test Result - PASS
+
+DetectUtils64 DLL Version - 1.1.10
+
+ --- Determining MMX - SSE capabilities --- 
+..MMX is supported on this CPU..
+..SSE is supported on this CPU..
+..SSE2 is supported on this CPU..
+..SSE3 is supported on this CPU..
+..SSSE3 is supported on this CPU..
+..SSE4.1 is supported on this CPU..
+..SSE4.2 is supported on this CPU..
+
+SSE Test Result --- PASS
+SSE2 Test Result --- PASS
+SSE3 Test Result --- PASS
+SSSE3 Test Result --- PASS
+SSE4.1 Test Result --- PASS
+SSE4.2 Test Result --- PASS
+
+End Time: Wed Oct  7 16:51:27 2026
+Total Time: in seconds: 0

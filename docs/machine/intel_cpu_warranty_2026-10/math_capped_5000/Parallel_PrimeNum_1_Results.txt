@@ -1,0 +1,23 @@
+Parallel_PrimeNum Test
+Module Version: 1.0.0.13
+Start Time: 10/7/2026 5:21:58 PM
+Test Result - PASS
+ 
+Module Math_PrimeNum.exe Completed - Pass
+ 
+ 
+Prime Number Generation Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:21:58 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+Test Result - PASS
+Operation Per Second: 235500
+Error: 0
+--- Prime Number Generation Test Passed!!!---
+End Time: Wed Oct  7 17:22:43 2026
+Total Time: in seconds: 45
+ 
+Parallel_PrimeNum
+End Time: 10/7/2026 5:22:43 PM

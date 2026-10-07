@@ -1,0 +1,13 @@
+Floating Point Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 16:52:13 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+FMA3 supported
+Test Result - PASS
+Million Floating Points per Second, MFLOPS: 4768.855
+Error: 0
+--- Floating Point Test Passed!!!---
+End Time: Wed Oct  7 16:52:58 2026
+Total Time: in seconds: 45

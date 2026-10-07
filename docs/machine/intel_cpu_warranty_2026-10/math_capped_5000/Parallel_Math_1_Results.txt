@@ -1,0 +1,41 @@
+Parallel_Math Test
+Module Version: 1.0.0.13
+Start Time: 10/7/2026 5:23:28 PM
+Test Result - PASS
+ 
+Module Math_PrimeNum.exe Completed - Pass
+Module FMA3.exe Completed - Pass
+ 
+ 
+Prime Number Generation Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:23:28 2026
+DetectUtils64 DLL Version - 1.1.10
+AVX is supported in your OS
+Max AVX supported = AVX2
+Test Result - PASS
+Operation Per Second: 235500
+Error: 0
+--- Prime Number Generation Test Passed!!!---
+End Time: Wed Oct  7 17:24:13 2026
+Total Time: in seconds: 45
+ 
+ 
+FMA3 Test
+Module Version: 1.1.0.64b.W
+Start Time: Wed Oct  7 17:23:28 2026
+Test Result - PASS
+
+DetectUtils64 DLL Version - 1.1.10
+
+  --- CPU Features Detection --- 
+..FMA3 is supported by this CPU..
+..FMA3 is supported by this Operating System..
+
+FMA3 Test Result --- PASS
+
+End Time: Wed Oct  7 17:24:13 2026
+Total Time: in seconds: 45
+ 
+Parallel_Math
+End Time: 10/7/2026 5:24:13 PM
