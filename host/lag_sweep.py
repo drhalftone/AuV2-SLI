@@ -49,6 +49,11 @@ ap.add_argument("--step", type=float, default=5.0, help="delay step, us")
 ap.add_argument("--frames", type=int, default=20,
                 help="camera frames per delay (about a fifth land on each position)")
 ap.add_argument("--settle", type=int, default=4)
+ap.add_argument("--dmin", type=float, default=0.0,
+                help="first delay, us. With --dmax, sweeps only the part of the frame the "
+                     "light can land in -- the skipped delays are dark at every position, "
+                     "and the boxcar interpolates across them")
+ap.add_argument("--dmax", type=float, default=None, help="last delay, us (default: the frame)")
 ap.add_argument("--level", type=int, default=255, help="level of the one white frame")
 ap.add_argument("--out", default=os.path.join(ROOT, "lag_sweep.csv"))
 ap.add_argument("--load", help="analyse this saved sweep instead of measuring")
@@ -128,7 +133,8 @@ else:
     wr(ser, R_EXPO_HI, (u >> 8) & 0xFF)
     time.sleep(0.4)
     frame_marks(T)
-    delays = list(np.arange(0.0, T - e - 1.0, a.step))
+    dmax = T - e - 1.0 if a.dmax is None else min(a.dmax, T - e - 1.0)
+    delays = list(np.arange(a.dmin, dmax, a.step))
     out = a.out
     fh = open(out, "w", newline="")
     w = csv.writer(fh)
