@@ -488,7 +488,7 @@ module cam_frame_ft #(
     // for, so the pattern advances at the FULL HDMI rate and the delay merely shifts
     // phase. The rate condition is the one that was always there:
     //
-    //     exposure + 54.1 us <= HDMI frame period      <- must hold
+    //     exposure + 90 us <= HDMI frame period        <- must hold (cam_expo_safety)
     //     delay                                        <- free, MAY exceed a frame
     //
     // A SINGLE COUNTDOWN CANNOT EXPRESS THIS, and the first cut used one: it re-armed
@@ -690,6 +690,25 @@ module cam_frame_ft #(
     reg [23:0] trig_per = TRIG_PER[23:0];   // runtime-settable, opcode 2
     reg [23:0] tcnt  = 24'd0;
     reg        trig0 = 1'b0;
+
+    //------------------------------------------- EXPOSURE SAFETY: NEVER WEDGE
+    // An exposure past (trigger period - ~78 us) wedges the sensor until it is
+    // reconfigured. cam_expo_safety.v holds the whole argument. In short: CLAMP
+    // every exposure command to expo_lim and AUTO-SHORTEN when the period drops
+    // under the current one (both in the command decoder below), and a SPACING
+    // GUARD (since_ok) that holds the trigger while a longer exposure may still
+    // be in effect.
+    reg  [15:0] expo_cur = EXPOSURE;        // what the sensor was last told
+    wire [15:0] expo_lim;
+    wire        since_ok, trig_start;
+    cam_expo_safety #(.EXPOSURE(EXPOSURE)) u_expo_safety (
+        .clk(clk), .rst(rst), .streaming(streaming),
+        .xs_rise(xs_rise), .xs_age(xs_age), .xs_lost(xs_age == XS_TIMEOUT),
+        .gl_live(gl_live), .gl_div(gl_div_i), .trig_per(trig_per),
+        .expo_cur(expo_cur), .trig0(trig0),
+        .expo_lim(expo_lim), .since_ok(since_ok), .trig_start(trig_start)
+    );
+
     always @(posedge clk) begin
         if (rst || !streaming) begin
             tcnt  <= 24'd0;
@@ -700,7 +719,9 @@ module cam_frame_ft #(
             // vsync. tcnt SATURATES rather than wrapping, so exactly one pulse is
             // emitted per frame edge and a missing edge produces no trigger at all
             // (rather than a free-running one that would look like a lock).
-            if (gl_fire) begin
+            // A fire the spacing guard refuses is SKIPPED, not deferred: the next
+            // vsync's trigger is the next one that can be taken.
+            if (gl_fire && since_ok) begin
                 tcnt <= 24'd0;
                 if (EXPO_SWEEP != 0) tidx <= tidx + 3'd1;
             end else if (tcnt != 24'hFFFFFF) begin
@@ -709,11 +730,16 @@ module cam_frame_ft #(
             trig0 <= (tcnt < hi_cyc);
         end else begin
             // FREE-RUNNING: genlock off, or ext_sync has been gone for XS_TIMEOUT.
-            if (tcnt == trig_per - 24'd1) begin
-                tcnt <= 24'd0;
-                // Only the sweep advances the width index. Left ungated, this
-                // changed the exposure on every frame of every triggered build.
-                if (EXPO_SWEEP != 0) tidx <= tidx + 3'd1;
+            // `>=`, not `==`: a trig_per shortened below the running count must
+            // fire now, not after a 2^24-tick (167 ms) wrap. Held at the end of the
+            // period while the spacing guard says the sensor is still busy.
+            if (tcnt >= trig_per - 24'd1) begin
+                if (since_ok) begin
+                    tcnt <= 24'd0;
+                    // Only the sweep advances the width index. Left ungated, this
+                    // changed the exposure on every frame of every triggered build.
+                    if (EXPO_SWEEP != 0) tidx <= tidx + 3'd1;
+                end
             end else begin
                 tcnt <= tcnt + 24'd1;
             end
@@ -912,7 +938,8 @@ module cam_frame_ft #(
         default: etab = 16'd12800; //  4.800 ms
         endcase
     end
-    reg [15:0] expo_cur = EXPOSURE;         // what the sensor was last told
+    // expo_cur is declared with the exposure-safety block above the trigger
+    // generator, which reads it.
     reg        rearm_tog = 1'b0;
     reg        rpl_tog   = 1'b0;   // M5: toggled on opcode 5
 
@@ -935,10 +962,11 @@ module cam_frame_ft #(
             // disable the lock it is measuring through.
             gl_dly <= gldly_uart_i;
         end else if (expo_uart_we) begin
-            // Same path opcode 1 uses -- one writer, one request mechanism.
-            expo_val <= expo_uart_i;
+            // Same path opcode 1 uses -- one writer, one request mechanism, and the
+            // same clamp (see EXPOSURE SAFETY).
+            expo_val <= (expo_uart_i > expo_lim) ? expo_lim : expo_uart_i;
             expo_req <= 1'b1;
-            expo_cur <= expo_uart_i;
+            expo_cur <= (expo_uart_i > expo_lim) ? expo_lim : expo_uart_i;
         end else if ((EXPO_SWEEP != 0) && streaming && fe_pulse) begin
             expo_val <= etab;
             expo_req <= 1'b1;
@@ -946,10 +974,12 @@ module cam_frame_ft #(
             eidx     <= eidx + 3'd1;
         end else if (cw_pulse) begin
             case (cw_ft[31:28])
+            // Clamped to expo_lim: an over-long request gets the longest legal
+            // exposure, and reg 0x40 reads back what was actually applied.
             4'd1: begin
-                expo_val <= cw_ft[15:0];
+                expo_val <= (cw_ft[15:0] > expo_lim) ? expo_lim : cw_ft[15:0];
                 expo_req <= 1'b1;
-                expo_cur <= cw_ft[15:0];
+                expo_cur <= (cw_ft[15:0] > expo_lim) ? expo_lim : cw_ft[15:0];
             end
             4'd2: if (cw_ft[23:0] > 24'd1000) trig_per <= cw_ft[23:0];
             4'd3: rearm_tog <= ~rearm_tog;
@@ -961,6 +991,19 @@ module cam_frame_ft #(
             4'd7: begin gl_en <= cw_ft[27]; gl_dly <= cw_ft[23:0]; end
             default: ;
             endcase
+        end else if (cam_idle) begin
+            // Opcode 6 re-boots the sensor, and the boot ROM writes EXPOSURE.
+            // Track that, so reg 0x40 and the spacing guard describe the sensor
+            // rather than the last command.
+            expo_cur <= EXPOSURE;
+        end else if (streaming && trig_start && (expo_cur > expo_lim)
+                     && (EXPO_SWEEP == 0)) begin
+            // AUTO-SHORTEN: the period dropped under an exposure that was legal
+            // when it was set. At most once per trigger, so a limit that jitters
+            // by a unit cannot flood the SPI poller.
+            expo_val <= expo_lim;
+            expo_req <= 1'b1;
+            expo_cur <= expo_lim;
         end
     end
 

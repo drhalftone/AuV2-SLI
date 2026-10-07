@@ -123,7 +123,7 @@ synth_ip [get_ips mig_ddr3]
 # FT601 master. cam_align / cam_sync_decode / cam_async_fifo / cam_boot_seq /
 # cam_spi_master / uart_tx are already in $rtl and picked up by the glob below.
 set camdir $here/LauPythonCamera_Pt_Stack
-read_verilog [list     $camdir/ddr/cam_frame_ft.v     $camdir/hello/cam_boot_stage1.v     $camdir/hello/cam_lvds_rx_idelay.v     $camdir/hello/cam_eye_scan.v     $here/ft_usb_video/rtl/ft601_sync_tx.v     $here/ft_usb_video/rtl/ft601_sync_rx.v ]
+read_verilog [list     $camdir/ddr/cam_frame_ft.v     $camdir/ddr/cam_expo_safety.v     $camdir/hello/cam_boot_stage1.v     $camdir/hello/cam_lvds_rx_idelay.v     $camdir/hello/cam_eye_scan.v     $here/ft_usb_video/rtl/ft601_sync_tx.v     $here/ft_usb_video/rtl/ft601_sync_rx.v ]
 
 # ---- HDL (Au2_SLI.vhd needs VHDL-2019) ----
 set vhd_all [lsort [glob $rtl/*.vhd]]
@@ -287,9 +287,17 @@ phys_opt_design
 # earlier in the session, so it is the strategy with evidence behind it.
 route_design -directive Explore
 # Post-route pass: only helps if something is still negative, and costs a minute.
-if {[get_property SLACK [get_timing_paths -delay_type min_max]] < 0} {
-    puts "### post-route phys_opt (still negative after route)"
-    phys_opt_design
+# SETUP AND HOLD ARE ASKED FOR SEPARATELY. `get_timing_paths -delay_type min_max`
+# returns only the single worst SETUP path, so a hold violation sailed past this
+# test: 2026-10-07, WHS -0.004 ns on an HDMI rx_band counter (placement skew from
+# an unrelated change), bitstream written anyway. ExploreWithHoldFix + a re-route
+# fixed it to +0.022 ns.
+set wns_r [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
+set whs_r [get_property SLACK [lindex [get_timing_paths -hold  -max_paths 1] 0]]
+if {$wns_r < 0 || $whs_r < 0} {
+    puts "### post-route phys_opt (WNS $wns_r, WHS $whs_r after route)"
+    phys_opt_design -directive ExploreWithHoldFix
+    route_design -directive Explore
 }
 
 # ---- outputs ----
@@ -308,7 +316,8 @@ report_utilization    -file $out/util.rpt
 report_timing_summary -file $out/timing.rpt
 
 set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
-puts "=== TIMING: setup WNS = $wns ns ==="
+set whs [get_property SLACK [lindex [get_timing_paths -hold -max_paths 1] 0]]
+puts "=== TIMING: setup WNS = $wns ns   hold WHS = $whs ns ==="
 puts "==== AuV2-SLI MERGED (M1) BUILD DONE ===="
 puts "bit : $out/Au2_SLI_merged.bit"
 puts "bin : $out/Au2_SLI_merged.bin"

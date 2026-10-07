@@ -245,14 +245,21 @@ module usb_link #(
     // FPGA, from the vsync period it just measured and the sensor overhead that
     // was measured on this silicon.
     //
-    //     max_exposure = vsync_period - 44.1 us (gap) - 10 us (margin)
+    //     max_exposure = vsync_period - 80 us (gap) - 10 us (margin)
     //
-    // THE 44.1 us IS MEASURED, NOT FROM THE DATASHEET. Sweeping the trigger
-    // period against exposure gave min_period = exposure + 44.1 us with a slope
-    // of 1.0015 over a 6.0..8.0 ms span -- a constant, to within the 5 us search
-    // resolution. At 120 Hz this formula returns 8279 us against the clamp of
-    // 8280 us that was previously found by walking into the cliff. Reproducing a
-    // known-good number is what makes it trustworthy.
+    // THE GAP IS MEASURED, NOT FROM THE DATASHEET -- AND IT MOVED. It was 44.1 us
+    // (min_period = exposure + 44.1 us, slope 1.0015 over 6.0..8.0 ms) until the
+    // CDS timing program started being uploaded (a5d84c3, 2026-10-05). With that
+    // program the sensor needs more time after an exposure, and 8279 us at 120 Hz
+    // -- this formula's answer with the old gap -- WEDGED it. Re-measured
+    // 2026-10-07 by bisecting to the cliff (3 us resolution, wedge = no frames):
+    //
+    //     120 Hz   8254.5 us streams, 8256.4 us wedges     gap 77.0 .. 78.8 us
+    //      60 Hz  16588.9 us full rate, 16594.5 us degrades  gap ~78 us
+    //
+    // The same gap at both rates: a constant, no slope. 80 us sits just above the
+    // worst measured edge; the 10 us margin is on top of that. 120 Hz -> 8243 us.
+    // cam_expo_safety.v ENFORCES this same figure; keep the two in step.
     //
     // IT MUST FAIL SAFE, and that is the whole point of per_ok. vsp_last_p
     // SATURATES at 0xFFFFFF when no vsync edges arrive. Fed naively into the
@@ -271,7 +278,7 @@ module usb_link #(
     // Reported in EXPOSURE REGISTER UNITS so the host writes it straight back
     // with opcode 1: no conversion, no rounding at the one boundary where a
     // rounding error wedges the part.
-    localparam [23:0] GAP_TICKS     = 24'd4410;      // 44.1 us, measured
+    localparam [23:0] GAP_TICKS     = 24'd8000;      // 80 us, measured 2026-10-07
     localparam [23:0] MARGIN_TICKS  = 24'd1000;      // 10 us
     localparam [23:0] RESERVE_TICKS = GAP_TICKS + MARGIN_TICKS;
     localparam [23:0] PER_MIN = 24'd200_000;         // 2 ms  -> 500 Hz

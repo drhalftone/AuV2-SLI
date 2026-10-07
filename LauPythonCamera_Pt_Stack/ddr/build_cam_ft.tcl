@@ -12,7 +12,7 @@ set xci [file join $here ip mig_ddr3 mig_ddr3.xci]
 if {![file exists $xci]} { error "MIG not generated -- run gen_mig.tcl first" }
 
 read_verilog [list \
-    $here/cam_frame_ft.v \
+    $here/cam_frame_ft.v $here/cam_expo_safety.v \
     $ftrtl/ft601_sync_tx.v $ftrtl/ft601_sync_rx.v \
     $hello/cam_boot_stage1.v $hello/cam_lvds_rx_idelay.v $hello/cam_eye_scan.v \
     $rtl/cam_boot_seq.v $rtl/cam_align.v $rtl/cam_sync_decode.v \

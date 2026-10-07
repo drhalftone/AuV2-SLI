@@ -211,7 +211,7 @@ synth_ip [get_ips mig_ddr3]
 # FT601 master. cam_align / cam_sync_decode / cam_async_fifo / cam_boot_seq /
 # cam_spi_master / uart_tx are already in $rtl and picked up by the glob below.
 set camdir $here/LauPythonCamera_Pt_Stack
-read_verilog [list     $camdir/ddr/cam_frame_ft.v     $camdir/hello/cam_boot_stage1.v     $camdir/hello/cam_lvds_rx_idelay.v     $camdir/hello/cam_eye_scan.v     $here/ft_usb_video/rtl/ft601_sync_tx.v     $here/ft_usb_video/rtl/ft601_sync_rx.v ]
+read_verilog [list     $camdir/ddr/cam_frame_ft.v     $camdir/ddr/cam_expo_safety.v     $camdir/hello/cam_boot_stage1.v     $camdir/hello/cam_lvds_rx_idelay.v     $camdir/hello/cam_eye_scan.v     $here/ft_usb_video/rtl/ft601_sync_tx.v     $here/ft_usb_video/rtl/ft601_sync_rx.v ]
 
 # ---- HDL (Au2_SLI.vhd needs VHDL-2019) ----
 set vhd_all [lsort [glob $rtl/*.vhd]]
