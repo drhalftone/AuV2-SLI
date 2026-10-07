@@ -442,7 +442,7 @@ at 120 Hz that is up to ~8.3 ms of latency, by construction. Size timeouts in mi
 | 3 | — | **Re-arm** the capture |
 | 4 | `[5:0]` | Frames per run (1…`MAXF`) |
 | 5 | — | Request a status reply on the IN pipe |
-| 6 | `{en, 11'b0, ms[15:0]}` | **Camera idle**: hold the sensor in reset for `ms`, then re-boot it (`ms = 0` latches; `en = 0` releases). **Known bug:** the sensor re-configures but video does not restart (`0x3A` `streaming = 0`) — reload the FPGA instead |
+| 6 | `{en, 11'b0, ms[15:0]}` | **Camera idle / re-boot**: hold the sensor in reset for `ms`, then re-boot it (`ms = 0` latches; `en = 0` releases). Video is back in **~1 s** at full rate: the receive path is re-centred (ISERDES reset, eye scan, bitslip) before streaming resumes. The sensor comes back at the boot exposure (600 µs) |
 | 7 | `{gl_en, 3'b0, delay[23:0]}` | **Genlock**: enable + vsync→trigger delay in 10 ns ticks |
 | 8 | *(planned)* | Arm an epoch reset on the next `ext_sync` — see `FRAME_HEADER_PLAN.md` |
 

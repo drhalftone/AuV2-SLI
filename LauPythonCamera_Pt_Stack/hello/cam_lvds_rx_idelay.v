@@ -45,6 +45,12 @@ module cam_lvds_rx_idelay (
     input  wire [24:0] tap_val,
     input  wire        tap_ld,
 
+    // Re-run the ISERDES reset. A LEVEL from any clock domain: while it is high
+    // the reset is held, and the 32-wordclk release runs once it drops. Needed
+    // after a sensor re-boot, because the sensor's clock -- and so wordclk and
+    // CLKDIV -- stops and restarts. Tie to 0 where the sensor is never re-booted.
+    input  wire        rx_rst,
+
     output wire        wordclk,
     output wire [9:0]  d0_word, d1_word, d2_word, d3_word, sync_word
 );
@@ -65,8 +71,11 @@ module cam_lvds_rx_idelay (
     // CLKDIV, which does not exist until the sensor's PLL locks.
     reg [4:0] rcnt = 5'd0;
     reg       serdes_rst = 1'b1;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] rxr_s = 2'b00;
     always @(posedge wclk) begin
-        if (rcnt != 5'h1F) begin rcnt <= rcnt + 5'd1; serdes_rst <= 1'b1; end
+        rxr_s <= {rxr_s[0], rx_rst};
+        if (rxr_s[1])            begin rcnt <= 5'd0;         serdes_rst <= 1'b1; end
+        else if (rcnt != 5'h1F)  begin rcnt <= rcnt + 5'd1;  serdes_rst <= 1'b1; end
         else                     serdes_rst <= 1'b0;
     end
 

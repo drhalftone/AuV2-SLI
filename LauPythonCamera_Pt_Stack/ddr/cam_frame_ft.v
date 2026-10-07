@@ -403,9 +403,12 @@ module cam_frame_ft #(
     //    consistent with "independent means the camera comes up WITHOUT the host
     //    asking".
     //
-    // 3. `fired` MUST BE CLEARED. stream_go is a one-shot latched by `fired`,
-    //    which only `rst` clears, so without this the datapath would never ask
-    //    the re-booted sensor to stream again.
+    // 3. THE RE-BOOTED SENSOR MUST BE ASKED TO STREAM AGAIN. stream_go used to
+    //    be a one-shot latched by `fired`, cleared here -- and that lost the
+    //    request: on release it fired while cam_boot_stage1 was still inside its
+    //    own 2FF reset sync, whose `rst` clears stream_req. The camera came back
+    //    configured and silent (calib=1 aligned=1 streaming=0; MERGE_MILESTONES
+    //    3b). stream_go is now a LEVEL -- see the stream request below.
     //
     // SELF-TIMED, mirroring LINKCTL (reg 0x15) on the HDMI side. Payload bit 27
     // is the enable and [15:0] is a hold time in milliseconds; the FPGA releases
@@ -598,6 +601,28 @@ module cam_frame_ft #(
     end
 
     wire boot_cam_reset_n;
+    wire boot_ready;
+
+    // ---- RE-BOOT RECOVERY: re-centre the receive path, then stream -----------
+    // An opcode-6 re-boot restarts the sensor's PLL, so its LVDS clock -- our
+    // wordclk -- stops and comes back. Everything the power-up sequence did on
+    // that clock is then stale: the ISERDES reset, the eye scan's tap centring
+    // and cam_align's bitslip. MEASURED before this existed: the sensor came back
+    // integrating at 600 us with `aligned` still reading 1, and not one kernel
+    // reached the FIFO.
+    //
+    // So `rescan` holds the whole receive path in reset from the idle until the
+    // re-booted sensor's ROM upload is done (boot_ready rises -- LVDS on, training
+    // pattern out), and releasing it replays power-up: ISERDES reset release, eye
+    // scan, bitslip, and only then the stream request. A LEVEL, because wordclk is
+    // not running during the idle; whenever it comes back it sees the request.
+    reg rescan = 1'b0, boot_ready_d = 1'b0;
+    always @(posedge clk) begin
+        boot_ready_d <= boot_ready;
+        if (rst)                                rescan <= 1'b0;
+        else if (cam_idle)                      rescan <= 1'b1;
+        else if (boot_ready && !boot_ready_d)   rescan <= 1'b0;
+    end
     // (1) and (2) from above: force the sensor into reset AND hold the booter, so
     // release re-runs the full configuration rather than freeing a blank sensor.
     assign cam_reset_n = boot_cam_reset_n & ~cam_idle;
@@ -605,7 +630,7 @@ module cam_frame_ft #(
     cam_boot_stage1 #(.CLK_HZ(100_000_000), .BAUD(1_000_000), .STOP_AT(45),
                       .TRIGGERED(TRIGGERED), .EXPOSURE(EXPOSURE)) u_boot (
         .clk(clk), .rst_n(rst_n & ~cam_idle),
-        .stream_go(stream_go), .streaming(streaming),
+        .stream_go(stream_go), .streaming(streaming), .boot_ready(boot_ready),
         .expo_req(expo_req), .expo_val(expo_val),
         .led(boot_led), .usb_tx(), .usb_rx(1'b1),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
@@ -830,6 +855,7 @@ module cam_frame_ft #(
     wire [24:0] tap_val;
     wire        tap_ld;
     cam_lvds_rx_idelay u_rx (
+        .rx_rst(rescan),
         .cam_clkout_p(cam_clkout_p), .cam_clkout_n(cam_clkout_n),
         .cam_d_p(cam_d_p), .cam_d_n(cam_d_n),
         .cam_sync_p(cam_sync_p), .cam_sync_n(cam_sync_n),
@@ -840,8 +866,12 @@ module cam_frame_ft #(
 
     reg [7:0] wc_cnt = 8'd0;
     reg       wc_rst = 1'b1;
+    (* ASYNC_REG = "TRUE" *) reg [1:0] rescan_w = 2'b00;
     always @(posedge wordclk) begin
-        if (!idc_rdy) begin wc_cnt <= 8'd0; wc_rst <= 1'b1; end
+        rescan_w <= {rescan_w[0], rescan};
+        // rescan restarts the same countdown power-up uses: the eye scan and
+        // cam_align re-run against the re-booted sensor's training pattern.
+        if (!idc_rdy || rescan_w[1]) begin wc_cnt <= 8'd0; wc_rst <= 1'b1; end
         else if (wc_cnt != 8'hFF) begin wc_cnt <= wc_cnt + 8'd1; wc_rst <= 1'b1; end
         else wc_rst <= 1'b0;
     end
@@ -869,18 +899,23 @@ module cam_frame_ft #(
 
     wire init_calib_complete;
     reg [2:0] rdy_s = 3'b000;
-    reg       fired = 1'b0;
+    reg       rdy_fresh = 1'b1;
     always @(posedge clk) begin
-        stream_go <= 1'b0;
         rdy_s <= {rdy_s[1:0], (scan_done & aligned & init_calib_complete)};
-        // cam_idle clears it alongside rst: the opcode-6 hook re-boots the sensor
-        // on release, and this one-shot is what asks the fresh sensor to stream.
-        // Without it the camera would come back configured but silent, which is a
-        // far more confusing failure than not coming back at all.
-        if (rst || cam_idle) fired <= 1'b0;
-        else if (rdy_s[2] && !fired && !streaming) begin
-            stream_go <= 1'b1; fired <= 1'b1;
-        end
+        // THE STREAM REQUEST IS A LEVEL, NOT A ONE-SHOT. Held for as long as the
+        // datapath is ready and the sensor is not streaming. cam_boot_stage1
+        // latches it into stream_req and clears that when `streaming` rises, so
+        // holding it is harmless -- and it cannot be lost: a one-cycle pulse that
+        // landed inside the booter's reset window (after an opcode-6 re-boot, its
+        // 2FF rst_n sync lags cam_idle by two clocks) was simply dropped, and the
+        // camera came back configured and silent. A level just waits it out.
+        // After a re-boot, rdy_s still holds the PREVIOUS scan's verdict until
+        // the wordclk-domain reset reaches it, so the request also waits until
+        // ready has been seen LOW since the rescan -- only a fresh scan counts.
+        if (rst)                         rdy_fresh <= 1'b1;   // power-up: as before
+        else if (rescan)                 rdy_fresh <= 1'b0;
+        else if (!rdy_s[2])              rdy_fresh <= 1'b1;
+        stream_go <= rdy_s[2] && rdy_fresh && !rescan && !streaming && !cam_idle && !rst;
     end
 
     // EXPOSURE SWEEP ACROSS THE BURST -- brightness vs exposure time in ONE

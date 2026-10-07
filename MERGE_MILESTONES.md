@@ -324,6 +324,16 @@ deliberately empty.
    into `cam_boot_stage1` while it is still inside its own 2FF reset sync. Fix is
    a re-arm delay. Unconfirmed.
 
+   > **FIXED 2026-10-07 — and the suspicion was only half of it.** The lost pulse
+   > was real: `stream_go` is now a level, held until `streaming` rises. With that
+   > alone the sensor resumed integrating (`streaming=1`, 600 µs integrations
+   > measured) but **no pixel reached the FIFO**: the re-boot restarts the sensor's
+   > PLL, so `wordclk` stops and restarts, and the power-up ISERDES reset, eye scan
+   > and bitslip were all stale (`aligned` still read 1). A `rescan` level now holds
+   > the receive path in reset until the re-booted sensor's ROM upload completes
+   > (`boot_ready`), then replays the power-up sequence. Measured: video back in
+   > 1.01 s at 120.3 fps, three re-boots in a row, image unchanged across them.
+
 ---
 
 ### Still outstanding

@@ -110,6 +110,7 @@ module cam_syncdbg #(
     wire        tap_ld;
 
     cam_lvds_rx_idelay u_rx (
+        .rx_rst(1'b0),
         .cam_clkout_p(cam_clkout_p), .cam_clkout_n(cam_clkout_n),
         .cam_d_p(cam_d_p), .cam_d_n(cam_d_n),
         .cam_sync_p(cam_sync_p), .cam_sync_n(cam_sync_n),

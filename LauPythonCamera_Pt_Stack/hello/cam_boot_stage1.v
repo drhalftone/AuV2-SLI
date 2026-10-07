@@ -82,6 +82,11 @@ module cam_boot_stage1 #(
     input  wire       rst_n,
     input  wire       stream_go,   // pulse: perform the deferred reg 192 write
     output reg        streaming,   // set once that write has landed
+    // The boot ROM (CDS program included) has completed. Cleared by rst, so
+    // after an opcode-6 re-boot it rises again exactly when the sensor's LVDS
+    // outputs and training pattern are back -- which is when the receive path
+    // can be re-centred. Unconnected in the bring-up harnesses.
+    output wire       boot_ready,
 
     // RUNTIME EXPOSURE. Pulse expo_req with a value on expo_val and reg 201
     // (exposure0) is rewritten at the next opportunity. Exposure was previously
@@ -224,6 +229,7 @@ module cam_boot_stage1 #(
 
     // Hold the sensor out of reset once the sequencer has let go of it.
     assign cam_reset_n = b_busy ? b_resetn : 1'b1;
+    assign boot_ready  = b_ready;
 
     //------------------------------------------- read back reg 16 and reg 24
     localparam [3:0] P_WAIT = 4'd0, P_R16  = 4'd1, P_W16 = 4'd2,
