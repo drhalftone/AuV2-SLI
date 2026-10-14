@@ -22,11 +22,23 @@ the white frame's light; the window's start is the lag, measured from the white 
 vsync. A projector with no lag peaks with the window starting near 0; one frame late,
 near T.
 
+THE TAG LATCHES AT THE FIRST ACTIVE PIXEL, NOT AT VSYNC. A trigger in the first
+--active-us after vsync (back porch: 33 lines = 432 us at 800x600@120) carries the
+PREVIOUS frame's tag, so those readings are moved one position later. Without this the
+first ~432 us of every frame shows the next frame's light (2026-10-14: the light jumped
+from position 0 to 1 between delays 430 and 435 us at an unchanged 627 ADU). The CSV
+records the correction it used in `tag_fix_us`; a CSV without that column is corrected
+on --load.
+
+PREFLIGHT. Before measuring it puts the projector display at 800x600@120 and turns
+genlock on over the Ft+ (opcode 7) -- both are lost when the board or the display
+restarts, and the sweep cannot run without them. With no port given and exactly one
+serial port present, that port is used.
+
 The sweep is written to --out as it goes (every delay x position), so --load can redo
 the analysis later without repeating it.
 """
 import argparse
-import collections
 import csv
 import os
 import sys
@@ -43,7 +55,10 @@ import matplotlib.pyplot as plt                                     # noqa: E402
 
 ap = argparse.ArgumentParser(description=__doc__,
                              formatter_class=argparse.RawDescriptionHelpFormatter)
-ap.add_argument("port", nargs="?", default="COM6")
+ap.add_argument("port", nargs="?", default=None,
+                help="camera serial port (default: the only one present, else COM6)")
+ap.add_argument("--display", default=None,
+                help=r"projector display, e.g. \\.\DISPLAY5 (default: the one non-primary display)")
 ap.add_argument("--expo", type=float, default=5.0, help="exposure, us")
 ap.add_argument("--step", type=float, default=5.0, help="delay step, us")
 ap.add_argument("--frames", type=int, default=20,
@@ -55,6 +70,13 @@ ap.add_argument("--dmin", type=float, default=0.0,
                      "and the boxcar interpolates across them")
 ap.add_argument("--dmax", type=float, default=None, help="last delay, us (default: the frame)")
 ap.add_argument("--level", type=int, default=255, help="level of the one white frame")
+ap.add_argument("--bg", type=int, default=0,
+                help="level of the other four frames. ALWAYS WHITE: --bg 254 -- frame 0 stays "
+                     "255 so its tag still anchors the cycle. Then nothing is dark at every "
+                     "position, so the raw ROI mean is plotted (ref = 0) and there is no lag")
+ap.add_argument("--active-us", type=float, default=432.5,
+                help="vsync -> first active pixel, us (800x600@120: 33 lines = 432 us); "
+                     "readings at smaller delays carry the previous frame's tag")
 ap.add_argument("--out", default=os.path.join(ROOT, "lag_sweep.csv"))
 ap.add_argument("--load", help="analyse this saved sweep instead of measuring")
 a = ap.parse_args()
@@ -67,7 +89,7 @@ fig.canvas.manager.window.wm_geometry("+40+40")
 fig.subplots_adjust(left=0.07, right=0.985, top=0.9, bottom=0.07, hspace=0.12)
 hdr = fig.text(0.07, 0.985, "", va="top", ha="left", family="monospace", fontsize=9.5)
 line, = ax.plot([], [], lw=.7, color="#1f5fd0")
-ax.set_ylabel("ROI mean - median of the 5 positions (ADU)")
+ax.set_ylabel("ROI mean (ADU)" if a.bg else "ROI mean - median of the 5 positions (ADU)")
 ax.grid(alpha=.3)
 ab.set_ylabel("one-frame boxcar sum (ADU x slices)")
 ab.set_xlabel("time after the vsync of the frame that carried white (us)")
@@ -99,110 +121,46 @@ def frame_marks(T):
 if a.load:
     rows = list(csv.DictReader(open(a.load)))
     T = float(rows[0]["T_us"])
-    data = [(float(r["t_us"]), float(r["mean"]), float(r["ref"])) for r in rows]
+    fix = 0.0 if "tag_fix_us" in rows[0] else a.active_us    # old CSV: not yet corrected
+    data = [(((float(r["t_us"]) + (T if float(r["delay_us"]) < fix else 0.0)) % (5 * T)),
+             float(r["mean"]), float(r["ref"])) for r in rows]
     src = a.load
     frame_marks(T)
 else:
-    import serial
-    from frame_sweep import (wr, rd, set_delay, wait_delay, collect, EXPO_UNIT_US,  # noqa
-                             TICK_US, R_ROICTL, R_EXPO_LO, R_EXPO_HI, R_IMPCYC, R_IMPLVL,
-                             R_IMPRGB, R_IMPLVL2, R_IMPRGB2)
-    ser = serial.Serial(a.port, 115200, timeout=0.05)
-    time.sleep(0.3)
-
-    def R(addr):
-        v = rd(ser, addr)
-        return 0 if v is None else v
-
-    T = (R(0x4A) | (R(0x4B) << 8) | (R(0x4C) << 16)) * TICK_US
-    mx = R(0x53) | (R(0x54) << 8)
-    if not (1000 < T < 60000) or (R(0x5D) & 3) != 3:
-        sys.exit("ABORT: frame %.1f us, genlock 0x%02X -- is video running?" % (T, R(0x5D)))
-    u = max(1, int(round(a.expo / EXPO_UNIT_US)))
-    if u > mx:
-        sys.exit("ABORT: over the exposure limit")
-    e = u * EXPO_UNIT_US
-    lit_px = (a.level << 16) | (a.level << 8) | a.level
-    wr(ser, R_IMPCYC, 5)                         # 5-frame cycle, odd frame at position 0
-    wr(ser, R_IMPLVL, 0)
-    wr(ser, R_IMPRGB, 0x07)
-    wr(ser, R_IMPLVL2, a.level & 0xFF)
-    wr(ser, R_IMPRGB2, 0x07)
-    wr(ser, R_ROICTL, 0xC0)                      # impulse_en | per-frame stream
-    wr(ser, R_EXPO_LO, u & 0xFF)
-    wr(ser, R_EXPO_HI, (u >> 8) & 0xFF)
-    time.sleep(0.4)
+    import lag_core as lc
+    from serial.tools import list_ports
+    if a.port is None:
+        ports = [p.device for p in list_ports.comports()]
+        a.port = ports[0] if len(ports) == 1 else "COM6"
+    disp = a.display or lc.projector_display()
+    if disp is None:
+        sys.exit("ABORT: no single projector display -- pass --display")
+    print("port %s, display %s" % (a.port, disp), flush=True)
+    try:
+        ser, T, mx = lc.preflight(a.port, disp)
+        e = lc.start_impulse(ser, a.level, a.bg, a.expo, mx)
+    except RuntimeError as ex:
+        sys.exit("ABORT: %s" % ex)
     frame_marks(T)
-    dmax = T - e - 1.0 if a.dmax is None else min(a.dmax, T - e - 1.0)
-    delays = list(np.arange(a.dmin, dmax, a.step))
+    delays = lc.delays_for(T, e, a.step, a.dmin, a.dmax)
     out = a.out
-    fh = open(out, "w", newline="")
-    w = csv.writer(fh)
-    w.writerow(["T_us", "expo_us", "delay_us", "position", "t_us", "mean", "sd", "n", "ref"])
     data = []
     t0 = time.time()
     try:
-        for i, d in enumerate(delays):
-            want = int(round(d / TICK_US))
-            set_delay(ser, want)
-            if i % 25 == 0:
-                wait_delay(ser, want)
-            ser.reset_input_buffer()
-            collect(ser, a.settle, timeout=4)
-            by = collections.defaultdict(list)
-            rows = [r for r in collect(ser, a.frames, timeout=6) if r[1] == 256]
-            # FRAME NUMBERING. The profiling bitstream counts frames in `cc`; the
-            # merged one sends cc = 0 on every line. There, the per-frame stream
-            # still delivers one line per frame, so the line's ARRIVAL ORDER is
-            # the frame number -- and the anchor check below catches a dropped one.
-            use_cc = any((rows[k][3] - rows[k - 1][3]) & 0xFF for k in range(1, len(rows)))
-            absns, absn = [], 0
-            for k, r in enumerate(rows):
-                if k:
-                    absn += ((r[3] - rows[k - 1][3]) & 0xFF) if use_cc else 1
-                absns.append(absn)
-            # THE WHITE FRAME'S TAG. The merged build latches only RED of the
-            # transmitted pixel (build_merged.tcl: cam_frame_ft takes 23:16), so
-            # white reads FF0000 there and FFFFFF on the profiling bitstream.
-            marks = [n for n, r in zip(absns, rows)
-                     if r[2] in (lit_px, lit_px & 0xFF0000)]
-            # Re-anchor on EVERY white frame, and drop any cycle whose marks are
-            # not exactly 5 apart: a missed line then costs one cycle, instead of
-            # shifting every later reading onto the wrong position.
-            for n, r in zip(absns, rows):
-                prev = [m for m in marks if m <= n]
-                nxt = [m for m in marks if m > n]
-                if not prev or n - prev[-1] > 4:
-                    continue
-                if nxt and nxt[0] - prev[-1] != 5:
-                    continue
-                by[n - prev[-1]].append(r[0])
-            if len(by) < 5:
-                print("  delay %.1f: positions seen %s -- skipped"
-                      % (d, sorted((k, len(v)) for k, v in by.items())), flush=True)
-                continue
-            ref = float(np.median([np.mean(v) for v in by.values()]))
-            for k in range(5):
-                v = by[k]
-                t = k * T + d
-                w.writerow([round(T, 2), round(e, 3), round(d, 2), k, round(t, 2),
-                            round(float(np.mean(v)), 3), round(float(np.std(v)), 3), len(v),
-                            round(ref, 3)])
-                data.append((t, float(np.mean(v)), ref))
+        for i, n, d, means, ref, _ in lc.sweep(ser, T, e, delays, out, a.level, a.bg, a.frames,
+                                            a.settle, a.active_us):
+            data += [(k * T + d, means[k], ref) for k in range(5)]
             if i % 10 == 0:
-                fh.flush()
                 srt = sorted(data)
                 line.set_data([q[0] for q in srt], [q[1] - q[2] for q in srt])
                 ax.relim()
                 ax.autoscale_view(scalex=False)
                 el = time.time() - t0
-                ui("5-frame sweep   %.2f us exposure, %.0f us step   delay %d/%d   %.0f s, "
-                   "~%.0f s left" % (e, a.step, i + 1, len(delays), el,
-                                    el / (i + 1) * (len(delays) - i - 1)))
+                ui(("always white (bg %d)  " % a.bg if a.bg else "") +
+                   "5-frame sweep   %.2f us exposure, %.0f us step   delay %d/%d   %.0f s, "
+                   "~%.0f s left" % (e, a.step, i + 1, n, el, el / (i + 1) * (n - i - 1)))
     finally:
-        fh.close()
-        wr(ser, R_ROICTL, 0x00)
-        set_delay(ser, 0)
+        lc.stop_impulse(ser)
         ser.close()
     src = out
     print("wrote %s  (%d readings)" % (out, len(data)), flush=True)
@@ -214,6 +172,15 @@ sig = np.array([q[1] - q[2] for q in data])
 line.set_data(t, sig)
 ax.relim()
 ax.autoscale_view(scalex=False)
+if not any(q[2] for q in data):                  # always white: no dark reference, no lag
+    ax.set_ylabel("ROI mean (ADU)")
+    msg = "always white: raw ROI mean across the 5-frame cycle   (%s)" % os.path.basename(src)
+    print(msg, flush=True)
+    ui(msg)
+    fig.savefig(os.path.splitext(src)[0] + ".png", dpi=110)
+    plt.ioff()
+    plt.show()
+    sys.exit(0)
 dt = float(np.median(np.diff(t)))
 grid = np.arange(0.0, 5 * T, dt)
 g = np.interp(grid, t, sig, period=5 * T)        # fills the small gap at each frame end
