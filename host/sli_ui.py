@@ -458,6 +458,7 @@ class ProfileView(ttk.Frame):
 
     COLORS = {"wwwww": "#1f5fd0", "wkkkk": "#d02a2a"}
     LEAD, TRAIL = "#2e9e4f", "#7b3fb5"
+    BG = "#d97706"                                   # background exposure (trail -> next lead)
     BOX_Y = 0.93                                     # grab boxes, in axes fraction
     GRAB_PX = 10
     FRICTION = 4.0                                   # momentum decays as exp(-FRICTION t)
@@ -493,7 +494,11 @@ class ProfileView(ttk.Frame):
         ttk.Label(bar, text="trailing edge (us)").pack(side="left")
         te = ttk.Entry(bar, textvariable=self.trail_v, width=10)
         te.pack(side="left", padx=(4, 12))
-        for w in (le, te):
+        ttk.Label(bar, text="guard (us)").pack(side="left")
+        self.guard_v = tk.StringVar(value="50")
+        ge = ttk.Entry(bar, textvariable=self.guard_v, width=6)
+        ge.pack(side="left", padx=(4, 12))
+        for w in (le, te, ge):
             w.bind("<Return>", lambda e: self.typed())
             w.bind("<FocusOut>", lambda e: self.typed())
         self.best_btn = ttk.Button(bar, text="Best window", command=self.best)
@@ -503,6 +508,8 @@ class ProfileView(ttk.Frame):
         self.status.pack(fill="x", padx=8)
         self.readout = ttk.Label(self, text="", font=("Consolas", 9))
         self.readout.pack(fill="x", padx=8)
+        self.cursor = ttk.Label(self, text="", font=("Consolas", 9))
+        self.cursor.pack(fill="x", padx=8)
 
         # ---- plot --------------------------------------------------------------------
         self.fig = Figure(figsize=(13, 6))
@@ -510,7 +517,8 @@ class ProfileView(ttk.Frame):
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
         for ev, fn in (("button_press_event", self.press), ("motion_notify_event", self.motion),
                        ("button_release_event", self.release), ("scroll_event", self.scroll),
-                       ("resize_event", lambda e: fit_margins(self.fig))):
+                       ("resize_event", lambda e: fit_margins(self.fig)),
+                       ("axes_leave_event", lambda e: self.cursor.config(text=""))):
             self.canvas.mpl_connect(ev, fn)
 
         self.T = None
@@ -523,6 +531,7 @@ class ProfileView(ttk.Frame):
         self.T = doc.T or 8333.3
         self.max_us = doc.mx * lc.EXPO_UNIT_US if doc.mx else self.T - 90.0
         self.fig.clear()
+        self.bg_art = []                             # cleared with the figure
         ax = self.ax = timeline_axes(self.fig, self.T)
         self.lines = {k: ax.plot([], [], lw=.7, color=self.COLORS[k], label=SWEEPS[k][0])[0]
                       for k in SWEEPS}
@@ -643,18 +652,46 @@ class ProfileView(ttk.Frame):
         self.b_lead.set_xdata([lead])
         self.b_trail.set_xdata([trail])
         self.span.remove()
-        self.span = self.ax.axvspan(lead, trail, color=self.LEAD, alpha=.10, lw=0)
-        units = int(round((trail - lead) / lc.EXPO_UNIT_US))
+        self.span = self.ax.axvspan(lead, trail, color=self.LEAD, alpha=.05, lw=0)
+        # GUARD. Both exposures are squeezed by `g` on each side, away from the edges:
+        # foreground lead + g -> trail - g, background trail + g -> next lead - g.
+        try:
+            g = max(0.0, float(self.guard_v.get()))
+        except ValueError:
+            g = 0.0
+        for a_ in getattr(self, "bg_art", []):
+            a_.remove()
+        self.bg_art = []
+        fa, fb = lead + g, max(lead + g, trail - g)
+        self.bg_art.append(self.ax.axvspan(fa, fb, color=self.LEAD, alpha=.15, lw=0))
+        for x in (fa, fb):
+            self.bg_art.append(self.ax.axvline(x, color=self.LEAD, lw=1.0, ls=":"))
+        # THE BACKGROUND EXPOSURE: the rest of the frame, from the trailing edge to the
+        # next leading edge (trail -> lead + T), as it repeats in every frame. Wraps at 5T.
+        T5, b0 = 5 * self.T, (trail + g) % self.T
+        bw = max(0.0, lead + self.T - trail - 2 * g) if trail - lead < self.T else 0.0
+        for f in range(5):
+            s_, e_ = f * self.T + b0, f * self.T + b0 + bw
+            for x0, x1 in ([(s_, e_)] if e_ <= T5 else [(s_, T5), (0.0, e_ - T5)]):
+                self.bg_art.append(self.ax.axvspan(x0, x1, color=self.BG, alpha=.35, lw=0,
+                                                   hatch="///", fill=False))
+            for x in (s_, e_ % T5 if e_ > T5 else e_):
+                self.bg_art.append(self.ax.axvline(x, color=self.BG, lw=1.0, ls="--"))
+        units = int((fb - fa) / lc.EXPO_UNIT_US)
         expo = units * lc.EXPO_UNIT_US
-        k = int(lead // self.T)
+        k = int(fa // self.T)
         over = expo > self.max_us
-        cap = self.captured(lead, trail)
+        cap = self.captured(fa, fb)
+        bu = int(bw / lc.EXPO_UNIT_US)
         self.readout["text"] = (
-            "exposure: delay %.2f us (frame %d + %.2f us)   %.3f us = %d units   "
-            "white-frame light inside %s   limit %.1f us%s"
-            % (lead, k, lead - k * self.T, expo, units,
+            "foreground (guard %.0f us): delay %.2f us (frame %d + %.2f us)   %.3f us = %d units"
+            "   white-frame light inside %s   limit %.1f us%s\n"
+            "background (dashed, every frame): delay %.2f us into the frame   %.3f us = %d units"
+            "   ends %.2f us into the frame"
+            % (g, fa, k, fa - k * self.T, expo, units,
                "%.1f %%" % (100 * cap) if cap is not None else "- (needs WKKKK)",
-               self.max_us, "   OVER THE LIMIT" if over else ""))
+               self.max_us, "   OVER THE LIMIT" if over else "",
+               b0, bu * lc.EXPO_UNIT_US, bu, (b0 + bu * lc.EXPO_UNIT_US) % self.T))
         self.readout["foreground"] = "#b00020" if over else ""
 
     def typed(self):
@@ -702,7 +739,17 @@ class ProfileView(ttk.Frame):
         self.samples = [(time.time(), ev.x)]
         self.canvas.get_tk_widget().config(cursor="fleur")
 
+    def show_cursor(self, ev):
+        """The mouse position in data units: time (and frame + offset) and ADU."""
+        if ev.inaxes is not self.ax:
+            return
+        x, y = self.ax.transData.inverted().transform((ev.x, ev.y))
+        k = int(x // self.T)
+        self.cursor["text"] = ("cursor: t %.2f us (frame %d + %.2f us)   %.1f ADU"
+                               % (x, k, x - k * self.T, y))
+
     def motion(self, ev):
+        self.show_cursor(ev)
         if self.drag in ("lead", "trail"):
             x = self.data_x(ev.x)
             if self.drag == "lead":

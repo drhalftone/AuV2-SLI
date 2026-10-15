@@ -40,6 +40,9 @@ module pixel_pipe(
      // since the only other route back to a given frq is a mode toggle and
      // that blanks the display.
      input frq_hold,
+     // FPGA-run fringe sequence (uart_ctrl seq_cfg, regs 0x09..0x0F, 0x2B):
+     // [0] free-run, [1] window, [31:8] slot->phase order, [63:32] window x0,x1,y0,y1 (4 px)
+     input [63:0] seq_cfg,
      input vid_valid,   // 1 = HDMI input validly decoding; gates the passthrough TLP trigger
 
     output [7:0] out_red,
@@ -104,10 +107,19 @@ module pixel_pipe(
     //frame index counter with a slow motion feature that holds each frame for 32 frames
     reg[1:0] frq=2'd0; reg[2:0] fra=3'd0; // spatial frquency index, frame index
     reg hold=1'b0; reg [3:0] rdy_cnt =4'h0; reg rdy_reg; reg vsync_reg;
+    // seq_cfg arrives through a plain 2FF sync, so it is only ever taken at a vsync
+    // edge: a register written mid-frame changes the NEXT frame, never half of one.
+    reg [63:0] cfg = {8'hFF, 8'h00, 8'hFF, 8'h00, 24'hFAC688, 8'h00};
+    wire       seq_free = cfg[0];
+    wire       win_en   = cfg[1];
+    // The order table: slot fra shows phase order[fra]. Identity by default, so with
+    // the new registers unwritten the sequence is exactly what it was.
+    wire [2:0] phase    = cfg[8 + 3*fra +: 3];
     reg display_mode;
      always@(posedge clk) begin
         rdy_reg<=rdy; // buffer GPIO in a relaxed pace, may not work well if pulse come during V blank period
         vsync_reg<=in_vsync;
+        if (in_vsync && ~vsync_reg) cfg <= seq_cfg;
 
         if (~in_vsync && vsync_reg) display_mode <= mode;
     end
@@ -204,7 +216,9 @@ module pixel_pipe(
         if(mode==1'b0) begin frq<=2'd0; fra<=3'd0; hold<=1'b1; end
         else if (in_vsync && ~vsync_reg) begin
             if (ori ^ ori_reg) begin frq<=2'd0; fra<=3'd0; hold<=1'b1; end
-            else if  (rdy_cnt!= 4'h0)   begin //when edge counter is non-zero
+            // FREE-RUN: one advance per frame from the FPGA's own vsync. No serial
+            // edges, so no ACK bytes in the camera lines and no late or doubled steps.
+            else if  (rdy_cnt!= 4'h0 || seq_free)   begin //when edge counter is non-zero
                      fra<=fra+3'd1; hold<=1'b0;
                      if(fra==3'd7 && ~frq_hold) begin
                         frq<=frq+2'd1;
@@ -314,7 +328,7 @@ module pixel_pipe(
         .raw_red(in_red), .raw_green(in_green), .raw_blue(in_blue),
         .orient(ori), .enable(display_mode),
         .chan_en({en_R, en_G, en_B}),
-        .ext_frm(fra), .ext_frq(frq),
+        .ext_frm(phase), .ext_frq(frq),
         .lut_din(lut_din), .lut_dout(lut_dout),          // -> host-uploadable corr table
         .out_red(pg_r), .out_green(pg_g), .out_blue(pg_b),
         .dbg()
@@ -358,10 +372,27 @@ module pixel_pipe(
         else if (~bl_dl[1]) tag_arm <= 1'b0;   // first active pixel: fires once
     end
     wire       tag_now = tag_arm & ~bl_dl[1] & display_mode;
-    wire [7:0] tag     = {3'b000, frq, fra};
+    // The tag names the PHASE ON SCREEN (after the order table), not the slot, so a
+    // reading says what was projected whatever order the host loaded.
+    wire [7:0] tag     = {3'b000, frq, phase};
 
-    assign out_red   = tag_now ? tag : pg_r;
-    assign out_green = tag_now ? tag : pg_g;
-    assign out_blue  = tag_now ? tag : pg_b;
+    // ---- WINDOW: fringes only inside [x0,x1) x [y0,y1), black elsewhere --------
+    // Counted on the delayed blank that is aligned with pattern_gen's output, so
+    // pixel (0,0) here is the pixel pattern_gen computed for (0,0).
+    reg [11:0] wcol = 12'd0, wrow = 12'd0;
+    reg        bl_q = 1'b1;
+    always@(posedge clk) begin
+        bl_q <= bl_dl[1];
+        if (bl_dl[1]) wcol <= 12'd0; else wcol <= wcol + 12'd1;
+        if (iv_dl[1])                  wrow <= 12'd0;            // vsync
+        else if (bl_dl[1] && ~bl_q)    wrow <= wrow + 12'd1;     // end of an active line
+    end
+    wire win_in = (wcol >= {2'b00, cfg[39:32], 2'b00}) && (wcol < {2'b00, cfg[47:40], 2'b00})
+               && (wrow >= {2'b00, cfg[55:48], 2'b00}) && (wrow < {2'b00, cfg[63:56], 2'b00});
+    wire blackout = display_mode & win_en & ~bl_dl[1] & ~win_in;
+
+    assign out_red   = tag_now ? tag : blackout ? 8'h00 : pg_r;
+    assign out_green = tag_now ? tag : blackout ? 8'h00 : pg_g;
+    assign out_blue  = tag_now ? tag : blackout ? 8'h00 : pg_b;
     assign out_hsync = hs_dl[1]; assign out_vsync = vs_dl[1]; assign out_blank = bl_dl[1];
 endmodule

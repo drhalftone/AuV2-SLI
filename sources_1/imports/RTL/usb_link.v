@@ -125,6 +125,7 @@ module usb_link #(
     output wire [7:0]  imp_lvl2,      // 0x07: the odd frame's level
     output wire [7:0]  imp_lvl,
     output wire [7:0]  imp_cyc,
+    output wire [63:0] seq_cfg,         // 0x09..0x0F, 0x2B: FPGA fringe sequencer config
     output wire        gl_div,          // ROICTL bit 5: one trigger per sequence
 
     // ---- PYTHON 1300 camera (regs 0x30..0x38) ----
@@ -516,6 +517,7 @@ module usb_link #(
         .expo_uart(expo_uart), .expo_uart_we(expo_uart_we),
         .gldly_uart(gldly_uart), .gldly_uart_we(gldly_uart_we),
         .imp_rgb(imp_rgb), .imp_lvl(imp_lvl), .imp_cyc(imp_cyc),
+        .seq_cfg(seq_cfg),
         .imp_rgb2(imp_rgb2), .imp_lvl2(imp_lvl2),
         .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),

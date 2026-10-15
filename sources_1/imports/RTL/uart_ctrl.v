@@ -147,6 +147,17 @@ module uart_ctrl #(
     output reg  [7:0]  imp_lvl,
     // 0x11 IMPCYC -- frames per sequence, default 5. Write 2 for BRIGHT,K.
     output reg  [7:0]  imp_cyc,
+    // SEQUENCE CONFIG -- the fringe sequencer run from the FPGA alone, so a test
+    // needs no host pacing and no PC-drawn frames. Packed for pixel_pipe:
+    //   [7:0]   0x09 SEQCTL  bit0 free-run: advance every frame, rdy not needed
+    //                        bit1 window:   fringes only inside the window, black outside
+    //   [31:8]  0x0A..0x0C ORDER  phase shown in slot i = order[3i+2:3i]
+    //                        default 0xFAC688 = 0 1 2 3 4 5 6 7; Bayer 0 4 2 6 1 5 3 7 = 0xEE9CA0
+    //   [39:32] 0x0D WIN_X0  window, in 4-pixel units: x0 <= x < x1, y0 <= y < y1
+    //   [47:40] 0x0E WIN_X1
+    //   [55:48] 0x0F WIN_Y0
+    //   [63:56] 0x2B WIN_Y1
+    output reg  [63:0] seq_cfg,
     output reg         gldly_uart_we,
     output wire        sli_ctrl_en,      // = sli_ctrl[7]  (USB overrides switches)
     output wire        lut_loaded,       // a table has been uploaded since reset
@@ -462,6 +473,14 @@ case (addr)
             8'h08:   rd_data  = imp_rgb2;
             8'h12:   rd_data  = imp_lvl;
             8'h11:   rd_data  = imp_cyc;
+            8'h09:   rd_data  = seq_cfg[7:0];
+            8'h0A:   rd_data  = seq_cfg[15:8];
+            8'h0B:   rd_data  = seq_cfg[23:16];
+            8'h0C:   rd_data  = seq_cfg[31:24];
+            8'h0D:   rd_data  = seq_cfg[39:32];
+            8'h0E:   rd_data  = seq_cfg[47:40];
+            8'h0F:   rd_data  = seq_cfg[55:48];
+            8'h2B:   rd_data  = seq_cfg[63:56];
             // ---- offline mode decision (read-only) ----
             8'h20:   rd_data  = {mode_valid_i, mode_edid_ok_i, 2'b0, mode_idx_i};
             8'h21:   rd_data  = mode_refr_i;
@@ -686,6 +705,8 @@ case (addr)
             expo_uart <= 16'd0; expo_uart_we <= 1'b0;
             gldly_uart <= 24'd0; gldly_uart_we <= 1'b0;
             imp_rgb <= 8'h07; imp_lvl <= 8'hFF; imp_cyc <= 8'd5;
+            // free-run off, window off, identity order, window = whole screen
+            seq_cfg <= {8'hFF, 8'h00, 8'hFF, 8'h00, 24'hFAC688, 8'h00};
             // default: the odd frame is full white, so an unwritten
             // second colour reproduces the old KKWKK behaviour exactly.
             imp_rgb2 <= 8'h07; imp_lvl2 <= 8'hFF;
@@ -798,6 +819,22 @@ case (addr)
                         imp_lvl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h11) begin    // IMPCYC frames per sequence
                         imp_cyc <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h09) begin    // SEQCTL
+                        seq_cfg[7:0]   <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h0A) begin    // ORDER lo
+                        seq_cfg[15:8]  <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h0B) begin    // ORDER mid
+                        seq_cfg[23:16] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h0C) begin    // ORDER hi
+                        seq_cfg[31:24] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h0D) begin    // WIN_X0 (4 px)
+                        seq_cfg[39:32] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h0E) begin    // WIN_X1 (4 px)
+                        seq_cfg[47:40] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h0F) begin    // WIN_Y0 (4 px)
+                        seq_cfg[55:48] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h2B) begin    // WIN_Y1 (4 px)
+                        seq_cfg[63:56] <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h15) begin    // LINKCTL: self-timed disconnect
                         link_tgt    <= dbyte[1:0];
                         link_secs   <= dbyte[7:2];

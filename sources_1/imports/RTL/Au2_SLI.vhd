@@ -322,6 +322,9 @@ architecture Behavioral of Au2_SLI is
     signal imp_lvl_p0, imp_lvl_p1 : std_logic_vector(7 downto 0) := x"FF";
     signal gl_div_w : std_logic := '0';
     signal imp_cyc_w : std_logic_vector(7 downto 0) := x"05";
+    -- FPGA fringe sequencer config (regs 0x09..0x0F, 0x2B), clk100 -> pixel_clk 2FF.
+    -- Quasi-static: pixel_pipe only takes it at a vsync edge.
+    signal seq_cfg_w, seq_cfg_p0, seq_cfg_p1 : std_logic_vector(63 downto 0) := (others => '0');
     signal imp_cyc_p0, imp_cyc_p1 : std_logic_vector(2 downto 0) := "101";
     -- IMPCYC (0x11) bits [6:4]: which position in the sequence carries the flash.
     -- The register only ever used its low three bits for the cycle length, so this
@@ -399,6 +402,7 @@ architecture Behavioral of Au2_SLI is
         trig    : out STD_LOGIC;  f_frm   : out STD_LOGIC; 
         mode    : in STD_LOGIC;  rdy   : in STD_LOGIC;
         frq_hold : in STD_LOGIC;
+        seq_cfg  : in STD_LOGIC_VECTOR(63 downto 0);
         vid_valid : in STD_LOGIC;
             ------------------
             in_blank  : in std_logic;
@@ -613,6 +617,7 @@ architecture Behavioral of Au2_SLI is
                imp_lvl2       : out STD_LOGIC_VECTOR(7 downto 0);
                gl_div         : out STD_LOGIC;
                imp_cyc        : out STD_LOGIC_VECTOR(7 downto 0);
+               seq_cfg        : out STD_LOGIC_VECTOR(63 downto 0);
                -- PYTHON 1300 camera (regs 0x30..0x38). The SPI master lives inside
                -- usb_link, so these are the sensor's physical pins.
                cam_sck     : out STD_LOGIC;
@@ -1117,6 +1122,7 @@ begin
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
         imp_rgb2    => imp_rgb2_w, imp_lvl2 => imp_lvl2_w,
         gl_div      => gl_div_w, imp_cyc => imp_cyc_w,
+        seq_cfg     => seq_cfg_w,
         vs_meas     => out_vsync,
         rx_meas     => rx_meas_w,
         rx_pixkhz   => rx_pixkhz_w,
@@ -1474,6 +1480,8 @@ begin
         -- bit 4 = freeze the fringe frequency, so one octet repeats
         frq_hold_p0 <= sli_ctrl_bus(4);
         frq_hold_p1 <= frq_hold_p0;
+        seq_cfg_p0 <= seq_cfg_w;
+        seq_cfg_p1 <= seq_cfg_p0;
         -- ROICTL bit 7 (impulse enable) crosses clk100 -> pixel_clk the same way.
         imp_en_p0 <= roi_ctl_w(7);
         imp_en_p1 <= imp_en_p0;
@@ -1502,6 +1510,7 @@ i_processing: pixel_pipe Port map (
         sw =>effective_sw,
         trig =>trig, f_frm=> f_frm, 
         mode=>mode_buf, rdy=> rdy_buf , frq_hold => frq_hold_p1,
+        seq_cfg => seq_cfg_p1,
         vid_valid => vid_valid,
         --
         in_blank        => blank,
