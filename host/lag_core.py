@@ -24,6 +24,17 @@ from frame_sweep import (wr, rd, set_delay, wait_delay, collect, EXPO_UNIT_US,  
 
 MODE = (800, 600, 120)
 ACTIVE_US = 432.5          # 800x600@120: vsync -> first active pixel, 33 lines
+RESERVE_TICKS = 9000       # usb_link.v: 80 us sensor gap + 10 us margin, in 10 ns ticks
+
+
+def max_expo_units(T_us):
+    """The FPGA's MAXEXP (regs 0x53/0x54) for frame period T_us, computed the way
+    usb_link.v does it: (period ticks - RESERVE_TICKS) * 27962 >> 20, i.e. / 37.5,
+    rounded down, capped at the 16-bit register. Longer drops 120 fps to 60."""
+    ticks = int(round(T_us / TICK_US))
+    if ticks <= RESERVE_TICKS:
+        return 0
+    return min(0xFFFF, ((ticks - RESERVE_TICKS) * 27962) >> 20)
 
 
 def projector_display():

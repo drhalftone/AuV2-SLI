@@ -494,11 +494,7 @@ class ProfileView(ttk.Frame):
         ttk.Label(bar, text="trailing edge (us)").pack(side="left")
         te = ttk.Entry(bar, textvariable=self.trail_v, width=10)
         te.pack(side="left", padx=(4, 12))
-        ttk.Label(bar, text="guard (us)").pack(side="left")
-        self.guard_v = tk.StringVar(value="50")
-        ge = ttk.Entry(bar, textvariable=self.guard_v, width=6)
-        ge.pack(side="left", padx=(4, 12))
-        for w in (le, te, ge):
+        for w in (le, te):
             w.bind("<Return>", lambda e: self.typed())
             w.bind("<FocusOut>", lambda e: self.typed())
         self.best_btn = ttk.Button(bar, text="Best window", command=self.best)
@@ -529,7 +525,10 @@ class ProfileView(ttk.Frame):
         """(Re)create the axes for the document's frame period."""
         doc = self.app.doc
         self.T = doc.T or 8333.3
-        self.max_us = doc.mx * lc.EXPO_UNIT_US if doc.mx else self.T - 90.0
+        # THE 120 FPS LIMIT, from the frame period exactly as the FPGA computes MAXEXP
+        # (usb_link.v): T - 80 us sensor gap - 10 us margin, in whole 0.375 us units.
+        # The board's own answer wins when connected; longer drops the camera to 60 fps.
+        self.max_us = (doc.mx or lc.max_expo_units(self.T)) * lc.EXPO_UNIT_US
         self.fig.clear()
         self.bg_art = []                             # cleared with the figure
         ax = self.ax = timeline_axes(self.fig, self.T)
@@ -560,7 +559,8 @@ class ProfileView(ttk.Frame):
             ln.set_data([q[0] for q in p], [q[1] for q in p])
         self.update_sig()
         if self.edges_auto:
-            self.lead = self.best_start(self.max_us) if self.sig is not None else lc.ACTIVE_US
+            self.lead = (self.best_start(self.max_us) if self.sig is not None
+                         else lc.ACTIVE_US)
             self.trail = self.lead + self.max_us
         self.place_edges()
         if self.auto:
@@ -633,9 +633,18 @@ class ProfileView(ttk.Frame):
         box = np.convolve(ext, np.ones(n), mode="valid")[:len(self.sig)]
         return float(self.grid[int(np.argmax(box))])
 
-    def set_edges(self, lead, trail):
-        lead = min(max(lead, 0.0), 5 * self.T)
-        trail = min(max(trail, lead + lc.EXPO_UNIT_US), lead + 5 * self.T)
+    def set_edges(self, lead, trail, moving="trail"):
+        """Edges, with the exposure held to the limit. Moving the lead (green)
+        carries the trail (purple) with it at the same width; moving the trail keeps
+        the lead anchored and stops the trail at the limit."""
+        w = self.max_us
+        if moving == "lead":
+            width = min(max(self.trail - self.lead, lc.EXPO_UNIT_US), w)
+            lead = min(max(lead, 0.0), 5 * self.T)
+            trail = lead + width
+        else:
+            lead = min(max(lead, 0.0), 5 * self.T)
+            trail = min(max(trail, lead + lc.EXPO_UNIT_US), lead + w)
         self.lead, self.trail = lead, trail
         self.edges_auto = False
         self.app.doc.edges = {"lead_us": round(lead, 2), "trail_us": round(trail, 2)}
@@ -652,24 +661,15 @@ class ProfileView(ttk.Frame):
         self.b_lead.set_xdata([lead])
         self.b_trail.set_xdata([trail])
         self.span.remove()
-        self.span = self.ax.axvspan(lead, trail, color=self.LEAD, alpha=.05, lw=0)
-        # GUARD. Both exposures are squeezed by `g` on each side, away from the edges:
-        # foreground lead + g -> trail - g, background trail + g -> next lead - g.
-        try:
-            g = max(0.0, float(self.guard_v.get()))
-        except ValueError:
-            g = 0.0
+        self.span = self.ax.axvspan(lead, trail, color=self.LEAD, alpha=.15, lw=0)
         for a_ in getattr(self, "bg_art", []):
             a_.remove()
         self.bg_art = []
-        fa, fb = lead + g, max(lead + g, trail - g)
-        self.bg_art.append(self.ax.axvspan(fa, fb, color=self.LEAD, alpha=.15, lw=0))
-        for x in (fa, fb):
-            self.bg_art.append(self.ax.axvline(x, color=self.LEAD, lw=1.0, ls=":"))
+        fa, fb = lead, trail
         # THE BACKGROUND EXPOSURE: the rest of the frame, from the trailing edge to the
         # next leading edge (trail -> lead + T), as it repeats in every frame. Wraps at 5T.
-        T5, b0 = 5 * self.T, (trail + g) % self.T
-        bw = max(0.0, lead + self.T - trail - 2 * g) if trail - lead < self.T else 0.0
+        T5, b0 = 5 * self.T, trail % self.T
+        bw = max(0.0, lead + self.T - trail) if trail - lead < self.T else 0.0
         for f in range(5):
             s_, e_ = f * self.T + b0, f * self.T + b0 + bw
             for x0, x1 in ([(s_, e_)] if e_ <= T5 else [(s_, T5), (0.0, e_ - T5)]):
@@ -684,11 +684,11 @@ class ProfileView(ttk.Frame):
         cap = self.captured(fa, fb)
         bu = int(bw / lc.EXPO_UNIT_US)
         self.readout["text"] = (
-            "foreground (guard %.0f us): delay %.2f us (frame %d + %.2f us)   %.3f us = %d units"
-            "   white-frame light inside %s   limit %.1f us%s\n"
+            "foreground: delay %.2f us (frame %d + %.2f us)   %.3f us = %d units"
+            "   white-frame light inside %s   limit %.2f us (T - 90 us, 120 fps)%s\n"
             "background (dashed, every frame): delay %.2f us into the frame   %.3f us = %d units"
             "   ends %.2f us into the frame"
-            % (g, fa, k, fa - k * self.T, expo, units,
+            % (fa, k, fa - k * self.T, expo, units,
                "%.1f %%" % (100 * cap) if cap is not None else "- (needs WKKKK)",
                self.max_us, "   OVER THE LIMIT" if over else "",
                b0, bu * lc.EXPO_UNIT_US, bu, (b0 + bu * lc.EXPO_UNIT_US) % self.T))
@@ -699,13 +699,13 @@ class ProfileView(ttk.Frame):
             lead, trail = float(self.lead_v.get()), float(self.trail_v.get())
         except ValueError:
             lead, trail = self.lead, self.trail
-        if (lead, trail) != (self.lead, self.trail):
-            self.set_edges(lead, trail)
+        if (lead, trail) != (self.lead, self.trail) or trail - lead > self.max_us:
+            self.set_edges(lead, trail, "lead" if lead != self.lead else "trail")
         else:
             self.place_edges()
 
     def best(self):
-        """Keep the current width (capped at the limit), move it to the most light."""
+        """Keep the current exposure (capped at the limit), move it to the most light."""
         if self.sig is None:
             return
         w = min(self.trail - self.lead, self.max_us)
@@ -753,7 +753,7 @@ class ProfileView(ttk.Frame):
         if self.drag in ("lead", "trail"):
             x = self.data_x(ev.x)
             if self.drag == "lead":
-                self.set_edges(x, self.trail)
+                self.set_edges(x, self.trail, "lead")
             else:
                 self.set_edges(self.lead, x)
         elif self.drag == "pan":
