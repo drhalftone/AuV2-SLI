@@ -13,6 +13,7 @@ argparse, no sys.exit -- failures raise RuntimeError so a UI can show them.
 import collections
 import csv
 import os
+import re
 import time
 
 import numpy as np
@@ -24,7 +25,101 @@ from frame_sweep import (wr, rd, set_delay, wait_delay, collect, EXPO_UNIT_US,  
 
 MODE = (800, 600, 120)
 ACTIVE_US = 432.5          # 800x600@120: vsync -> first active pixel, 33 lines
+OFFLINE = "offline"         # display name for the board's own video, no PC on HDMI-IN
 RESERVE_TICKS = 9000       # usb_link.v: 80 us sensor gap + 10 us margin, in 10 ns ticks
+
+
+# ---- the board's offline modes --------------------------------------------------------
+# Parsed from the RTL so they cannot drift from what the fabric generates.
+_RTL = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                    "..", "sources_1", "imports", "RTL", "mode_table.vh")
+_MROW = re.compile(r"`MROW\(\s*" + r",\s*".join([r"(\d+)"] * 13) + r"\)")
+
+
+def mode_table():
+    """{idx: dict(idx, w, h, hz, khz, vtotal, vstart)} from mode_table.vh. vstart is the
+    lines from the vsync edge to the first active line (VSYNC + VBP)."""
+    out = {}
+    for line in open(_RTL):
+        m = _MROW.search(line)
+        if m:
+            i, w, h, hz, khz, hfp, hs, hbp, vfp, vs, vbp, hp, vp = (int(x) for x in m.groups())
+            out[i] = dict(idx=i, w=w, h=h, hz=hz, khz=khz, vtotal=h + vfp + vs + vbp,
+                          vstart=vs + vbp)
+    return out
+
+
+def mode_name(m):
+    return "%dx%d @ %d Hz" % (m["w"], m["h"], m["hz"])
+
+
+def board_modes(ser):
+    """(modes the projector's EDID supports, as table rows, index in use). The mask is
+    regs 0x29/0x2A, bit i = table index i; MODE 0x20 low nibble is the index in use."""
+    tbl = mode_table()
+    mask = reg(ser, 0x29) | (reg(ser, 0x2A) << 8)
+    return [tbl[i] for i in sorted(tbl) if mask >> i & 1], reg(ser, 0x20) & 0x0F
+
+
+def set_board_mode(ser, idx, log=print):
+    """Pin the offline mode to `idx` over MODEFORCE (0x14). It is sticky until released
+    or the FPGA reloads. Waits for the index to land and the frame period to settle."""
+    if reg(ser, 0x20) & 0x0F == idx:
+        return
+    wr(ser, 0x14, 0x80 | idx)
+    t0 = time.time()
+    while reg(ser, 0x20) & 0x0F != idx:
+        if time.time() - t0 > 5:
+            raise RuntimeError("the board did not switch to mode %d" % idx)
+        time.sleep(0.2)
+    time.sleep(3)                                    # projector re-sync, period re-measured
+    log("offline mode -> %s" % mode_name(mode_table()[idx]))
+
+
+def read_edid(ser, tgt=0x03, n=256):
+    """The projector's EDID as the board read it off HDMI-OUT (table 0x03), over the UART.
+    The reply shares the line with ASCII telemetry, so scan for a frame whose checksum
+    closes: tgt, n bytes, checksum (as host/offline_mode.py does)."""
+    ck = (256 - ((0x72 + tgt) & 0xFF)) & 0xFF
+    to = ser.timeout
+    ser.timeout = 0.05
+    try:
+        ser.reset_input_buffer()
+        ser.write(bytes([0xA5, 0x72, tgt, ck]))
+        need, buf, dl = n + 2, bytearray(), time.time() + 4.0
+        while time.time() < dl:
+            buf += ser.read(ser.in_waiting or 1)
+            for i in range(len(buf) - need + 1):
+                if buf[i] == tgt and sum(buf[i:i + need]) & 0xFF == 0:
+                    return bytes(buf[i + 1:i + 1 + n])
+        return None
+    finally:
+        ser.timeout = to
+
+
+def edid_name(b):
+    """'Name (MFG)' from an EDID: the monitor-name descriptor (tag 0xFC), and the
+    three-letter manufacturer ID from bytes 8-9. None if the block is not valid."""
+    if not b or b[:8] != bytes([0, 255, 255, 255, 255, 255, 255, 0]) or sum(b[:128]) & 0xFF:
+        return None
+    w = b[8] << 8 | b[9]
+    mfg = "".join(chr(64 + (w >> k & 31)) for k in (10, 5, 0))
+    name = None
+    for o in range(54, 126, 18):
+        if b[o:o + 3] == bytes(3) and b[o + 3] == 0xFC:
+            name = b[o + 5:o + 18].split(b"\n")[0].decode("ascii", "replace").strip()
+    return "%s (%s)" % (name, mfg) if name else mfg
+
+
+def projector_name(ser):
+    """The projector's name from its EDID, or None."""
+    return edid_name(read_edid(ser))
+
+
+def active_us(ser, T):
+    """Vsync -> first active pixel for the mode in use, from the measured frame period."""
+    m = mode_table()[reg(ser, 0x20) & 0x0F]
+    return T * m["vstart"] / m["vtotal"]
 
 
 def max_expo_units(T_us):
@@ -74,13 +169,32 @@ def genlock_on(ser, log=print):
     log("genlock was off -> on: 0x5D = 0x%02X" % reg(ser, 0x5D))
 
 
+def check_offline(ser):
+    """The board is generating its own video (no PC on HDMI-IN) at 800x600@120.
+    STATUS (0x02) bit 4 is sel: 1 = pass-through. MODE (0x20) {valid, edid_ok, idx}.
+    Returns the mode in use (a mode_table row)."""
+    st, md = reg(ser, 0x02), reg(ser, 0x20)
+    if st & 0x10:
+        raise RuntimeError("the board is in pass-through: unplug the PC's HDMI from the "
+                           "board to run offline")
+    if not md & 0x80:
+        raise RuntimeError("the board has no valid offline mode (MODE 0x%02X)" % md)
+    return mode_table()[md & 0x0F]
+
+
 def preflight(port, display, log=print):
-    """Display mode, serial port, genlock. Returns (open serial, frame period us, max expo units)."""
+    """Display mode, serial port, genlock. Returns (open serial, frame period us, max expo units).
+    display None or OFFLINE: no PC video; the board must be generating 800x600@120 itself."""
     import serial
-    ensure_mode(display, log)
+    offline = display in (None, OFFLINE)
+    if not offline:
+        ensure_mode(display, log)
     ser = serial.Serial(port, 115200, timeout=0.05)
     time.sleep(0.3)
     try:
+        if offline:
+            m = check_offline(ser)
+            log("offline: the board is generating %s" % mode_name(m))
         genlock_on(ser, log)
         T = (reg(ser, 0x4A) | (reg(ser, 0x4B) << 8) | (reg(ser, 0x4C) << 16)) * TICK_US
         mx = reg(ser, 0x53) | (reg(ser, 0x54) << 8)

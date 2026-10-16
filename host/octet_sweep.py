@@ -97,7 +97,7 @@ def main():
 
     import serial.tools.list_ports as lp
     port = a.port or ([p.device for p in lp.comports()] + ["COM6"])[0]
-    display = a.display or lc.projector_display()
+    display = a.display or lc.OFFLINE
     ser, T, mx = lc.preflight(port, display)
     u = max(1, int(round(a.expo / lc.EXPO_UNIT_US)))
     e = u * lc.EXPO_UNIT_US

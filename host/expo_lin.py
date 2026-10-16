@@ -55,7 +55,7 @@ def main():
     ap.add_argument("--out", default="expo_lin_%s.csv" % time.strftime("%Y-%m-%d_%H%M%S"))
     a = ap.parse_args()
 
-    ser, T, mx = lc.preflight(a.port, a.display or lc.projector_display())
+    ser, T, mx = lc.preflight(a.port, a.display or lc.OFFLINE)
     pred, dark = predictor(a.ref) if a.ref else (None, None)
     pos_of = {a.a: 0, a.b: 1}
 

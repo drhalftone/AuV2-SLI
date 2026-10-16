@@ -96,6 +96,7 @@ class Document:
         self.sweeps = {}                             # key -> {"settings", "rows", "when", "complete"}
         self.edges = None                            # {"lead_us", "trail_us"}
         self.iris = None                             # last Adjust iris: {"delay_us", ...}
+        self.projector = None                        # {"name", "idx", "w", "h", "hz", "khz"}
         self.created = time.strftime("%Y-%m-%d %H:%M:%S")
         self.ser = None                              # open serial port while connected
 
@@ -116,6 +117,7 @@ class Document:
                "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
                "port": self.port, "display": self.display, "T_us": self.T,
                "max_expo_units": self.mx, "edges": self.edges, "iris": self.iris,
+               "projector": self.projector,
                "csv_head": lc.CSV_HEAD, "sweeps": self.sweeps}
         tmp = path + ".tmp"
         with open(tmp, "w") as fh:
@@ -136,6 +138,7 @@ class Document:
         d.T, d.mx = j.get("T_us"), j.get("max_expo_units")
         d.edges = j.get("edges")
         d.iris = j.get("iris")
+        d.projector = j.get("projector")             # None in profiles saved before 2026-10-16
         d.sweeps = j.get("sweeps", {})
         return d
 
@@ -187,10 +190,11 @@ class Document:
 # Setup dialog: COM port + projector video output
 # ======================================================================================
 class SetupDialog(tk.Toplevel):
-    """Modal. OK runs the preflight and sets self.result = (ser, T, mx, port, display);
-    Cancel leaves it None."""
+    """Modal. OK switches the board to the chosen mode, runs the preflight and sets
+    self.result = (ser, T, mx, port, display, projector); Cancel leaves it None.
+    `projector` (a document's saved one) preselects its mode, so OK restores it."""
 
-    def __init__(self, master, port=None, display=None):
+    def __init__(self, master, port=None, display=None, projector=None):
         super().__init__(master)
         self.title("Connect to the board")
         self.resizable(False, False)
@@ -204,23 +208,25 @@ class SetupDialog(tk.Toplevel):
         self.port = tk.StringVar()
         self.port_box = ttk.Combobox(f, textvariable=self.port, state="readonly", width=48)
         self.port_box.grid(row=0, column=0, columnspan=2, sticky="ew", **PAD)
-        ttk.Button(f, text="Refresh", command=self.refresh_ports).grid(row=1, column=0, **PAD)
+        self.port_box.bind("<<ComboboxSelected>>", lambda e: self.refresh_modes())
+        ttk.Button(f, text="Refresh", command=lambda: (self.refresh_ports(),
+                                                       self.refresh_modes())).grid(row=1, column=0,
+                                                                                   **PAD)
         ttk.Button(f, text="Check", command=self.check_port).grid(row=1, column=1, **PAD)
         self.port_msg = ttk.Label(f, text="", width=56)
         self.port_msg.grid(row=2, column=0, columnspan=2, sticky="w", **PAD)
 
-        # ---- video output ------------------------------------------------------------
-        g = ttk.LabelFrame(self, text="Projector video output (HDMI)")
+        # ---- projector mode (offline: the board generates the video) ----------------------
+        g = self.mode_frame = ttk.LabelFrame(
+            self, text="Projector resolution and frame rate (board's own video)")
         g.grid(row=1, column=0, sticky="ew", **PAD)
-        self.disp = tk.StringVar()
-        self.disp_box = ttk.Combobox(g, textvariable=self.disp, state="readonly", width=48)
-        self.disp_box.grid(row=0, column=0, columnspan=2, sticky="ew", **PAD)
-        self.disp_box.bind("<<ComboboxSelected>>", lambda e: self.show_mode())
-        ttk.Button(g, text="Refresh", command=self.refresh_displays).grid(row=1, column=0, **PAD)
-        ttk.Button(g, text="Set %dx%d @ %d" % MODE, command=self.set_mode).grid(row=1, column=1,
-                                                                             **PAD)
-        self.disp_msg = ttk.Label(g, text="", width=56)
-        self.disp_msg.grid(row=2, column=0, columnspan=2, sticky="w", **PAD)
+        self.mode = tk.StringVar()
+        self.mode_box = ttk.Combobox(g, textvariable=self.mode, state="readonly", width=48)
+        self.mode_box.grid(row=0, column=0, columnspan=2, sticky="ew", **PAD)
+        ttk.Button(g, text="Ask the board", command=self.refresh_modes).grid(row=1, column=0,
+                                                                          **PAD)
+        self.mode_msg = ttk.Label(g, text="", width=56)
+        self.mode_msg.grid(row=2, column=0, columnspan=2, sticky="w", **PAD)
 
         # ---- OK / Cancel -------------------------------------------------------------
         b = ttk.Frame(self)
@@ -233,10 +239,10 @@ class SetupDialog(tk.Toplevel):
         self.bind("<Return>", lambda e: self.ok())
         self.bind("<Escape>", lambda e: self.cancel())
 
-        self.ports, self.disps = [], []
-        self.want_port, self.want_disp = port, display
+        self.ports, self.modes, self.cur_idx, self.proj = [], [], None, None
+        self.want_port, self.want_proj = port, projector
         self.refresh_ports()
-        self.refresh_displays()
+        self.refresh_modes()
         self.grab_set()
         self.focus_force()
 
@@ -276,65 +282,78 @@ class SetupDialog(tk.Toplevel):
         self.port_msg["text"] = "%s: frame %.1f us (%.2f Hz), genlock %s (0x%02X)" % (
             dev, T, 1e6 / T if T else 0, state, gl)
 
-    # ---- video output ----------------------------------------------------------------
-    def refresh_displays(self):
-        self.disps = displays()
-        self.disp_box["values"] = [
-            "%s  %dx%d @ %d Hz  at (%d, %d)%s" % (d[0], d[3], d[4], d[5], d[1], d[2],
-                                                 "  [primary]" if (d[1], d[2]) == (0, 0) else "")
-            for d in self.disps]
-        if not self.disps:
-            self.disp.set("")
-            self.disp_msg["text"] = "no displays found"
-            return
-        names = [d[0] for d in self.disps]
-        cur = self.disp_device() or self.want_disp
-        if cur in names:
-            i = names.index(cur)
-        else:                                        # default: the non-primary display
-            proj = [k for k, d in enumerate(self.disps) if (d[1], d[2]) != (0, 0)]
-            i = proj[0] if proj else 0
-        self.disp_box.current(i)
-        self.show_mode()
-
-    def show_mode(self):
-        d = self.disps[self.disp_box.current()]
-        self.disp_msg["text"] = ("mode OK" if tuple(d[3:]) == MODE else
-                                 "mode is %dx%d @ %d, sweeps need %dx%d @ %d (OK sets it)"
-                                 % (*d[3:], *MODE))
-
-    def disp_device(self):
-        return self.disp.get().split()[0] if self.disp.get() else None
-
-    def set_mode(self):
-        dev = self.disp_device()
+    # ---- projector mode --------------------------------------------------------------
+    def refresh_modes(self):
+        """The modes the projector's EDID supports (regs 0x29/0x2A), the one in use marked
+        and selected."""
+        dev = self.port_device()
+        self.modes, self.cur_idx = [], None
+        self.mode_box["values"] = []
+        self.mode.set("")
         if not dev:
+            self.mode_msg["text"] = "choose a COM port first"
             return
-        ok, msg = set_mode(dev, *MODE)
-        self.disp_msg["text"] = "%s: %s" % (dev, msg)
-        if ok:
-            self.after(3000, self.refresh_displays)  # let the mode settle before re-reading
+        try:
+            with serial.Serial(dev, 115200, timeout=0.05) as ser:
+                time.sleep(0.3)
+                self.modes, self.cur_idx = lc.board_modes(ser)
+                passthru = lc.reg(ser, 0x02) & 0x10
+                self.proj = lc.projector_name(ser)   # from the projector's EDID
+        except serial.SerialException as e:
+            self.mode_msg["text"] = "%s: cannot open (%s)" % (dev, e.__class__.__name__)
+            return
+        self.mode_frame["text"] = ("Projector: %s" % self.proj if self.proj else
+                                   "Projector: (no EDID name)")
+        if not self.modes:
+            self.mode_msg["text"] = "%s: no modes -- not the camera board, or no projector?" % dev
+            return
+        self.mode_box["values"] = [lc.mode_name(m) + ("   (in use)" if m["idx"] == self.cur_idx
+                                                      else "") for m in self.modes]
+        idx = [m["idx"] for m in self.modes]
+        saved = self.want_proj["idx"] if self.want_proj else None
+        pick = saved if saved in idx else self.cur_idx
+        self.mode_box.current(idx.index(pick) if pick in idx else 0)
+        note = []
+        if saved is not None:
+            sm = lc.mode_table()[saved]
+            note.append("the document's mode, %s, %s" % (
+                lc.mode_name(sm), "is selected" if saved in idx else
+                "is NOT supported by this projector"))
+            if self.want_proj.get("name") != self.proj:
+                note.append("document projector %s, attached %s"
+                            % (self.want_proj.get("name"), self.proj))
+        if passthru:
+            note.append("PC video is plugged in: unplug it to run offline")
+        self.mode_msg["text"] = "%d modes the projector supports%s" % (
+            len(self.modes), "".join("\n" + n for n in note))
 
     # ---- OK / Cancel -----------------------------------------------------------------
     def ok(self):
-        port, disp = self.port_device(), self.disp_device()
-        if not port or not disp:
-            self.msg["text"] = "choose a COM port and a video output"
+        port = self.port_device()
+        if not port or not self.modes:
+            self.msg["text"] = "choose a COM port and a projector mode"
             return
-        if [d for d in self.disps if d[0] == disp and (d[1], d[2]) == (0, 0)]:
-            self.msg["text"] = "%s is the primary display -- choose the projector" % disp
-            return
-        self.msg["text"] = "checking..."
+        want = self.modes[self.mode_box.current()]
+        # What the document records as its video: the projector and the mode, offline.
+        disp = "%s, %s, offline" % (self.proj or "projector", lc.mode_name(want))
+        self.msg["text"] = ("checking..." if want["idx"] == self.cur_idx else
+                            "switching to %s..." % lc.mode_name(want))
         self.ok_btn.state(["disabled"])
         self.update_idletasks()
         try:
-            ser, T, mx = lc.preflight(port, disp, log=lambda s: None)
-        except Exception as e:                       # serial, Ft+, display: show, stay
+            if want["idx"] != self.cur_idx:
+                with serial.Serial(port, 115200, timeout=0.05) as ser:
+                    time.sleep(0.3)
+                    lc.set_board_mode(ser, want["idx"], log=lambda s: None)
+            ser, T, mx = lc.preflight(port, lc.OFFLINE, log=lambda s: None)
+            SETTINGS["active_us"] = lc.active_us(ser, T)     # vsync -> first active line
+        except Exception as e:                       # serial, Ft+, board: show, stay
             self.msg["text"] = str(e)
             self.ok_btn.state(["!disabled"])
-            self.refresh_displays()
+            self.refresh_modes()
             return
-        self.result = (ser, T, mx, port, disp)
+        proj = dict(name=self.proj, **{k: want[k] for k in ("idx", "w", "h", "hz", "khz")})
+        self.result = (ser, T, mx, port, disp, proj)
         self.grab_release()
         self.destroy()
 
@@ -560,7 +579,7 @@ class ProfileView(ttk.Frame):
         self.update_sig()
         if self.edges_auto:
             self.lead = (self.best_start(self.max_us) if self.sig is not None
-                         else lc.ACTIVE_US)
+                         else SETTINGS["active_us"])
             self.trail = self.lead + self.max_us
         self.place_edges()
         if self.auto:
@@ -1283,11 +1302,22 @@ class App(tk.Tk):
         d = self.doc
         if d.ser is not None:
             return True
-        dlg = SetupDialog(self, d.port, d.display)
+        dlg = SetupDialog(self, d.port, d.display, d.projector)
         self.wait_window(dlg)
         if dlg.result is None:
             return False
-        ser, T, mx, port, disp = dlg.result
+        ser, T, mx, port, disp, proj = dlg.result
+        old = d.projector
+        if old and any(d.sweeps.values()) and (old.get("name"), old["idx"]) != (proj["name"],
+                                                                               proj["idx"]):
+            if not messagebox.askyesno(
+                    "Different projector setup",
+                    "This document was measured on %s at %s.\nThe board is now driving %s "
+                    "at %s.\n\nConnect anyway?" % (
+                        old.get("name"), lc.mode_name(old), proj["name"], lc.mode_name(proj)),
+                    parent=self):
+                ser.close()
+                return False
         if d.T and abs(T - d.T) > 1.0 and any(d.sweeps.values()):
             ser.close()
             messagebox.showerror(
@@ -1296,6 +1326,9 @@ class App(tk.Tk):
                 "Start a new document for this mode." % (T, d.T), parent=self)
             return False
         d.ser, d.T, d.mx, d.port, d.display = ser, T, mx, port, disp
+        if d.projector != proj:
+            d.projector = proj
+            self.changed(redraw=False)
         self.update_title()
         return True
 
@@ -1308,7 +1341,7 @@ class App(tk.Tk):
         if dlg.result is None:                       # Cancel: stay with no document
             return
         d = Document()
-        d.ser, d.T, d.mx, d.port, d.display = dlg.result
+        d.ser, d.T, d.mx, d.port, d.display, d.projector = dlg.result
         self.doc = d
         self.show_doc()
 

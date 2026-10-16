@@ -162,7 +162,7 @@ def main():
 
     import serial.tools.list_ports as lp
     port = a.port or ([p.device for p in lp.comports()] + ["COM6"])[0]
-    ser, T, mx = lc.preflight(port, a.display or lc.projector_display())
+    ser, T, mx = lc.preflight(port, a.display or lc.OFFLINE)
     # per-delay exposure units. A window rounds DOWN so it never runs into the next.
     if a.windows:
         win = [tuple(float(v) for v in w_.split(":")) for w_ in a.windows]

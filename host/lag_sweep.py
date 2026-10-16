@@ -132,9 +132,7 @@ else:
     if a.port is None:
         ports = [p.device for p in list_ports.comports()]
         a.port = ports[0] if len(ports) == 1 else "COM6"
-    disp = a.display or lc.projector_display()
-    if disp is None:
-        sys.exit("ABORT: no single projector display -- pass --display")
+    disp = a.display or lc.OFFLINE
     print("port %s, display %s" % (a.port, disp), flush=True)
     try:
         ser, T, mx = lc.preflight(a.port, disp)

@@ -57,7 +57,7 @@ def main():
         if a.levels[0] == a.prev:
             sys.exit("--prev and --levels must differ: the odd frame's tag anchors the cycle")
 
-    ser, T, mx = lc.preflight(a.port, a.display or lc.projector_display())
+    ser, T, mx = lc.preflight(a.port, a.display or lc.OFFLINE)
     t_a, t_b = (float(v) for v in a.window.split(":"))
     u = min(mx, max(1, int((t_b - t_a) / lc.EXPO_UNIT_US)))
     e = u * lc.EXPO_UNIT_US

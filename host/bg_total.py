@@ -63,7 +63,7 @@ def main():
         sys.exit("%s has no exposure edges -- set them in the profiling app" % a.profile)
     import serial.tools.list_ports as lp
     port = a.port or ([p.device for p in lp.comports()] + ["COM6"])[0]
-    display = a.display or lc.projector_display()
+    display = a.display or lc.OFFLINE
     ser, T, mx = lc.preflight(port, display)
     fg = ed["trail_us"] - ed["lead_us"]
     delay = ed["trail_us"] % T

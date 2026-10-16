@@ -165,7 +165,7 @@ def main():
         return plot_saved(a.load, windows, a.overlay, a.also)
     # --a == --b: every frame is the same, so there is one position (e.g. 0 -> 0).
 
-    ser, T, mx = lc.preflight(a.port, a.display or lc.projector_display())
+    ser, T, mx = lc.preflight(a.port, a.display or lc.OFFLINE)
     u = max(1, int(round(a.expo / lc.EXPO_UNIT_US)))
     if u > mx:
         sys.exit("%.2f us is over the exposure limit" % a.expo)
