@@ -8,9 +8,9 @@ output, frame period, exposure limit), the WWWWW and WKKKK sweeps, and the chose
 edges. It is saved as one JSON file, *.sliprof. The app starts with no document.
 
 FILE MENU
-  New...      the setup dialog (COM port + projector video output); OK runs the preflight
-              -- display to 800x600 @ 120, open the port, genlock on over the Ft+, check the
-              frame period -- and opens an empty document connected to the board. Cancel
+  New...      the setup dialog (COM port + the projector's mode, offline); OK sets the
+              board's mode, opens the port, turns genlock on over the Ft+, checks the
+              frame period, and opens an empty document connected to the board. Cancel
               leaves no document.
   Open...     a saved .sliprof. It is NOT connected: the first Run asks for the setup.
   Save / Save As... / Close / Exit -- unsaved changes are asked about first.
@@ -78,6 +78,11 @@ FORMAT = "auv2-sli-profile"
 # the two sweeps a document holds: key -> (tab title, level of frame 0, level of frames 1-4)
 SWEEPS = {"wwwww": ("WWWWW", 255, 254),
           "wkkkk": ("WKKKK", 255, 0)}
+# WKKKK repeated through a colour filter on the lens, one per filter (the RGB filters tab)
+FILTER_SWEEPS = {"wkkkk_r": ("WKKKK red filter", 255, 0),
+                 "wkkkk_g": ("WKKKK green filter", 255, 0),
+                 "wkkkk_b": ("WKKKK blue filter", 255, 0)}
+ALL_SWEEPS = dict(SWEEPS, **FILTER_SWEEPS)
 SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=lc.ACTIVE_US)
 
 
@@ -94,7 +99,7 @@ class Document:
         self.T = None                                # frame period, us
         self.mx = None                               # exposure limit, 0.375 us units
         self.sweeps = {}                             # key -> {"settings", "rows", "when", "complete"}
-        self.edges = None                            # {"lead_us", "trail_us"}
+        self.edges = None                            # {"lead_us", "trail_us", "runway_us"}
         self.iris = None                             # last Adjust iris: {"delay_us", ...}
         self.projector = None                        # {"name", "idx", "w", "h", "hz", "khz"}
         self.created = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -406,7 +411,7 @@ class SweepRunner:
 
     def __init__(self, key):
         self.key = key
-        self.title, self.level, self.bg = SWEEPS[key]
+        self.title, self.level, self.bg = ALL_SWEEPS[key]
         self.worker = None
         self.stop_ev = threading.Event()
         self.q = queue.Queue()
@@ -461,9 +466,84 @@ class SweepRunner:
 
 
 # ======================================================================================
+# Running sweeps from a view: both tabs start, follow and stop them the same way
+# ======================================================================================
+class SweepHost:
+    """For a ttk.Frame with self.app, self.runners {key: SweepRunner}, self.status and
+    buttons(). One sweep at a time in the whole app (App.busy)."""
+
+    def busy_runner(self):
+        return next((r for r in self.runners.values() if r.running), None)
+
+    def run(self, key):
+        doc = self.app.doc
+        title = ALL_SWEEPS[key][0]
+        if self.app.busy():
+            return
+        if doc.sweeps.get(key) and not messagebox.askokcancel(
+                "Replace sweep", "Run a new %s sweep and replace the one in this document?"
+                % title, parent=self):
+            return
+        if not self.app.ensure_connected():
+            return
+        r = self.runners[key]
+        try:
+            r.start(doc)
+        except Exception as ex:
+            messagebox.showerror("Cannot start", str(ex), parent=self)
+            return
+        self.app.changed()
+        self.after(200, lambda: self.poll(r))
+
+    def poll(self, r):
+        sw = self.app.doc.sweeps.get(r.key)
+        last = None
+        while True:
+            try:
+                kind, v = r.q.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "rows":
+                i, n, rows = v
+                sw["rows"] += rows
+                last = (i, n)
+            elif kind == "log":
+                print(v, flush=True)
+            else:
+                self.finish(r, sw, v if kind == "error" else None)
+                return
+        if last:
+            self.app.changed()
+            i, n = last
+            el = time.time() - r.t0
+            sat = sum(float(x[5]) >= 1000 for x in sw["rows"])
+            self.status["text"] = (
+                "%s running: delay %d/%d   %.0f s elapsed, ~%.0f s left   saturated %d/%d   "
+                "log %s" % (r.title, i + 1, n, el, el / (i + 1) * (n - i - 1), sat,
+                            len(sw["rows"]), r.log_csv))
+        self.after(200, lambda: self.poll(r))
+
+    def stop(self):
+        r = self.busy_runner()
+        if r:
+            r.stop()
+            self.buttons()
+            self.status["text"] = "%s: stopping after this delay..." % r.title
+
+    def finish(self, r, sw, err):
+        r.worker.join(timeout=5)
+        sw["complete"] = err is None and not r.stop_ev.is_set()
+        self.app.changed()
+        if err is not None:
+            self.status["text"] = "%s ERROR: %s   (%d readings kept; log %s)" % (
+                r.title, err, len(sw["rows"]), r.log_csv)
+
+
+
+# ======================================================================================
 # The profile view: both sweeps on one plot, the exposure edges on top
 # ======================================================================================
-class ProfileView(ttk.Frame):
+class ProfileView(SweepHost, ttk.Frame):
     """WWWWW (blue) and WKKKK (red) on one timeline, with the exposure edges.
 
     MOUSE. Wheel zooms the time axis around the cursor; only time zooms and pans -- the
@@ -473,12 +553,20 @@ class ProfileView(ttk.Frame):
     grab box near the top; drag the box. The boxes sit at a fixed height in the plot and
     are a fixed size on screen, so zooming never loses them -- panning one out of the
     visible range clips it away like any other data.
+
+    THE RUNWAY (cyan, dash-dot, lower box) marks where projector light may start before
+    the exposure: the runway runs from it to the lead. It is always at or before the lead
+    and moves with it; dragged on its own it stops at the lead and one frame before it.
+    Until placed it is found from WKKKK (light above 2 % of peak).
     """
 
     COLORS = {"wwwww": "#1f5fd0", "wkkkk": "#d02a2a"}
     LEAD, TRAIL = "#2e9e4f", "#7b3fb5"
+    RW = "#0891b2"                                   # runway: projector light before the lead
     BG = "#d97706"                                   # background exposure (trail -> next lead)
     BOX_Y = 0.93                                     # grab boxes, in axes fraction
+    RW_Y = 0.85                                      # the runway box sits lower, so it can
+                                                     # be grabbed even on top of the lead
     GRAB_PX = 10
     FRICTION = 4.0                                   # momentum decays as exp(-FRICTION t)
     TICK_MS = 16
@@ -488,7 +576,7 @@ class ProfileView(ttk.Frame):
         self.app = app
         self.runners = {k: SweepRunner(k) for k in SWEEPS}
         self.auto = True                             # view follows the data until touched
-        self.drag = None                             # "lead" / "trail" / "pan"
+        self.drag = None                             # "runway" / "lead" / "trail" / "pan"
         self.momentum = None
         self.sig_version = None
         self.iris_dlg = None
@@ -506,14 +594,17 @@ class ProfileView(ttk.Frame):
         self.stop_btn.pack(side="left", padx=(0, 4))
         self.iris_btn = ttk.Button(bar, text="Adjust iris...", command=self.adjust_iris)
         self.iris_btn.pack(side="left", padx=(0, 16))
+        ttk.Label(bar, text="runway (us)").pack(side="left")
+        self.rw_v, self.lead_v, self.trail_v = tk.StringVar(), tk.StringVar(), tk.StringVar()
+        rwe = ttk.Entry(bar, textvariable=self.rw_v, width=10)
+        rwe.pack(side="left", padx=(4, 12))
         ttk.Label(bar, text="leading edge (us)").pack(side="left")
-        self.lead_v, self.trail_v = tk.StringVar(), tk.StringVar()
         le = ttk.Entry(bar, textvariable=self.lead_v, width=10)
         le.pack(side="left", padx=(4, 12))
         ttk.Label(bar, text="trailing edge (us)").pack(side="left")
         te = ttk.Entry(bar, textvariable=self.trail_v, width=10)
         te.pack(side="left", padx=(4, 12))
-        for w in (le, te):
+        for w in (rwe, le, te):
             w.bind("<Return>", lambda e: self.typed())
             w.bind("<FocusOut>", lambda e: self.typed())
         self.best_btn = ttk.Button(bar, text="Best window", command=self.best)
@@ -556,6 +647,9 @@ class ProfileView(ttk.Frame):
         ax.legend(loc="upper right")
         bt = blended_transform_factory(ax.transData, ax.transAxes)
         self.span = ax.axvspan(0, 1, color=self.LEAD, alpha=.10, lw=0)
+        self.l_rw = ax.axvline(0, color=self.RW, lw=1.4, ls="-.")
+        self.b_rw, = ax.plot([0], [self.RW_Y], marker="s", ms=11, color=self.RW,
+                              mec="white", mew=1.2, transform=bt, clip_on=True, zorder=5)
         self.l_lead = ax.axvline(0, color=self.LEAD, lw=1.4)
         self.l_trail = ax.axvline(0, color=self.TRAIL, lw=1.4)
         self.b_lead, = ax.plot([0], [self.BOX_Y], marker="s", ms=11, color=self.LEAD,
@@ -565,6 +659,9 @@ class ProfileView(ttk.Frame):
         e = doc.edges
         self.edges_auto = not e                      # follow the best window until touched
         self.lead, self.trail = (e["lead_us"], e["trail_us"]) if e else (0.0, 0.0)
+        # The runway start is kept as its distance before the lead; None until placed (or in
+        # profiles saved before 2026-10-16), and then it is found from the WKKKK sweep.
+        self.rw_gap = (e["lead_us"] - e["runway_us"]) if e and "runway_us" in e else None
         self.refresh()
 
     def refresh(self):
@@ -581,6 +678,10 @@ class ProfileView(ttk.Frame):
             self.lead = (self.best_start(self.max_us) if self.sig is not None
                          else SETTINGS["active_us"])
             self.trail = self.lead + self.max_us
+        if self.edges_auto or self.rw_gap is None:
+            self.rw = self.lead - self.auto_rw_gap()
+        else:
+            self.rw = min(max(self.lead - self.rw_gap, self.rw_lo()), self.lead)
         self.place_edges()
         if self.auto:
             self.ax.set_xlim(0, 5 * self.T)
@@ -600,7 +701,8 @@ class ProfileView(ttk.Frame):
         pad = 0.05 * (hi - lo or 1.0)
         self.ax.set_ylim(lo - pad, hi + pad)
 
-    def summary(self, sw):
+    @staticmethod
+    def summary(sw):
         rows = sw["rows"]
         sat = sum(float(r[5]) >= 1000 for r in rows)
         src = sw["settings"].get("imported_from")
@@ -608,15 +710,14 @@ class ProfileView(ttk.Frame):
                 % ("INCOMPLETE " if not sw.get("complete", True) else "", len(rows), sat,
                    "imported" if src else "measured", sw.get("when", "")))
 
-    def busy_runner(self):
-        return next((r for r in self.runners.values() if r.running), None)
-
     def buttons(self):
         r = self.busy_runner()
         for b in list(self.run_btns.values()) + [self.iris_btn]:
-            b.state(["disabled"] if r or self.iris_dlg else ["!disabled"])
+            b.state(["disabled"] if self.app.busy() else ["!disabled"])
         self.stop_btn.state(["!disabled"] if r and not r.stop_ev.is_set() else ["disabled"])
         self.best_btn.state(["!disabled"] if self.sig is not None else ["disabled"])
+        if self.app.fview is not None:               # the iris also holds the other tab
+            self.app.fview.buttons()
 
     # ---- edges -----------------------------------------------------------------------
     def update_sig(self):
@@ -652,11 +753,29 @@ class ProfileView(ttk.Frame):
         box = np.convolve(ext, np.ones(n), mode="valid")[:len(self.sig)]
         return float(self.grid[int(np.argmax(box))])
 
+    def auto_rw_gap(self):
+        """How far before the lead the white frame's light starts: walk back from the lead
+        while the WKKKK light stays above 2 % of its peak, no more than one frame. 0 without
+        a WKKKK sweep."""
+        if self.sig is None or self.sig.max() <= 0:
+            return 0.0
+        thr, i0 = 0.02 * float(self.sig.max()), int(round(self.lead / self.dt))
+        room = int(self.T / self.dt)
+        n = 0
+        while n < room and self.sig[(i0 - n - 1) % len(self.sig)] > thr:
+            n += 1
+        return min(n * self.dt, self.lead)
+
+    def rw_lo(self):
+        """The runway can reach back one frame before the lead, into the previous frame."""
+        return max(0.0, self.lead - self.T)
+
     def set_edges(self, lead, trail, moving="trail"):
         """Edges, with the exposure held to the limit. Moving the lead (green)
-        carries the trail (purple) with it at the same width; moving the trail keeps
-        the lead anchored and stops the trail at the limit."""
+        carries the trail (purple) and the runway start (cyan) with it; moving the
+        trail keeps the lead anchored and stops the trail at the limit."""
         w = self.max_us
+        gap = self.lead - self.rw
         if moving == "lead":
             width = min(max(self.trail - self.lead, lc.EXPO_UNIT_US), w)
             lead = min(max(lead, 0.0), 5 * self.T)
@@ -665,16 +784,28 @@ class ProfileView(ttk.Frame):
             lead = min(max(lead, 0.0), 5 * self.T)
             trail = min(max(trail, lead + lc.EXPO_UNIT_US), lead + w)
         self.lead, self.trail = lead, trail
+        self.store_edges(min(max(lead - gap, self.rw_lo()), lead))
+
+    def set_runway(self, x):
+        """The runway start: always at or before the lead, within one frame of it."""
+        self.store_edges(min(max(x, self.rw_lo()), self.lead))
+
+    def store_edges(self, rw):
+        self.rw, self.rw_gap = rw, self.lead - rw
         self.edges_auto = False
-        self.app.doc.edges = {"lead_us": round(lead, 2), "trail_us": round(trail, 2)}
+        self.app.doc.edges = {"lead_us": round(self.lead, 2), "trail_us": round(self.trail, 2),
+                              "runway_us": round(rw, 2)}
         self.app.changed(redraw=False)
         self.place_edges()
         self.canvas.draw_idle()
 
     def place_edges(self):
-        lead, trail = self.lead, self.trail
+        lead, trail, rw = self.lead, self.trail, self.rw
+        self.rw_v.set("%.1f" % rw)
         self.lead_v.set("%.1f" % lead)
         self.trail_v.set("%.1f" % trail)
+        self.l_rw.set_xdata([rw, rw])
+        self.b_rw.set_xdata([rw])
         self.l_lead.set_xdata([lead, lead])
         self.l_trail.set_xdata([trail, trail])
         self.b_lead.set_xdata([lead])
@@ -684,6 +815,8 @@ class ProfileView(ttk.Frame):
         for a_ in getattr(self, "bg_art", []):
             a_.remove()
         self.bg_art = []
+        if rw < lead:                                # THE RUNWAY: light before the exposure
+            self.bg_art.append(self.ax.axvspan(rw, lead, color=self.RW, alpha=.15, lw=0))
         fa, fb = lead, trail
         # THE BACKGROUND EXPOSURE: the rest of the frame, from the trailing edge to the
         # next leading edge (trail -> lead + T), as it repeats in every frame. Wraps at 5T.
@@ -701,25 +834,33 @@ class ProfileView(ttk.Frame):
         k = int(fa // self.T)
         over = expo > self.max_us
         cap = self.captured(fa, fb)
+        rcap = self.captured(rw, lead) if rw < lead else (0.0 if cap is not None else None)
         bu = int(bw / lc.EXPO_UNIT_US)
         self.readout["text"] = (
             "foreground: delay %.2f us (frame %d + %.2f us)   %.3f us = %d units"
             "   white-frame light inside %s   limit %.2f us (T - 90 us, 120 fps)%s\n"
             "background (dashed, every frame): delay %.2f us into the frame   %.3f us = %d units"
-            "   ends %.2f us into the frame"
+            "   ends %.2f us into the frame\n"
+            "runway (cyan): starts %.2f us (frame %d + %.2f us), %.2f us before the exposure"
+            "   white-frame light on it %s"
             % (fa, k, fa - k * self.T, expo, units,
                "%.1f %%" % (100 * cap) if cap is not None else "- (needs WKKKK)",
                self.max_us, "   OVER THE LIMIT" if over else "",
-               b0, bu * lc.EXPO_UNIT_US, bu, (b0 + bu * lc.EXPO_UNIT_US) % self.T))
+               b0, bu * lc.EXPO_UNIT_US, bu, (b0 + bu * lc.EXPO_UNIT_US) % self.T,
+               rw, int(rw // self.T), rw - int(rw // self.T) * self.T, lead - rw,
+               "%.1f %%" % (100 * rcap) if rcap is not None else "- (needs WKKKK)"))
         self.readout["foreground"] = "#b00020" if over else ""
 
     def typed(self):
         try:
             lead, trail = float(self.lead_v.get()), float(self.trail_v.get())
+            rw = float(self.rw_v.get())
         except ValueError:
-            lead, trail = self.lead, self.trail
+            lead, trail, rw = self.lead, self.trail, self.rw
         if (lead, trail) != (self.lead, self.trail) or trail - lead > self.max_us:
             self.set_edges(lead, trail, "lead" if lead != self.lead else "trail")
+        elif abs(rw - self.rw) > 1e-6:
+            self.set_runway(rw)
         else:
             self.place_edges()
 
@@ -733,7 +874,7 @@ class ProfileView(ttk.Frame):
 
     # ---- mouse: drag edges, pan with momentum, wheel zoom ----------------------------
     def box_px(self, box):
-        return box.get_transform().transform((box.get_xdata()[0], self.BOX_Y))
+        return box.get_transform().transform((box.get_xdata()[0], box.get_ydata()[0]))
 
     def data_x(self, px):
         return self.ax.transData.inverted().transform((px, 0))[0]
@@ -746,7 +887,8 @@ class ProfileView(ttk.Frame):
             self.reset_view()
             return
         x0, x1 = self.ax.get_xlim()
-        for name, box, x in (("lead", self.b_lead, self.lead), ("trail", self.b_trail, self.trail)):
+        for name, box, x in (("lead", self.b_lead, self.lead), ("trail", self.b_trail, self.trail),
+                             ("runway", self.b_rw, self.rw)):
             if x0 <= x <= x1:
                 bx, by = self.box_px(box)
                 if abs(bx - ev.x) <= self.GRAB_PX and abs(by - ev.y) <= self.GRAB_PX:
@@ -769,9 +911,11 @@ class ProfileView(ttk.Frame):
 
     def motion(self, ev):
         self.show_cursor(ev)
-        if self.drag in ("lead", "trail"):
+        if self.drag in ("lead", "trail", "runway"):
             x = self.data_x(ev.x)
-            if self.drag == "lead":
+            if self.drag == "runway":
+                self.set_runway(x)
+            elif self.drag == "lead":
                 self.set_edges(x, self.trail, "lead")
             else:
                 self.set_edges(self.lead, x)
@@ -782,7 +926,7 @@ class ProfileView(ttk.Frame):
         else:                                        # hover: show which boxes grab
             over = False
             if ev.inaxes is self.ax:
-                for box in (self.b_lead, self.b_trail):
+                for box in (self.b_lead, self.b_trail, self.b_rw):
                     bx, by = self.box_px(box)
                     if abs(bx - ev.x) <= self.GRAB_PX and abs(by - ev.y) <= self.GRAB_PX:
                         over = True
@@ -856,68 +1000,6 @@ class ProfileView(ttk.Frame):
         self.ax.set_xlim(0, 5 * self.T)
         self.canvas.draw_idle()
 
-    # ---- running ---------------------------------------------------------------------
-    def run(self, key):
-        doc = self.app.doc
-        title = SWEEPS[key][0]
-        if doc.sweeps.get(key) and not messagebox.askokcancel(
-                "Replace sweep", "Run a new %s sweep and replace the one in this document?"
-                % title, parent=self):
-            return
-        if not self.app.ensure_connected():
-            return
-        r = self.runners[key]
-        try:
-            r.start(doc)
-        except Exception as ex:
-            messagebox.showerror("Cannot start", str(ex), parent=self)
-            return
-        self.app.changed()
-        self.after(200, lambda: self.poll(r))
-
-    def poll(self, r):
-        sw = self.app.doc.sweeps.get(r.key)
-        last = None
-        while True:
-            try:
-                kind, v = r.q.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "rows":
-                i, n, rows = v
-                sw["rows"] += rows
-                last = (i, n)
-            elif kind == "log":
-                print(v, flush=True)
-            else:
-                self.finish(r, sw, v if kind == "error" else None)
-                return
-        if last:
-            self.app.changed()
-            i, n = last
-            el = time.time() - r.t0
-            sat = sum(float(x[5]) >= 1000 for x in sw["rows"])
-            self.status["text"] = (
-                "%s running: delay %d/%d   %.0f s elapsed, ~%.0f s left   saturated %d/%d   "
-                "log %s" % (r.title, i + 1, n, el, el / (i + 1) * (n - i - 1), sat,
-                            len(sw["rows"]), r.log_csv))
-        self.after(200, lambda: self.poll(r))
-
-    def stop(self):
-        r = self.busy_runner()
-        if r:
-            r.stop()
-            self.buttons()
-            self.status["text"] = "%s: stopping after this delay..." % r.title
-
-    def finish(self, r, sw, err):
-        r.worker.join(timeout=5)
-        sw["complete"] = err is None and not r.stop_ev.is_set()
-        self.app.changed()
-        if err is not None:
-            self.status["text"] = "%s ERROR: %s   (%d readings kept; log %s)" % (
-                r.title, err, len(sw["rows"]), r.log_csv)
-
     def shutdown(self):
         self.stop_momentum()
         if self.iris_dlg is not None:
@@ -975,7 +1057,7 @@ class ProfileView(ttk.Frame):
     # ---- import / export (Sweep menu) ------------------------------------------------
     def import_csv(self, key):
         doc = self.app.doc
-        title = SWEEPS[key][0]
+        title = ALL_SWEEPS[key][0]
         if self.running:
             return
         if doc.sweeps.get(key) and not messagebox.askokcancel(
@@ -996,7 +1078,7 @@ class ProfileView(ttk.Frame):
     def export_csv(self, key):
         if not self.app.doc.sweeps.get(key):
             messagebox.showinfo("Nothing to export", "No %s sweep in this document."
-                                % SWEEPS[key][0], parent=self)
+                                % ALL_SWEEPS[key][0], parent=self)
             return
         path = filedialog.asksaveasfilename(
             parent=self, initialdir=ROOT, defaultextension=".csv",
@@ -1015,12 +1097,175 @@ class ProfileView(ttk.Frame):
         units = int(round((self.trail - self.lead) / lc.EXPO_UNIT_US))
         cap = self.captured(self.lead, self.trail)
         with open(path, "w") as fh:
-            json.dump({"T_us": self.T, "lead_us": round(self.lead, 2),
+            json.dump({"T_us": self.T, "runway_us": round(self.rw, 2),
+                       "lead_us": round(self.lead, 2),
                        "trail_us": round(self.trail, 2),
                        "delay_ticks": int(round(self.lead / TICK_US)),
                        "expo_units": units, "expo_us": units * lc.EXPO_UNIT_US,
                        "white_frame_light_inside": None if cap is None else round(cap, 4),
                        "max_expo_us": self.max_us}, fh, indent=2)
+
+
+# ======================================================================================
+# The RGB filters tab: WKKKK through each colour filter, on one plot
+# ======================================================================================
+class FilterView(SweepHost, ttk.Frame):
+    """WKKKK repeated with a red, a green and a blue filter on the lens, on one timeline.
+
+    The filter is changed by hand: mount it, then press its Run button. Each sweep is kept
+    in the document under its own key, so a filter can be re-run without touching the
+    others. "Normalize" subtracts each sweep's dark level (the median of frames 2-4) and
+    divides by its peak, to compare the shapes when the filters pass different amounts.
+    The profile tab's exposure edges and runway are drawn for reference (not draggable).
+    Wheel zooms time, drag pans, double-click shows all five frames.
+    """
+
+    COLORS = {"wkkkk_r": "#d02a2a", "wkkkk_g": "#1e9e3a", "wkkkk_b": "#1f5fd0"}
+    LETTER = {"wkkkk_r": "R", "wkkkk_g": "G", "wkkkk_b": "B"}
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.runners = {k: SweepRunner(k) for k in FILTER_SWEEPS}
+        self.pan0 = None
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **PAD)
+        self.run_btns = {}
+        for k in FILTER_SWEEPS:
+            b = ttk.Button(bar, text="Scan %s filter (WKKKK)" % self.LETTER[k],
+                           command=lambda k=k: self.run(k))
+            b.pack(side="left", padx=(0, 4))
+            self.run_btns[k] = b
+        self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop)
+        self.stop_btn.pack(side="left", padx=(0, 16))
+        self.norm_v = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Normalize (dark subtracted, peak = 1)",
+                        variable=self.norm_v, command=self.refresh).pack(side="left")
+        ttk.Button(bar, text="Whole view", command=self.reset_view).pack(side="right")
+        self.status = ttk.Label(self, text="", font=("Consolas", 9))
+        self.status.pack(fill="x", padx=8)
+        self.cursor = ttk.Label(self, text="", font=("Consolas", 9))
+        self.cursor.pack(fill="x", padx=8)
+
+        self.fig = Figure(figsize=(13, 6))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        for ev, fn in (("button_press_event", self.press), ("motion_notify_event", self.motion),
+                       ("button_release_event", self.release), ("scroll_event", self.scroll),
+                       ("resize_event", lambda e: fit_margins(self.fig)),
+                       ("axes_leave_event", lambda e: self.cursor.config(text=""))):
+            self.canvas.mpl_connect(ev, fn)
+        self.T = None
+        self.build()
+
+    def build(self):
+        self.T = self.app.doc.T or 8333.3
+        self.fig.clear()
+        ax = self.ax = timeline_axes(self.fig, self.T)
+        self.lines = {k: ax.plot([], [], lw=.8, color=self.COLORS[k],
+                                 label=FILTER_SWEEPS[k][0])[0] for k in FILTER_SWEEPS}
+        ax.legend(loc="upper right")
+        self.marks = [ax.axvline(0, color=c, lw=1.0, ls=ls, alpha=.8)
+                      for c, ls in ((ProfileView.RW, "-."), (ProfileView.LEAD, "-"),
+                                    (ProfileView.TRAIL, "-"))]
+        self.refresh()
+
+    def refresh(self):
+        doc = self.app.doc
+        if (doc.T or 8333.3) != self.T:
+            self.build()
+            return
+        norm, T = self.norm_v.get(), self.T
+        ys = []
+        for k, ln in self.lines.items():
+            p = doc.points(k)
+            t = np.array([q[0] for q in p])
+            v = np.array([q[1] for q in p])
+            if norm and len(v):
+                dark = float(np.median(v[t >= 2 * T])) if np.any(t >= 2 * T) else float(v.min())
+                pk = float(v.max()) - dark
+                v = (v - dark) / (pk if pk > 0 else 1.0)
+            ln.set_data(t, v)
+            if len(v):
+                ys.append(v)
+        e = doc.edges
+        for m, key in zip(self.marks, ("runway_us", "lead_us", "trail_us")):
+            x = e.get(key) if e else None
+            m.set_visible(x is not None)
+            if x is not None:
+                m.set_xdata([x, x])
+        y = np.concatenate(ys) if ys else np.array([0.0, 1.0 if norm else 1023.0])
+        lo, hi = float(y.min()), float(y.max())
+        pad = 0.05 * (hi - lo or 1.0)
+        self.ax.set_ylim(lo - pad, hi + pad)
+        self.ax.set_ylabel("WKKKK, dark subtracted, / peak" if norm else "ROI mean (ADU)")
+        self.buttons()
+        if not self.busy_runner():
+            self.status["text"] = "   ".join(
+                "%s: %s" % (self.LETTER[k], ProfileView.summary(doc.sweeps[k])
+                            if doc.sweeps.get(k) else "none")
+                for k in FILTER_SWEEPS) + "   -- mount the filter, then Scan it"
+        self.canvas.draw_idle()
+
+    def buttons(self):
+        r = self.busy_runner()
+        for b in self.run_btns.values():
+            b.state(["disabled"] if self.app.busy() else ["!disabled"])
+        self.stop_btn.state(["!disabled"] if r and not r.stop_ev.is_set() else ["disabled"])
+
+    def shutdown(self):
+        for r in self.runners.values():
+            r.shutdown()
+
+    @property
+    def running(self):
+        return self.busy_runner() is not None
+
+    # ---- mouse: wheel zoom, drag pan, double-click whole view ------------------------
+    def press(self, ev):
+        if ev.button != 1 or ev.inaxes is not self.ax:
+            return
+        if ev.dblclick:
+            self.reset_view()
+            return
+        self.pan0 = (ev.x, self.ax.get_xlim())
+
+    def motion(self, ev):
+        if ev.inaxes is self.ax:
+            x, y = self.ax.transData.inverted().transform((ev.x, ev.y))
+            k = int(x // self.T)
+            self.cursor["text"] = ("cursor: t %.2f us (frame %d + %.2f us)   %.3g"
+                                   % (x, k, x - k * self.T, y))
+        if self.pan0 is not None:
+            x0, (a, b) = self.pan0
+            dx = (ev.x - x0) * (b - a) / self.ax.bbox.width
+            self.set_x(a - dx, b - dx)
+            self.canvas.draw_idle()
+
+    def release(self, ev):
+        self.pan0 = None
+
+    def set_x(self, lo, hi):
+        end = 5 * self.T
+        w = min(hi - lo, end)
+        lo = min(max(lo, 0.0), end - w)
+        self.ax.set_xlim(lo, lo + w)
+
+    def scroll(self, ev):
+        if ev.inaxes is not self.ax:
+            return
+        f = 0.8 if ev.button == "up" else 1 / 0.8
+        x0, x1 = self.ax.get_xlim()
+        c = ev.xdata
+        if (x1 - x0) * f < 2.0 and f < 1:
+            return
+        self.set_x(c - (c - x0) * f, c + (x1 - c) * f)
+        self.canvas.draw_idle()
+
+    def reset_view(self):
+        self.ax.set_xlim(0, 5 * self.T)
+        self.canvas.draw_idle()
 
 
 # ======================================================================================
@@ -1187,7 +1432,7 @@ class IrisDialog(tk.Toplevel):
         if self.means:
             recent = self.means[-30:]
             sats = [s for s in self.sats[-30:] if s is not None]
-            had = [k for k in SWEEPS if doc.sweeps.get(k)]
+            had = [k for k in ALL_SWEEPS if doc.sweeps.get(k)]
             doc.iris = {"delay_us": round(self.delay_us, 2), "expo_us": 13 * lc.EXPO_UNIT_US,
                         "peak_mean": round(float(np.median(recent)), 1),
                         "saturated_px": int(max(sats)) if sats else None,
@@ -1200,7 +1445,7 @@ class IrisDialog(tk.Toplevel):
                     "Re-run the sweeps",
                     "The %s sweep%s in this document %s measured before this iris setting, "
                     "so %s no longer comparable. Run %s again."
-                    % (" and ".join(SWEEPS[k][0] for k in had), "s" if len(had) > 1 else "",
+                    % (" and ".join(ALL_SWEEPS[k][0] for k in had), "s" if len(had) > 1 else "",
                        "were" if len(had) > 1 else "was", "they are" if len(had) > 1 else "it is",
                        "them" if len(had) > 1 else "it"), parent=view)
         else:
@@ -1210,13 +1455,139 @@ class IrisDialog(tk.Toplevel):
 
 
 # ======================================================================================
+# Help > Instructions
+# ======================================================================================
+INSTRUCTIONS = [
+    ("Profiling a projector, step by step", None),
+    ("1. Connect", """\
+Unplug the PC's HDMI from the board: the board runs offline and makes its own video.
+
+File > New... opens the Connect dialog. Pick the COM port (the board is usually COM5).
+The Projector box shows the projector's name, read from its EDID, and the modes it
+supports. Pick 800x600 @ 120 Hz for 120 fps work; "Ask the board" re-reads them. OK
+switches the board to that mode, turns genlock on and measures the frame period."""),
+    ("2. Run WWWWW, then adjust the iris", """\
+Run WWWWW (blue): every frame white. It shows when the projector puts out light, period
+after period.
+
+Adjust iris... then holds a short exposure on that sweep's brightest point and shows each
+reading live. Turn the lens iris until the reading sits in the green band with no
+saturated pixels, and press Done. If the iris changed, run WWWWW again: sweeps taken at
+the old setting are flagged as needing a re-run."""),
+    ("3. Run WKKKK", """\
+Run WKKKK (red): one white frame and four black. It shows the light of a single frame.
+
+Where blue and red agree you are looking at one frame's light; where red has light the
+blue period does not explain, light is spilling from a neighbouring frame.
+
+Stop ends either sweep after the current delay and keeps what it has."""),
+    ("4. Place the exposure", """\
+GREEN line (leading edge): when the exposure opens, as a delay after frame 0's vsync.
+
+PURPLE line (trailing edge): when it closes.
+
+Dragging green moves purple (and the runway) with it at the same width. Dragging purple
+keeps green fixed and stops at the exposure limit: T - 90 us, the longest exposure the
+FPGA allows before the camera drops from 120 to 60 fps.
+
+Until you move them they sit on the longest window holding the most white-frame light.
+
+"Best window" puts them back there at the current width."""),
+    ("5. Mark the runway", """\
+CYAN dash-dot line (lower grab box): where projector light may start BEFORE the
+exposure. The runway is the cyan-shaded stretch from it to the green line. It is always
+at or before green, moves with green, and can reach back one frame (into the K frame
+before the W). Until placed it starts where the WKKKK light ahead of green drops below
+2 % of its peak. Use it to choose where to sample the projector for the 2-D maps."""),
+    ("6. Save", """\
+File > Save writes a .sliprof: the sweeps, the edges, the runway, the iris setting and
+the projector (name and mode). Opening it later and pressing Run asks to reconnect and
+restores that projector mode; if a different projector is attached you are warned.
+
+Sweep > Export writes the sweeps as CSV and the window (with the runway) as JSON."""),
+    ("7. RGB filters tab", """\
+Repeats the WKKKK sweep through a colour filter on the lens, one sweep per filter, all on
+one plot (red, green and blue traces). Mount a filter, then press its Scan button; change
+the filter and scan the next. Each filter's sweep is kept in the document on its own, so
+re-scanning one leaves the others.
+
+"Normalize" subtracts each sweep's dark level and scales its peak to 1, to compare the
+shapes when the filters pass different amounts of light. The profile tab's runway and
+edges are drawn for reference. Only one sweep runs at a time in the whole app."""),
+    ("The plot", None),
+    ("Mouse", """\
+Wheel: zoom the time axis around the cursor.
+
+Drag empty plot: pan in time; let go while moving and it glides.
+
+Double-click, or "Whole view": back to all five frames.
+
+Drag a coloured box to move its line. Only time zooms; the ADU axis always fits every
+reading."""),
+    ("Shading", """\
+Green: the exposure.
+
+Cyan: the runway.
+
+Orange hatching with dashed edges: the background
+exposure -- the rest of each frame, from the trailing edge to the next leading edge."""),
+    ("Readout", """\
+Line 1: exposure delay (frame + offset), length in 0.375 us units, share of the
+white-frame light inside, and the limit (red if over it).
+
+Line 2: the background exposure in every frame.
+
+Line 3: where the runway starts, how far before the exposure, and its share of the
+white-frame light.
+
+Line 4: the cursor's time and ADU."""),
+    ("Tips", None),
+    ("", """\
+Keep the PC's HDMI unplugged: the Connect dialog refuses pass-through video.
+
+While a sweep runs every reading is also written to a CSV in the temp folder, named on
+the status line, so a crash does not lose it."""),
+]
+
+
+class HelpDialog(tk.Toplevel):
+    """The instructions, in a scrolling window that can stay open beside the plot."""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.title("Instructions - AuV2-SLI projector profiling")
+        self.geometry("720x640+120+80")
+        txt = tk.Text(self, wrap="word", padx=14, pady=10, relief="flat",
+                      font=("Segoe UI", 10), background="white")
+        sb = ttk.Scrollbar(self, command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        ttk.Button(self, text="Close", command=self.destroy).pack(side="bottom", pady=6)
+        sb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+        txt.tag_configure("h1", font=("Segoe UI", 13, "bold"), spacing1=12, spacing3=4)
+        txt.tag_configure("h2", font=("Segoe UI", 10, "bold"), spacing1=8, spacing3=2)
+        txt.tag_configure("body", lmargin1=12, lmargin2=12, spacing3=5)
+        for head, body in INSTRUCTIONS:
+            if body is None:
+                txt.insert("end", head + "\n", "h1")
+                continue
+            if head:
+                txt.insert("end", head + "\n", "h2")
+            # source lines wrap at ~90 columns: join them; a blank line starts a paragraph
+            paras = [" ".join(p.split()) for p in body.split("\n\n")]
+            txt.insert("end", "\n".join(paras) + "\n", "body")
+        txt.configure(state="disabled")
+        self.bind("<Escape>", lambda e: self.destroy())
+
+
+# ======================================================================================
 # The application window
 # ======================================================================================
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.doc = None
-        self.view = None
+        self.view = self.fview = self.tabs = None
         self.geometry("1300x820+40+40")
         self.protocol("WM_DELETE_WINDOW", self.exit)
 
@@ -1231,16 +1602,20 @@ class App(tk.Tk):
         f.add_command(label="Exit", command=self.exit)
         m.add_cascade(label="File", menu=f)
         s = tk.Menu(m, tearoff=False)
-        for k in SWEEPS:
-            s.add_command(label="Import %s CSV..." % SWEEPS[k][0],
+        for k in ALL_SWEEPS:
+            s.add_command(label="Import %s CSV..." % ALL_SWEEPS[k][0],
                           command=lambda k=k: self.view and self.view.import_csv(k))
         s.add_separator()
-        for k in SWEEPS:
-            s.add_command(label="Export %s CSV..." % SWEEPS[k][0],
+        for k in ALL_SWEEPS:
+            s.add_command(label="Export %s CSV..." % ALL_SWEEPS[k][0],
                           command=lambda k=k: self.view and self.view.export_csv(k))
         s.add_command(label="Export exposure window JSON...",
                       command=lambda: self.view and self.view.export_json())
         m.add_cascade(label="Sweep", menu=s)
+        h = tk.Menu(m, tearoff=False)
+        h.add_command(label="Instructions", accelerator="F1", command=self.instructions)
+        m.add_cascade(label="Help", menu=h)
+        self.help_dlg = None
         self.file_menu, self.sweep_menu, self.menubar = f, s, m
         self.config(menu=m)
         self.bind_all("<Control-n>", lambda e: self.new())
@@ -1248,16 +1623,27 @@ class App(tk.Tk):
         self.bind_all("<Control-s>", lambda e: self.save())
         self.bind_all("<Control-S>", lambda e: self.save_as())
         self.bind_all("<Control-w>", lambda e: self.close())
+        self.bind_all("<F1>", lambda e: self.instructions())
 
         self.empty = ttk.Label(self, text="No document.\n\nFile > New...   to connect and "
-                               "measure\nFile > Open...  to load a saved profile",
+                               "measure\nFile > Open...  to load a saved profile\n"
+                               "Help > Instructions (F1)  for how to profile",
                                justify="center", foreground="#666", font=("Segoe UI", 12))
         self.conn = ttk.Label(self, text="", font=("Consolas", 9), anchor="w")
         self.show_doc()
 
+    def instructions(self):
+        """One instructions window; asking again brings it to the front."""
+        if self.help_dlg is not None and self.help_dlg.winfo_exists():
+            self.help_dlg.deiconify()
+            self.help_dlg.lift()
+            return
+        self.help_dlg = HelpDialog(self)
+
     # ---- state -----------------------------------------------------------------------
     def busy(self):
-        return self.view is not None and self.view.running
+        """A sweep (either tab) or the iris dialog has the camera."""
+        return any(v is not None and v.running for v in (self.view, self.fview))
 
     def changed(self, redraw=True):
         """Something in the document changed: title, and the view if asked."""
@@ -1265,6 +1651,7 @@ class App(tk.Tk):
             self.doc.dirty = True
         if redraw and self.view is not None:
             self.view.refresh()
+            self.fview.refresh()
         self.update_title()
 
     def update_title(self):
@@ -1284,17 +1671,21 @@ class App(tk.Tk):
 
     def show_doc(self):
         """Swap between the empty window and the document's view."""
-        if self.view is not None:
-            self.view.destroy()
-            self.view = None
+        if self.tabs is not None:
+            self.tabs.destroy()
+            self.tabs = self.view = self.fview = None
         self.empty.pack_forget()
         self.conn.pack_forget()
         if self.doc is None:
             self.empty.pack(expand=True)
         else:
             self.conn.pack(side="bottom", fill="x")
-            self.view = ProfileView(self, self)
-            self.view.pack(fill="both", expand=True)
+            self.tabs = ttk.Notebook(self)
+            self.view = ProfileView(self.tabs, self)
+            self.fview = FilterView(self.tabs, self)
+            self.tabs.add(self.view, text="Profile")
+            self.tabs.add(self.fview, text="RGB filters")
+            self.tabs.pack(fill="both", expand=True)
         self.update_title()
 
     # ---- connection ------------------------------------------------------------------
@@ -1399,6 +1790,7 @@ class App(tk.Tk):
                                           parent=self):
                 return False
             self.view.shutdown()
+            self.fview.shutdown()
         if self.doc.dirty:
             r = messagebox.askyesnocancel("Unsaved changes",
                                           "Save changes to %s?" % self.doc.name, parent=self)
