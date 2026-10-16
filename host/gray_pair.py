@@ -146,6 +146,9 @@ def main():
     ap.add_argument("--prev", type=int, default=None, metavar="LEVEL",
                     help="measure one row only: the previous frame fixed at LEVEL, this "
                          "frame through every --levels value (live view is a line plot)")
+    ap.add_argument("--prev-levels", type=int, nargs="+", default=None, metavar="LEVEL",
+                    help="measure these rows only: each previous level held while this "
+                         "frame goes through every --levels value, e.g. $(seq 0 32)")
     ap.add_argument("--per", type=int, default=10, help="samples averaged per (prev, this) cell")
     ap.add_argument("--skip", type=int, default=2,
                     help="extra frames dropped after the new levels show in the tag")
@@ -171,9 +174,12 @@ def main():
         sys.exit("an exposure is over the %.1f us limit" % (mx * lc.EXPO_UNIT_US))
     expo = {d: units[d] * lc.EXPO_UNIT_US for d in a.delays}
     e = expo[a.delays[0]]
-    L = sorted(set(a.levels) | ({a.prev} if a.prev is not None else set()))
+    rows = a.prev_levels
+    L = sorted(set(a.levels) | ({a.prev} if a.prev is not None else set()) | set(rows or ()))
     if a.prev is not None:                           # one row: A = prev held, B swept
         pairs = [(a.prev, B) for B in L]
+    elif rows:                                       # some rows: each A held, B swept
+        pairs = [(A, B) for A in sorted(rows) for B in sorted(a.levels)]
     else:
         pairs = list(itertools.combinations_with_replacement(L, 2))
     idx = {lv: i for i, lv in enumerate(L)}
@@ -189,11 +195,12 @@ def main():
                     grids[d][idx[pl], idx[tl]] = float(r["mean"])
         except FileNotFoundError:
             pass
+    one = a.prev if a.prev is not None else (0 if rows else None)   # one direction only
     todo = {d: [(A, B) for A, B in pairs
-                if (d, A, B) not in done or (a.prev is None and (d, B, A) not in done)]
+                if (d, A, B) not in done or (one is None and (d, B, A) not in done)]
             for d in a.delays}
     n_todo = sum(len(v) for v in todo.values())
-    est = n_todo * ((1 if a.prev is not None else 2) * 2 * a.per + a.skip + 3) / (1e6 / T) / 3600
+    est = n_todo * ((1 if one is not None else 2) * 2 * a.per + a.skip + 3) / (1e6 / T) / 3600
     print("frame %.2f us   %s   %d levels   %d pairs to do (%d cells already done)   ~%.1f h"
           % (T, "   ".join("%.0f us + %.3f us" % (d, expo[d]) for d in a.delays), len(L),
              n_todo, len(done), est))
@@ -226,6 +233,10 @@ def main():
         ax.set_xticklabels(L[::step], fontsize=8)
         ax.set_yticks(range(0, len(L), step))
         ax.set_yticklabels(L[::step], fontsize=8)
+        if rows:                                     # show only the rows measured
+            ax.set_ylim(idx[min(rows)] - 0.5, idx[max(rows)] + 0.5)
+            ax.set_yticks(range(idx[min(rows)], idx[max(rows)] + 1, max(1, len(rows) // 8)))
+            ax.set_yticklabels(sorted(rows)[::max(1, len(rows) // 8)], fontsize=8)
         ax.set_xlabel("level sent in THIS frame (upcoming image)")
         ax.set_ylabel("level sent in the PREVIOUS frame (image on screen)")
         ax.set_title("%.0f .. %.0f us into the frame (exposure %.3f us)"
@@ -314,7 +325,7 @@ def main():
                 for _ in range(a.skip):
                     st.get()
                 by = {}
-                need = [(A, B), (B, A)] if A != B and a.prev is None else [(A, B)]
+                need = [(A, B), (B, A)] if A != B and one is None else [(A, B)]
                 prev, t_c = None, time.time()
                 while time.time() - t_c < max(2.0, 3e-6 * T * a.per) and \
                         min(len(by.get(c, [])) for c in need) < a.per:
