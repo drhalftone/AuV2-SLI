@@ -80,11 +80,16 @@ FORMAT = "auv2-sli-profile"
 # the two sweeps a document holds: key -> (tab title, level of frame 0, level of frames 1-4)
 SWEEPS = {"wwwww": ("WWWWW", 255, 254),
           "wkkkk": ("WKKKK", 255, 0)}
-# WKKKK repeated through a colour filter on the lens, one per filter (the RGB filters tab)
-FILTER_SWEEPS = {"wkkkk_r": ("WKKKK red filter", 255, 0),
-                 "wkkkk_g": ("WKKKK green filter", 255, 0),
-                 "wkkkk_b": ("WKKKK blue filter", 255, 0)}
-ALL_SWEEPS = dict(SWEEPS, **FILTER_SWEEPS)
+# WWWWW repeated through a colour filter on the lens, one per filter (the RGB filters tab).
+# Until 2026-10-19 these were WKKKK (keys wkkkk_r/g/b); such sweeps stay in old documents
+# and can still be exported from the Sweep menu, but the tab shows only these.
+FILTER_SWEEPS = {"wwwww_r": ("WWWWW red filter", 255, 254),
+                 "wwwww_g": ("WWWWW green filter", 255, 254),
+                 "wwwww_b": ("WWWWW blue filter", 255, 254)}
+OLD_FILTER_SWEEPS = {"wkkkk_r": ("WKKKK red filter", 255, 0),
+                     "wkkkk_g": ("WKKKK green filter", 255, 0),
+                     "wkkkk_b": ("WKKKK blue filter", 255, 0)}
+ALL_SWEEPS = dict(SWEEPS, **FILTER_SWEEPS, **OLD_FILTER_SWEEPS)
 SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=lc.ACTIVE_US)
 
 
@@ -437,6 +442,30 @@ def timeline_axes(fig, T):
     return ax
 
 
+EDGE_COLORS = dict(lead="#2e9e4f", trail="#7b3fb5", runway="#0891b2", bg="#d97706")
+
+
+def runway_and_background(ax, T, rw, lead, trail):
+    """The shading every tab draws under the edges; returns the artists.
+    THE RUNWAY (cyan): light before the exposure, rw -> lead.
+    THE BACKGROUND EXPOSURE (orange, hatched, dashed ends): the rest of the frame, from
+    the trailing edge to the next leading edge (trail -> lead + T), as it repeats in
+    every frame. Wraps at 5T."""
+    art = []
+    if rw < lead:
+        art.append(ax.axvspan(rw, lead, color=EDGE_COLORS["runway"], alpha=.15, lw=0))
+    T5, b0 = 5 * T, trail % T
+    bw = max(0.0, lead + T - trail) if trail - lead < T else 0.0
+    for f in range(5):
+        s_, e_ = f * T + b0, f * T + b0 + bw
+        for x0, x1 in ([(s_, e_)] if e_ <= T5 else [(s_, T5), (0.0, e_ - T5)]):
+            art.append(ax.axvspan(x0, x1, color=EDGE_COLORS["bg"], alpha=.35, lw=0,
+                                  hatch="///", fill=False))
+        for x in (s_, e_ % T5 if e_ > T5 else e_):
+            art.append(ax.axvline(x, color=EDGE_COLORS["bg"], lw=1.0, ls="--"))
+    return art
+
+
 # ======================================================================================
 # Running a sweep (no Tk in here except through the queue)
 # ======================================================================================
@@ -595,9 +624,9 @@ class ProfileView(SweepHost, ttk.Frame):
     """
 
     COLORS = {"wwwww": "#1f5fd0", "wkkkk": "#d02a2a"}
-    LEAD, TRAIL = "#2e9e4f", "#7b3fb5"
-    RW = "#0891b2"                                   # runway: projector light before the lead
-    BG = "#d97706"                                   # background exposure (trail -> next lead)
+    LEAD, TRAIL = EDGE_COLORS["lead"], EDGE_COLORS["trail"]
+    RW = EDGE_COLORS["runway"]                       # runway: projector light before the lead
+    BG = EDGE_COLORS["bg"]                           # background exposure (trail -> next lead)
     BOX_Y = 0.93                                     # grab boxes, in axes fraction
     RW_Y = 0.85                                      # the runway box sits lower, so it can
                                                      # be grabbed even on top of the lead
@@ -849,21 +878,10 @@ class ProfileView(SweepHost, ttk.Frame):
         self.span = self.ax.axvspan(lead, trail, color=self.LEAD, alpha=.15, lw=0)
         for a_ in getattr(self, "bg_art", []):
             a_.remove()
-        self.bg_art = []
-        if rw < lead:                                # THE RUNWAY: light before the exposure
-            self.bg_art.append(self.ax.axvspan(rw, lead, color=self.RW, alpha=.15, lw=0))
+        self.bg_art = runway_and_background(self.ax, self.T, rw, lead, trail)
         fa, fb = lead, trail
-        # THE BACKGROUND EXPOSURE: the rest of the frame, from the trailing edge to the
-        # next leading edge (trail -> lead + T), as it repeats in every frame. Wraps at 5T.
-        T5, b0 = 5 * self.T, trail % self.T
+        b0 = trail % self.T
         bw = max(0.0, lead + self.T - trail) if trail - lead < self.T else 0.0
-        for f in range(5):
-            s_, e_ = f * self.T + b0, f * self.T + b0 + bw
-            for x0, x1 in ([(s_, e_)] if e_ <= T5 else [(s_, T5), (0.0, e_ - T5)]):
-                self.bg_art.append(self.ax.axvspan(x0, x1, color=self.BG, alpha=.35, lw=0,
-                                                   hatch="///", fill=False))
-            for x in (s_, e_ % T5 if e_ > T5 else e_):
-                self.bg_art.append(self.ax.axvline(x, color=self.BG, lw=1.0, ls="--"))
         units = int((fb - fa) / lc.EXPO_UNIT_US)
         expo = units * lc.EXPO_UNIT_US
         k = int(fa // self.T)
@@ -1142,21 +1160,24 @@ class ProfileView(SweepHost, ttk.Frame):
 
 
 # ======================================================================================
-# The RGB filters tab: WKKKK through each colour filter, on one plot
+# The RGB filters tab: WWWWW through each colour filter, on one plot
 # ======================================================================================
 class FilterView(SweepHost, ttk.Frame):
-    """WKKKK repeated with a red, a green and a blue filter on the lens, on one timeline.
+    """WWWWW repeated with a red, a green and a blue filter on the lens, on one timeline.
 
     The filter is changed by hand: mount it, then press its Run button. Each sweep is kept
     in the document under its own key, so a filter can be re-run without touching the
-    others. "Normalize" subtracts each sweep's dark level (the median of frames 2-4) and
-    divides by its peak, to compare the shapes when the filters pass different amounts.
+    others. "Show" picks one view: Raw; Normalized (each sweep's dark level -- the
+    median of frames 2-4 -- subtracted and its peak scaled to 1); or Fit to white (each
+    filter scaled by its least-squares weight so the three add up to WWWWW).
+    WWWWW never goes dark, so the dark level is the camera's: the median of frames 2-4
+    of the Profile tab's WKKKK sweep (else each sweep's minimum).
     The profile tab's exposure edges and runway are drawn for reference (not draggable).
     Wheel zooms time, drag pans, double-click shows all five frames.
     """
 
-    COLORS = {"wkkkk_r": "#d02a2a", "wkkkk_g": "#1e9e3a", "wkkkk_b": "#1f5fd0"}
-    LETTER = {"wkkkk_r": "R", "wkkkk_g": "G", "wkkkk_b": "B"}
+    COLORS = {"wwwww_r": "#d02a2a", "wwwww_g": "#1e9e3a", "wwwww_b": "#1f5fd0"}
+    LETTER = {"wwwww_r": "R", "wwwww_g": "G", "wwwww_b": "B"}
 
     def __init__(self, master, app):
         super().__init__(master)
@@ -1168,18 +1189,24 @@ class FilterView(SweepHost, ttk.Frame):
         bar.pack(fill="x", **PAD)
         self.run_btns = {}
         for k in FILTER_SWEEPS:
-            b = ttk.Button(bar, text="Scan %s filter (WKKKK)" % self.LETTER[k],
+            b = ttk.Button(bar, text="Scan %s filter (WWWWW)" % self.LETTER[k],
                            command=lambda k=k: self.run(k))
             b.pack(side="left", padx=(0, 4))
             self.run_btns[k] = b
         self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop)
         self.stop_btn.pack(side="left", padx=(0, 16))
-        self.norm_v = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bar, text="Normalize (dark subtracted, peak = 1)",
-                        variable=self.norm_v, command=self.refresh).pack(side="left")
+        # ONE VIEW AT A TIME: the raw sweeps, each normalized, or fitted to the white
+        self.show_v = tk.StringVar(value="raw")
+        ttk.Label(bar, text="show").pack(side="left", padx=(0, 4))
+        for val, txt in (("raw", "Raw"), ("norm", "Normalized (dark subtracted, peak = 1)"),
+                         ("fit", "Fit to white (WWWWW)")):
+            ttk.Radiobutton(bar, text=txt, value=val, variable=self.show_v,
+                            command=self.refresh).pack(side="left", padx=(0, 10))
         ttk.Button(bar, text="Whole view", command=self.reset_view).pack(side="right")
         self.status = ttk.Label(self, text="", font=("Consolas", 9))
         self.status.pack(fill="x", padx=8)
+        self.fit_info = ttk.Label(self, text="", font=("Consolas", 9))
+        self.fit_info.pack(fill="x", padx=8)
         self.cursor = ttk.Label(self, text="", font=("Consolas", 9))
         self.cursor.pack(fill="x", padx=8)
 
@@ -1200,10 +1227,27 @@ class FilterView(SweepHost, ttk.Frame):
         ax = self.ax = timeline_axes(self.fig, self.T)
         self.lines = {k: ax.plot([], [], lw=.8, color=self.COLORS[k],
                                  label=FILTER_SWEEPS[k][0])[0] for k in FILTER_SWEEPS}
+        # fit view: the white sweep as a wide grey band UNDER the scaled filter lines, so
+        # each filter's segments stay visible where it carries the white's light
+        self.l_white, = ax.plot([], [], lw=4.0, color="#c8c8c8", label="WWWWW (white)",
+                                zorder=1, solid_capstyle="butt")
+        self.l_fit, = ax.plot([], [], lw=.9, ls="--", color="#222", label="fit (sum)",
+                              zorder=4)
+        for ln in self.lines.values():
+            ln.set_zorder(3)
         ax.legend(loc="upper right")
-        self.marks = [ax.axvline(0, color=c, lw=1.0, ls=ls, alpha=.8)
-                      for c, ls in ((ProfileView.RW, "-."), (ProfileView.LEAD, "-"),
-                                    (ProfileView.TRAIL, "-"))]
+        # the Profile tab's edges, as drawn there, with the same grab boxes. A drag here
+        # goes through the Profile tab (set_edges / set_runway), so the rules are shared.
+        bt = blended_transform_factory(ax.transData, ax.transAxes)
+        self.marks, self.boxes = [], {}
+        for k, ls, y in (("runway", "-.", ProfileView.RW_Y), ("lead", "-", ProfileView.BOX_Y),
+                         ("trail", "-", ProfileView.BOX_Y)):
+            self.marks.append(ax.axvline(0, color=EDGE_COLORS[k], lw=1.4, ls=ls))
+            self.boxes[k], = ax.plot([0], [y], marker="s", ms=11, color=EDGE_COLORS[k],
+                                     mec="white", mew=1.2, transform=bt, clip_on=True,
+                                     zorder=5)
+        self.edge_art = []
+        self.drag = None
         self.refresh()
 
     def refresh(self):
@@ -1211,30 +1255,49 @@ class FilterView(SweepHost, ttk.Frame):
         if (doc.T or 8333.3) != self.T:
             self.build()
             return
-        norm, T = self.norm_v.get(), self.T
+        norm, T = self.show_v.get() == "norm", self.T
+        fit = self.fit_white() if self.show_v.get() == "fit" else None
         ys = []
         for k, ln in self.lines.items():
             p = doc.points(k)
             t = np.array([q[0] for q in p])
             v = np.array([q[1] for q in p])
-            if norm and len(v):
-                dark = float(np.median(v[t >= 2 * T])) if np.any(t >= 2 * T) else float(v.min())
+            if fit is not None:
+                t, v = fit["t"], fit["parts"][k]
+            elif norm and len(v):
+                dark = self.cam_dark(v)
                 pk = float(v.max()) - dark
                 v = (v - dark) / (pk if pk > 0 else 1.0)
             ln.set_data(t, v)
+            ln.set_linewidth(1.4 if fit is not None else .8)
+            ln.set_label("%s x %.3f" % (FILTER_SWEEPS[k][0], fit["coef"][k]) if fit is not None
+                         else FILTER_SWEEPS[k][0])
             if len(v):
                 ys.append(v)
-        e = doc.edges
-        for m, key in zip(self.marks, ("runway_us", "lead_us", "trail_us")):
-            x = e.get(key) if e else None
-            m.set_visible(x is not None)
-            if x is not None:
-                m.set_xdata([x, x])
+        for ln, key, lab in ((self.l_white, "white", "WWWWW (white)"),
+                             (self.l_fit, "fit", "fit (sum)")):
+            ln.set_data(fit["t"], fit[key]) if fit is not None else ln.set_data([], [])
+            ln.set_visible(fit is not None)
+            ln.set_label(lab if fit is not None else "_" + lab)   # "_": not in the legend
+        if fit is not None:
+            ys.append(fit["white"])
+            c = fit["coef"]
+            self.fit_info["text"] = (
+                "fit to white: WWWWW - dark = %.4f R + %.4f G + %.4f B %+.2f ADU  (dark %.2f ADU)"
+                "   residual rms %.2f ADU (lit part %.2f), max %.1f ADU at %.1f us   R2 %.5f"
+                % (c["wwwww_r"], c["wwwww_g"], c["wwwww_b"], fit["offset"], fit["dark"],
+                   fit["rms"], fit["rms_lit"], fit["max"], fit["t_max"], fit["r2"]))
+        else:
+            self.fit_info["text"] = ("fit to white: needs the WWWWW sweep (Profile tab) and "
+                                     "all three filter sweeps" if self.show_v.get() == "fit" else "")
+        self.ax.legend(loc="upper right")
+        self.place_marks()
         y = np.concatenate(ys) if ys else np.array([0.0, 1.0 if norm else 1023.0])
         lo, hi = float(y.min()), float(y.max())
         pad = 0.05 * (hi - lo or 1.0)
         self.ax.set_ylim(lo - pad, hi + pad)
-        self.ax.set_ylabel("WKKKK, dark subtracted, / peak" if norm else "ROI mean (ADU)")
+        self.ax.set_ylabel("ADU above dark" if fit is not None else
+                           "dark subtracted, / peak" if norm else "ROI mean (ADU)")
         self.buttons()
         if not self.busy_runner():
             self.status["text"] = "   ".join(
@@ -1242,6 +1305,77 @@ class FilterView(SweepHost, ttk.Frame):
                             if doc.sweeps.get(k) else "none")
                 for k in FILTER_SWEEPS) + "   -- mount the filter, then Scan it"
         self.canvas.draw_idle()
+
+    def place_marks(self):
+        """The edges, runway and shading, as the Profile tab has them now."""
+        pv = self.app.view
+        e = (dict(lead_us=pv.lead, trail_us=pv.trail, runway_us=pv.rw)
+             if pv is not None and pv.trail > pv.lead else None)
+        for m, k in zip(self.marks, ("runway", "lead", "trail")):
+            x = e["%s_us" % k] if e else None
+            m.set_visible(x is not None)
+            self.boxes[k].set_visible(x is not None)
+            if x is not None:
+                m.set_xdata([x, x])
+                self.boxes[k].set_xdata([x])
+        for a_ in self.edge_art:
+            a_.remove()
+        self.edge_art = []
+        if e:
+            lead, trail = e["lead_us"], e["trail_us"]
+            self.edge_art.append(self.ax.axvspan(lead, trail, color=EDGE_COLORS["lead"],
+                                                 alpha=.15, lw=0))
+            self.edge_art += runway_and_background(self.ax, self.T, e["runway_us"], lead,
+                                                   trail)
+
+    def grab(self, ev):
+        """The edge whose box is under the mouse, or None."""
+        x0, x1 = self.ax.get_xlim()
+        for k in ("lead", "trail", "runway"):
+            b = self.boxes[k]
+            if b.get_visible() and x0 <= b.get_xdata()[0] <= x1:
+                bx, by = b.get_transform().transform((b.get_xdata()[0], b.get_ydata()[0]))
+                if abs(bx - ev.x) <= ProfileView.GRAB_PX and abs(by - ev.y) <= ProfileView.GRAB_PX:
+                    return k
+        return None
+
+    def cam_dark(self, v=None):
+        """The camera's dark level: frames 2-4 of the Profile tab's WKKKK sweep (dark
+        there), else the minimum of v. WWWWW sweeps are never dark themselves."""
+        p = self.app.doc.points("wkkkk")
+        t = np.array([q[0] for q in p])
+        if len(p) >= 10 and np.any(t >= 2 * self.T):
+            return float(np.median(np.array([q[1] for q in p])[t >= 2 * self.T]))
+        return float(np.min(v)) if v is not None and len(v) else 0.0
+
+    def fit_white(self):
+        """WWWWW as a least-squares combination of the three filter sweeps plus a constant,
+        all less the camera dark, the filters interpolated onto the white's delays. None
+        unless all four sweeps exist."""
+        doc = self.app.doc
+        p = doc.points("wwwww")
+        if len(p) < 10 or not all(len(doc.points(k)) >= 10 for k in FILTER_SWEEPS):
+            return None
+        dark = self.cam_dark(np.array([q[1] for q in p]))
+        t = np.array([q[0] for q in p])
+        w = np.array([q[1] for q in p]) - dark
+        X = []
+        for k in FILTER_SWEEPS:
+            q = doc.points(k)
+            X.append(np.interp(t, [a_ for a_, _ in q], [b_ - dark for _, b_ in q]))
+        X = np.column_stack(X)
+        c = np.linalg.lstsq(np.column_stack([X, np.ones_like(w)]), w, rcond=None)[0]
+        f = X @ c[:3] + c[3]
+        res = w - f
+        lit = w > 0.05 * w.max()
+        i = int(np.argmax(np.abs(res)))
+        return {"t": t, "white": w, "fit": f, "dark": dark, "offset": float(c[3]),
+                "coef": dict(zip(FILTER_SWEEPS, c[:3])),
+                "parts": {k: c[j] * X[:, j] for j, k in enumerate(FILTER_SWEEPS)},
+                "rms": float(np.sqrt(np.mean(res ** 2))),
+                "rms_lit": float(np.sqrt(np.mean(res[lit] ** 2))) if lit.any() else 0.0,
+                "max": float(abs(res[i])), "t_max": float(t[i]),
+                "r2": float(1 - np.sum(res ** 2) / np.sum((w - w.mean()) ** 2))}
 
     def buttons(self):
         r = self.busy_runner()
@@ -1257,12 +1391,16 @@ class FilterView(SweepHost, ttk.Frame):
     def running(self):
         return self.busy_runner() is not None
 
-    # ---- mouse: wheel zoom, drag pan, double-click whole view ------------------------
+    # ---- mouse: drag edges, wheel zoom, drag pan, double-click whole view -------------
     def press(self, ev):
         if ev.button != 1 or ev.inaxes is not self.ax:
             return
         if ev.dblclick:
             self.reset_view()
+            return
+        self.drag = self.grab(ev)
+        if self.drag:
+            self.canvas.get_tk_widget().config(cursor="sb_h_double_arrow")
             return
         self.pan0 = (ev.x, self.ax.get_xlim())
 
@@ -1272,14 +1410,29 @@ class FilterView(SweepHost, ttk.Frame):
             k = int(x // self.T)
             self.cursor["text"] = ("cursor: t %.2f us (frame %d + %.2f us)   %.3g"
                                    % (x, k, x - k * self.T, y))
-        if self.pan0 is not None:
+        if self.drag:                                # through the Profile tab's rules
+            pv = self.app.view
+            x = self.ax.transData.inverted().transform((ev.x, 0))[0]
+            if self.drag == "runway":
+                pv.set_runway(x)
+            elif self.drag == "lead":
+                pv.set_edges(x, pv.trail, "lead")
+            else:
+                pv.set_edges(pv.lead, x)
+            self.place_marks()
+            self.canvas.draw_idle()
+        elif self.pan0 is not None:
             x0, (a, b) = self.pan0
             dx = (ev.x - x0) * (b - a) / self.ax.bbox.width
             self.set_x(a - dx, b - dx)
             self.canvas.draw_idle()
+        elif ev.inaxes is self.ax:                   # hover: show which boxes grab
+            self.canvas.get_tk_widget().config(
+                cursor="sb_h_double_arrow" if self.grab(ev) else "")
 
     def release(self, ev):
-        self.pan0 = None
+        self.pan0 = self.drag = None
+        self.canvas.get_tk_widget().config(cursor="")
 
     def set_x(self, lo, hi):
         end = 5 * self.T
@@ -1827,14 +1980,17 @@ dialog appears only if that fails or a different projector is attached.
 
 Sweep > Export writes the sweeps as CSV and the window (with the runway) as JSON."""),
     ("7. RGB filters tab", """\
-Repeats the WKKKK sweep through a colour filter on the lens, one sweep per filter, all on
+Repeats the WWWWW sweep through a colour filter on the lens, one sweep per filter, all on
 one plot (red, green and blue traces). Mount a filter, then press its Scan button; change
 the filter and scan the next. Each filter's sweep is kept in the document on its own, so
 re-scanning one leaves the others.
 
-"Normalize" subtracts each sweep's dark level and scales its peak to 1, to compare the
-shapes when the filters pass different amounts of light. The profile tab's runway and
-edges are drawn for reference. Only one sweep runs at a time in the whole app."""),
+"Show" picks one view at a time. Raw: the sweeps as measured. Normalized: each sweep's
+dark level subtracted and its peak scaled to 1, to compare the shapes. Fit to white:
+each filter scaled by the weight that makes the three add up to the WWWWW sweep (grey
+band), with the weights and the residual on the line below. The profile tab's runway and
+edges are drawn here too, and can be dragged on either tab. Only one sweep runs at a time
+in the whole app."""),
     ("8. Runway maps tab", """\
 Measures the runway (cyan, Profile tab) as grey-pair maps: the impulse generator
 alternates two full-field levels A B A B and each map pixel is the ROI mean for one
@@ -1964,6 +2120,12 @@ class App(tk.Tk):
         self.conn = ttk.Label(self, text="", font=("Consolas", 9), anchor="w")
         self.show_doc()
 
+    def tab_shown(self):
+        """Edges moved on the Profile tab only redraw that tab; catch the others up."""
+        w = self.nametowidget(self.tabs.select())
+        if w is not self.view:
+            w.refresh()
+
     def instructions(self):
         """One instructions window; asking again brings it to the front."""
         if self.help_dlg is not None and self.help_dlg.winfo_exists():
@@ -2021,6 +2183,7 @@ class App(tk.Tk):
             self.tabs.add(self.fview, text="RGB filters")
             self.tabs.add(self.rview, text="Runway maps")
             self.tabs.pack(fill="both", expand=True)
+            self.tabs.bind("<<NotebookTabChanged>>", lambda e: self.tab_shown())
         self.update_title()
 
     # ---- connection ------------------------------------------------------------------
