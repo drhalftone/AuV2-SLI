@@ -22,6 +22,7 @@ For each delay the reading is fitted as
 import argparse
 import csv
 import itertools
+import json
 import sys
 import time
 
@@ -130,6 +131,107 @@ def wr_now(ser, addr, val):
     ser.write(bytes([SYNC, OP_W, addr, val, ck(OP_W + addr + val)]))
 
 
+CSV_HEAD = ["delay_us", "expo_us", "prev_level", "this_level", "mean", "sd", "n",
+            "nhi_max", "T_us"]
+
+
+def pairs_on(ser):
+    """Impulse generator: the 2-frame A B A B cycle, all LEDs, per-frame stream."""
+    lc.wr(ser, 0x13, 0x00)                           # no SLI patterns underneath
+    lc.wr(ser, R_IMPCYC, 0x02)                       # 2-frame cycle, bpos 0
+    lc.wr(ser, R_IMPRGB, 0x07)
+    lc.wr(ser, R_IMPRGB2, 0x07)
+    lc.wr(ser, R_ROICTL, 0xC0)                       # impulse + per-frame stream
+
+
+def pairs_off(ser):
+    """Back to the defaults: no stream, the 5-frame cycle, white, delay 0."""
+    ser.timeout = 0.05
+    time.sleep(0.05)
+    lc.wr(ser, R_ROICTL, 0x00)
+    lc.wr(ser, R_IMPCYC, 0x05)                       # back to the 5-frame default
+    lc.wr(ser, R_IMPLVL, 0xFF)
+    lc.wr(ser, R_IMPLVL2, 0xFF)
+    lc.set_delay(ser, 0)
+
+
+def measure_window(ser, T, d, units, pairs, per=10, skip=2, one=None):
+    """One window (delay d us, `units` x 0.375 us) through the (A, B) pairs, pairs_on
+    already called. Yields (A, B, cells, seen) per pair, cells = [(prev, this, mean,
+    sd, n, nhi_max)]: both orders unless `one` (one direction only); seen is False when
+    the level change never showed in the tag."""
+    lc.wr(ser, R_EXPO_LO, units & 0xFF)
+    lc.wr(ser, R_EXPO_HI, (units >> 8) & 0xFF)
+    want = int(round(d / lc.TICK_US))
+    lc.set_delay(ser, want)
+    if not lc.wait_delay(ser, want)[1]:
+        raise RuntimeError("delay %.1f did not land" % d)
+    ser.timeout = 0
+    ser.reset_input_buffer()
+    st = Stream(ser)
+    old, curA = set(), None
+    for A, B in pairs:
+        if A != curA:
+            wr_now(ser, R_IMPLVL2, A)
+            curA = A
+        wr_now(ser, R_IMPLVL, B)
+        newset = {A, B}
+        fresh = newset - old                      # a level only the new pair has
+        # WAIT FOR THE NEW LEVELS TO BE ON AIR. The tag names the level transmitted in
+        # each frame; once the new pair shows, drop `skip` more frames so the image on
+        # screen (one frame behind) is new as well.
+        prev, seen, t_w = None, False, time.time()
+        while time.time() - t_w < 1.0:
+            r = st.get()
+            if r is None:
+                break
+            lvl = r[2]
+            if fresh:
+                seen = lvl in fresh
+            else:                                 # e.g. (255,255) after (254,255)
+                seen = prev is not None and prev == lvl == A
+            prev = lvl
+            if seen:
+                break
+        for _ in range(skip):
+            st.get()
+        by = {}
+        need = [(A, B), (B, A)] if A != B and one is None else [(A, B)]
+        prev, t_c = None, time.time()
+        while time.time() - t_c < max(2.0, 3e-6 * T * per) and \
+                min(len(by.get(c, [])) for c in need) < per:
+            r = st.get()
+            if r is None:
+                break
+            if r[1] == 256 and prev is not None and (prev, r[2]) in need:
+                by.setdefault((prev, r[2]), []).append((r[0], r[3]))
+            prev = r[2]
+        cells = []
+        for (pl, tl), v in by.items():
+            ms = [x[0] for x in v]
+            cells.append((pl, tl, float(np.mean(ms)), float(np.std(ms)), len(ms),
+                          max(x[1] for x in v)))
+        old = newset
+        yield A, B, cells, seen
+
+
+def runway_windows(profile):
+    """A .sliprof's runway as gray_pair windows, split where the previous frame's
+    exposure (trail - T) ends: [(start, end, name)] in us into the runway's frame,
+    and the profile's frame period."""
+    ed, Tp = profile.get("edges") or {}, profile["T_us"]
+    if "runway_us" not in ed:
+        raise ValueError("no runway -- place it in the profiling app")
+    rw, lead, cut = ed["runway_us"], ed["lead_us"], ed["trail_us"] - Tp
+    k = int(rw // Tp)
+    parts = []
+    if cut > rw:
+        parts.append((rw, min(cut, lead), "runway inside the previous exposure"))
+    if lead > max(rw, cut):
+        parts.append((max(rw, cut), lead, "runway between exposures"))
+    return [(round(s_ - k * Tp, 2), round(e_ - k * Tp, 2), n) for s_, e_, n in parts], Tp
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -141,6 +243,10 @@ def main():
                     help="integrate whole windows instead, e.g. 6300:6700 6700:7100 (us "
                          "into the frame): delay = START, exposure = END - START. "
                          "Replaces --delays/--expo")
+    ap.add_argument("--runway", metavar="SLIPROF",
+                    help="measure a profile's runway as two windows: the part inside the "
+                         "previous frame's exposure and the part between exposures. "
+                         "Replaces --windows/--delays/--expo")
     ap.add_argument("--levels", type=int, nargs="+", default=list(range(256)),
                     help="grey levels to pair (default: every 8-bit level)")
     ap.add_argument("--prev", type=int, default=None, metavar="LEVEL",
@@ -162,7 +268,15 @@ def main():
 
     import serial.tools.list_ports as lp
     port = a.port or ([p.device for p in lp.comports()] + ["COM6"])[0]
+    names = {}                                       # window delay -> title
+    if a.runway:
+        win_, Tp = runway_windows(json.load(open(a.runway)))
+        a.windows = ["%.2f:%.2f" % (s_, e_) for s_, e_, _ in win_]
+        names = {s_: n for s_, _, n in win_}
+        print("  ".join("%s = %s" % (n, w_) for (_, _, n), w_ in zip(win_, a.windows)))
     ser, T, mx = lc.preflight(port, a.display or lc.OFFLINE)
+    if a.runway and abs(T - Tp) > 1.0:
+        sys.exit("the board runs a %.2f us frame, the profile was measured at %.2f us" % (T, Tp))
     # per-delay exposure units. A window rounds DOWN so it never runs into the next.
     if a.windows:
         win = [tuple(float(v) for v in w_.split(":")) for w_ in a.windows]
@@ -239,8 +353,9 @@ def main():
             ax.set_yticklabels(sorted(rows)[::max(1, len(rows) // 8)], fontsize=8)
         ax.set_xlabel("level sent in THIS frame (upcoming image)")
         ax.set_ylabel("level sent in the PREVIOUS frame (image on screen)")
-        ax.set_title("%.0f .. %.0f us into the frame (exposure %.3f us)"
-                     % (d, d + expo[d], expo[d]), fontsize=10, pad=10)
+        ax.set_title("%s%.0f .. %.0f us into the frame (exposure %.3f us)"
+                     % (names[d] + "\n" if d in names else "", d, d + expo[d], expo[d]),
+                     fontsize=10, pad=10)
         fig.colorbar(im, ax=ax, label="ROI mean (ADU, log scale)")
         ims[d] = im
     hdr = fig.text(0.08, 0.975, "", va="top", family="monospace", fontsize=9, linespacing=1.6)
@@ -263,20 +378,12 @@ def main():
         fig.canvas.draw_idle()
         fig.canvas.flush_events()
 
-    # ---- impulse generator: 2-frame cycle, all LEDs -----------------------------------
-    lc.wr(ser, 0x13, 0x00)                           # no SLI patterns underneath
-    lc.wr(ser, R_IMPCYC, 0x02)                       # 2-frame cycle, bpos 0
-    lc.wr(ser, R_IMPRGB, 0x07)
-    lc.wr(ser, R_IMPRGB2, 0x07)
-    lc.wr(ser, R_ROICTL, 0xC0)                       # impulse + per-frame stream
-
+    pairs_on(ser)
     new = not (a.resume and done)
     fh = open(a.out, "w" if new else "a", newline="")
     w = csv.writer(fh)
     if new:
-        w.writerow(["delay_us", "expo_us", "prev_level", "this_level", "mean", "sd", "n",
-                    "nhi_max", "T_us"])
-    st = Stream(ser)
+        w.writerow(CSV_HEAD)
     t0, last_draw, k_done, nfail = time.time(), 0.0, 0, 0
     closed = False
     try:
@@ -284,65 +391,16 @@ def main():
             if not todo[d]:
                 continue
             e = expo[d]
-            lc.wr(ser, R_EXPO_LO, units[d] & 0xFF)
-            lc.wr(ser, R_EXPO_HI, (units[d] >> 8) & 0xFF)
-            want = int(round(d / lc.TICK_US))
-            lc.set_delay(ser, want)
-            if not lc.wait_delay(ser, want)[1]:
-                raise SystemExit("delay %.1f did not land" % d)
-            ser.timeout = 0
-            ser.reset_input_buffer()
-            st.buf, st.q = b"", []
-            old, curA = set(), None
-            for A, B in todo[d]:
+            for A, B, cells, seen in measure_window(ser, T, d, units[d], todo[d], a.per,
+                                                    a.skip, one):
                 if not plt.fignum_exists(fig.number):
                     closed = True
                     raise KeyboardInterrupt
-                if A != curA:
-                    wr_now(ser, R_IMPLVL2, A)
-                    curA = A
-                wr_now(ser, R_IMPLVL, B)
-                newset = {A, B}
-                fresh = newset - old              # a level only the new pair has
-                # WAIT FOR THE NEW LEVELS TO BE ON AIR. The tag names the level
-                # transmitted in each frame; once the new pair shows, drop --skip more
-                # frames so the image on screen (one frame behind) is new as well.
-                prev, seen, t_w = None, False, time.time()
-                while time.time() - t_w < 1.0:
-                    r = st.get()
-                    if r is None:
-                        break
-                    lvl = r[2]
-                    if fresh:
-                        seen = lvl in fresh
-                    else:                         # e.g. (255,255) after (254,255)
-                        seen = prev is not None and prev == lvl == A
-                    prev = lvl
-                    if seen:
-                        break
-                if not seen:
-                    nfail += 1
-                for _ in range(a.skip):
-                    st.get()
-                by = {}
-                need = [(A, B), (B, A)] if A != B and one is None else [(A, B)]
-                prev, t_c = None, time.time()
-                while time.time() - t_c < max(2.0, 3e-6 * T * a.per) and \
-                        min(len(by.get(c, [])) for c in need) < a.per:
-                    r = st.get()
-                    if r is None:
-                        break
-                    if r[1] == 256 and prev is not None and (prev, r[2]) in need:
-                        by.setdefault((prev, r[2]), []).append((r[0], r[3]))
-                    prev = r[2]
-                for (pl, tl), v in by.items():
-                    ms = [x[0] for x in v]
-                    m_ = float(np.mean(ms))
-                    w.writerow([d, round(e, 3), pl, tl, round(m_, 3),
-                                round(float(np.std(ms)), 3), len(ms), max(x[1] for x in v),
+                nfail += not seen
+                for pl, tl, m_, sd, n, nhi in cells:
+                    w.writerow([d, round(e, 3), pl, tl, round(m_, 3), round(sd, 3), n, nhi,
                                 round(T, 2)])
                     grids[d][idx[pl], idx[tl]] = m_
-                old = newset
                 k_done += 1
                 if time.time() - last_draw > 3.0:
                     last_draw = time.time()
@@ -357,13 +415,7 @@ def main():
         print("stopped -- rerun with --resume --out %s to continue" % a.out)
     finally:
         fh.close()
-        ser.timeout = 0.05
-        time.sleep(0.05)
-        lc.wr(ser, R_ROICTL, 0x00)
-        lc.wr(ser, R_IMPCYC, 0x05)                   # back to the 5-frame default
-        lc.wr(ser, R_IMPLVL, 0xFF)
-        lc.wr(ser, R_IMPLVL2, 0xFF)
-        lc.set_delay(ser, 0)
+        pairs_off(ser)
         ser.close()
 
     print("wrote %s   %d pairs this run, level change not seen %d times"

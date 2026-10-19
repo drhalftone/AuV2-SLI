@@ -12,7 +12,8 @@ FILE MENU
               board's mode, opens the port, turns genlock on over the Ft+, checks the
               frame period, and opens an empty document connected to the board. Cancel
               leaves no document.
-  Open...     a saved .sliprof. It is NOT connected: the first Run asks for the setup.
+  Open...     a saved .sliprof. It is NOT connected: the first Run reconnects with its
+              saved port, projector and mode, or shows the setup dialog if that fails.
   Save / Save As... / Close / Exit -- unsaved changes are asked about first.
 
 THE VIEW. One plot of the 5-frame (41.7 ms) timeline: WWWWW in blue -- always white,
@@ -69,6 +70,7 @@ from matplotlib.transforms import blended_transform_factory        # noqa: E402
 import lag_core as lc                                              # noqa: E402
 from align_roi import displays, set_mode                           # noqa: E402
 from frame_sweep import rd, TICK_US                                # noqa: E402
+import gray_pair as gp                                             # noqa: E402
 
 MODE = lc.MODE
 PAD = dict(padx=8, pady=4)
@@ -102,6 +104,7 @@ class Document:
         self.edges = None                            # {"lead_us", "trail_us", "runway_us"}
         self.iris = None                             # last Adjust iris: {"delay_us", ...}
         self.projector = None                        # {"name", "idx", "w", "h", "hz", "khz"}
+        self.runway_maps = None                      # {"settings", "rows", "when", "complete"}
         self.created = time.strftime("%Y-%m-%d %H:%M:%S")
         self.ser = None                              # open serial port while connected
 
@@ -122,7 +125,7 @@ class Document:
                "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
                "port": self.port, "display": self.display, "T_us": self.T,
                "max_expo_units": self.mx, "edges": self.edges, "iris": self.iris,
-               "projector": self.projector,
+               "projector": self.projector, "runway_maps": self.runway_maps,
                "csv_head": lc.CSV_HEAD, "sweeps": self.sweeps}
         tmp = path + ".tmp"
         with open(tmp, "w") as fh:
@@ -144,6 +147,7 @@ class Document:
         d.edges = j.get("edges")
         d.iris = j.get("iris")
         d.projector = j.get("projector")             # None in profiles saved before 2026-10-16
+        d.runway_maps = j.get("runway_maps")
         d.sweeps = j.get("sweeps", {})
         return d
 
@@ -346,12 +350,7 @@ class SetupDialog(tk.Toplevel):
         self.ok_btn.state(["disabled"])
         self.update_idletasks()
         try:
-            if want["idx"] != self.cur_idx:
-                with serial.Serial(port, 115200, timeout=0.05) as ser:
-                    time.sleep(0.3)
-                    lc.set_board_mode(ser, want["idx"], log=lambda s: None)
-            ser, T, mx = lc.preflight(port, lc.OFFLINE, log=lambda s: None)
-            SETTINGS["active_us"] = lc.active_us(ser, T)     # vsync -> first active line
+            ser, T, mx = connect_board(port, want["idx"], self.cur_idx)
         except Exception as e:                       # serial, Ft+, board: show, stay
             self.msg["text"] = str(e)
             self.ok_btn.state(["!disabled"])
@@ -366,6 +365,41 @@ class SetupDialog(tk.Toplevel):
         self.result = None
         self.grab_release()
         self.destroy()
+
+
+def connect_board(port, idx, cur_idx):
+    """Put the board in mode `idx` (if it is not there already), then the offline
+    preflight. Returns (ser, T, mx); raises on any failure."""
+    if idx != cur_idx:
+        with serial.Serial(port, 115200, timeout=0.05) as ser:
+            time.sleep(0.3)
+            lc.set_board_mode(ser, idx, log=lambda s: None)
+    ser, T, mx = lc.preflight(port, lc.OFFLINE, log=lambda s: None)
+    SETTINGS["active_us"] = lc.active_us(ser, T)     # vsync -> first active line
+    return ser, T, mx
+
+
+def reconnect(doc):
+    """Connect a reopened document without the dialog: its saved COM port, the same
+    projector (EDID name) and its saved mode. Returns (ser, T, mx, port, display,
+    projector) like SetupDialog, or None when anything differs or fails -- then the
+    dialog is shown."""
+    proj = doc.projector
+    if not doc.port or not proj or proj.get("idx") is None:
+        return None
+    try:
+        with serial.Serial(doc.port, 115200, timeout=0.05) as ser:
+            time.sleep(0.3)
+            modes, cur = lc.board_modes(ser)
+            name = lc.projector_name(ser)
+        if name != proj.get("name") or proj["idx"] not in [m["idx"] for m in modes]:
+            return None
+        ser, T, mx = connect_board(doc.port, proj["idx"], cur)
+    except Exception:
+        return None
+    m = next(m for m in modes if m["idx"] == proj["idx"])
+    disp = "%s, %s, offline" % (name or "projector", lc.mode_name(m))
+    return ser, T, mx, doc.port, disp, dict(proj)
 
 
 # ======================================================================================
@@ -716,8 +750,9 @@ class ProfileView(SweepHost, ttk.Frame):
             b.state(["disabled"] if self.app.busy() else ["!disabled"])
         self.stop_btn.state(["!disabled"] if r and not r.stop_ev.is_set() else ["disabled"])
         self.best_btn.state(["!disabled"] if self.sig is not None else ["disabled"])
-        if self.app.fview is not None:               # the iris also holds the other tab
-            self.app.fview.buttons()
+        for v in (self.app.fview, self.app.rview):   # the iris also holds the other tabs
+            if v is not None:
+                v.buttons()
 
     # ---- edges -----------------------------------------------------------------------
     def update_sig(self):
@@ -1268,6 +1303,291 @@ class FilterView(SweepHost, ttk.Frame):
         self.canvas.draw_idle()
 
 
+
+RUNWAY_LEVELS = [("every 8th level (33)", list(range(0, 256, 8)) + [255]),
+                 ("every 4th level (65)", list(range(0, 256, 4)) + [255]),
+                 ("every 2nd level (129)", list(range(0, 256, 2)) + [255]),
+                 ("all 256 levels", list(range(256)))]
+
+
+# ======================================================================================
+# The runway maps tab: gray_pair over the runway, one map per part
+# ======================================================================================
+class RunwayView(ttk.Frame):
+    """The runway (profile tab, cyan) measured as grey-pair maps, one per part: the part
+    inside the previous frame's exposure and the part between exposures (gray_pair.py
+    --runway does the same from the command line).
+
+    The impulse generator alternates two full-field levels A B A B. A reading in the
+    runway's frame k sees that frame's level (x) and the level of frames k-1 and k+1,
+    which are the same (y): the frame before, and the exposure frame after. Each map
+    pixel is the ROI mean for one (y, x) pair; log colour, each map scaled on its own.
+    """
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.worker = None
+        self.stop_ev = threading.Event()
+        self.q = queue.Queue()
+        self.t0, self.k_done, self.n_todo, self.nfail = 0.0, 0, 0, 0
+        self.log_csv = None
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **PAD)
+        self.run_btn = ttk.Button(bar, text="Run runway maps", command=self.run)
+        self.run_btn.pack(side="left", padx=(0, 4))
+        self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop)
+        self.stop_btn.pack(side="left", padx=(0, 16))
+        self.lv = tk.StringVar(value=RUNWAY_LEVELS[0][0])
+        self.lv_box = ttk.Combobox(bar, textvariable=self.lv, state="readonly", width=24,
+                                   values=[n for n, _ in RUNWAY_LEVELS])
+        self.lv_box.pack(side="left", padx=(0, 12))
+        self.lv_box.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Label(bar, text="samples per cell").pack(side="left")
+        self.per_v = tk.IntVar(value=10)
+        self.per_box = ttk.Spinbox(bar, from_=2, to=100, textvariable=self.per_v, width=5,
+                                   command=self.refresh)
+        self.per_box.pack(side="left", padx=(4, 12))
+        self.status = ttk.Label(self, text="", font=("Consolas", 9))
+        self.status.pack(fill="x", padx=8)
+        self.info = ttk.Label(self, text="", font=("Consolas", 9))
+        self.info.pack(fill="x", padx=8)
+
+        self.fig = Figure(figsize=(13, 6))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.layout = None
+        self.refresh()
+
+    # ---- what to measure / what was measured -----------------------------------------
+    def windows(self):
+        """The current runway's parts [(start, end, name)] (us into its frame), or []."""
+        d = self.app.doc
+        if not d.T or not d.edges or "runway_us" not in d.edges:
+            return []
+        try:
+            return gp.runway_windows({"edges": d.edges, "T_us": d.T})[0]
+        except ValueError:
+            return []
+
+    def levels(self):
+        return dict(RUNWAY_LEVELS)[self.lv.get()]
+
+    def shown(self):
+        """(windows, levels) of the maps on screen: the document's, else the plan."""
+        rm = self.app.doc.runway_maps
+        if rm:
+            return [tuple(w) for w in rm["settings"]["windows"]], rm["settings"]["levels"]
+        return self.windows(), self.levels()
+
+    def estimate(self, n_win, L):
+        pairs = len(L) * (len(L) + 1) // 2
+        try:
+            per = max(2, int(self.per_v.get()))
+        except (tk.TclError, ValueError):
+            per = 10
+        return n_win * pairs * (2 * 2 * per + 2 + 3) * (self.app.doc.T or 8333.3) * 1e-6
+
+    # ---- drawing ---------------------------------------------------------------------
+    def build(self, win, L):
+        from matplotlib.colors import LogNorm
+        self.fig.clear()
+        self.L, self.idx = L, {lv: i for i, lv in enumerate(L)}
+        self.grids = [np.full((len(L), len(L)), np.nan) for _ in win]
+        self.ims = []
+        n = max(1, len(win))
+        self.fig.subplots_adjust(left=0.07, right=0.97, top=0.86, bottom=0.11, wspace=0.3)
+        step = max(1, len(L) // 8)
+        for i, (s_, e_, name) in enumerate(win):
+            ax = self.fig.add_subplot(1, n, i + 1)
+            im = ax.imshow(self.grids[i], origin="lower", cmap="magma", aspect="auto",
+                           norm=LogNorm(vmin=1, vmax=1000), interpolation="nearest")
+            ax.set_xticks(range(0, len(L), step))
+            ax.set_xticklabels(L[::step], fontsize=8)
+            ax.set_yticks(range(0, len(L), step))
+            ax.set_yticklabels(L[::step], fontsize=8)
+            ax.set_xlabel("level of the runway's frame")
+            ax.set_ylabel("level of the frames before and after (A B A B: same level)")
+            ax.set_title("%s\n%.2f .. %.2f us into the frame (%.2f us)"
+                         % (name, s_, e_, e_ - s_), fontsize=10, pad=8)
+            self.fig.colorbar(im, ax=ax, label="ROI mean (ADU, log scale)")
+            self.ims.append(im)
+        if not win:
+            self.fig.text(0.5, 0.5, "No runway yet: set the edges and the runway in the "
+                          "Profile tab.", ha="center", va="center", color="#666")
+        self.layout = (tuple(win), tuple(L))
+
+    def refresh(self):
+        win, L = self.shown()
+        if self.layout != (tuple(win), tuple(L)):
+            self.build(win, L)
+            rm = self.app.doc.runway_maps
+            self.add_rows(rm["rows"] if rm else [])
+        self.draw()
+        self.buttons()
+        if not self.running:
+            rm = self.app.doc.runway_maps
+            plan = self.windows()
+            self.status["text"] = (
+                "%s%d cells, measured %s, %s" % (
+                    "" if rm.get("complete", True) else "INCOMPLETE ", len(rm["rows"]),
+                    rm["when"], self.settings_text(rm["settings"]))
+                if rm else "no runway maps yet -- Run measures the runway's two parts")
+            self.info["text"] = (
+                "runway now: %s   %s, ~%.0f min" % (
+                    "   ".join("%s %.2f..%.2f us" % (n, s_, e_) for s_, e_, n in plan),
+                    self.lv.get(), self.estimate(len(plan), self.levels()) / 60)
+                if plan else "runway: none -- set it in the Profile tab")
+
+    @staticmethod
+    def settings_text(st):
+        return "%d levels, %d per cell" % (len(st["levels"]), st["per"])
+
+    def add_rows(self, rows):
+        delays = [w[0] for w in self.layout[0]]
+        for r in rows:
+            d, pl, tl, m_ = r[0], int(r[2]), int(r[3]), float(r[4])
+            if d in delays and pl in self.idx and tl in self.idx:
+                self.grids[delays.index(d)][self.idx[pl], self.idx[tl]] = m_
+
+    def draw(self):
+        for g, im in zip(self.grids, self.ims):
+            im.set_data(g)
+            v = g[np.isfinite(g) & (g > 0)]
+            if v.size:
+                im.set_clim(max(1.0, float(v.min())), max(float(v.max()), float(v.min()) + 1))
+        self.canvas.draw_idle()
+
+    # ---- running ---------------------------------------------------------------------
+    @property
+    def running(self):
+        return self.worker is not None and self.worker.is_alive()
+
+    def buttons(self):
+        busy = self.app.busy()
+        self.run_btn.state(["disabled"] if busy or not self.windows() else ["!disabled"])
+        for w in (self.lv_box, self.per_box):
+            w.state(["disabled"] if self.running else ["!disabled"])
+        self.lv_box.state(["readonly"])
+        self.stop_btn.state(["!disabled"] if self.running and not self.stop_ev.is_set()
+                            else ["disabled"])
+
+    def run(self):
+        doc, win = self.app.doc, self.windows()
+        if self.app.busy() or not win:
+            return
+        if doc.runway_maps and not messagebox.askokcancel(
+                "Replace runway maps", "Measure new runway maps and replace the ones in "
+                "this document?", parent=self):
+            return
+        if not self.app.ensure_connected():
+            return
+        try:
+            per = max(2, int(self.per_v.get()))
+        except (tk.TclError, ValueError):
+            per = 10
+        L = self.levels()
+        units = {s_: max(1, int((e_ - s_) / lc.EXPO_UNIT_US)) for s_, e_, _ in win}
+        if max(units.values()) > doc.mx:
+            messagebox.showerror("Cannot start", "A runway part is longer than the %.1f us "
+                                 "exposure limit." % (doc.mx * lc.EXPO_UNIT_US), parent=self)
+            return
+        pairs = [(A, B) for i, A in enumerate(L) for B in L[i:]]
+        doc.runway_maps = {"settings": {"windows": [list(w) for w in win], "levels": L,
+                                        "per": per, "skip": 2, "edges": dict(doc.edges)},
+                           "rows": [], "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+                           "complete": False}
+        self.log_csv = os.path.join(tempfile.gettempdir(), "auv2sli_runway_%s.csv"
+                                    % time.strftime("%Y-%m-%d_%H%M%S"))
+        self.stop_ev.clear()
+        self.t0, self.k_done, self.nfail = time.time(), 0, 0
+        self.n_todo = len(pairs) * len(win)
+        self.layout = None                           # new maps: start from empty grids
+        self.worker = threading.Thread(target=self.work, daemon=True,
+                                       args=(doc.ser, doc.T, win, units, pairs, per))
+        self.worker.start()
+        self.app.changed()
+        self.after(300, self.poll)
+
+    def work(self, ser, T, win, units, pairs, per):
+        try:
+            with open(self.log_csv, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(gp.CSV_HEAD)
+                gp.pairs_on(ser)
+                for s_, e_, _ in win:
+                    e = units[s_] * lc.EXPO_UNIT_US
+                    for A, B, cells, seen in gp.measure_window(ser, T, s_, units[s_], pairs,
+                                                               per, 2, None):
+                        rows = [[s_, round(e, 3), pl, tl, round(m_, 3), round(sd, 3), n,
+                                 nhi, round(T, 2)] for pl, tl, m_, sd, n, nhi in cells]
+                        w.writerows(rows)
+                        self.q.put(("rows", (s_, A, B, seen, rows)))
+                        if self.stop_ev.is_set():
+                            break
+                    if self.stop_ev.is_set():
+                        break
+            self.q.put(("end", None))
+        except Exception as ex:
+            self.q.put(("error", ex))
+        finally:
+            try:
+                gp.pairs_off(ser)
+            except Exception:
+                pass
+
+    def poll(self):
+        rm = self.app.doc.runway_maps
+        new, last = [], None
+        while True:
+            try:
+                kind, v = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "rows":
+                d, A, B, seen, rows = v
+                new += rows
+                self.k_done += 1
+                self.nfail += not seen
+                last = (d, A, B)
+            else:
+                self.worker.join(timeout=5)
+                rm["rows"] += new
+                self.add_rows(new)
+                rm["complete"] = kind == "end" and not self.stop_ev.is_set()
+                self.app.changed()
+                if kind == "error":
+                    self.status["text"] = "runway maps ERROR: %s   (%d cells kept; log %s)" % (
+                        v, len(rm["rows"]), self.log_csv)
+                return
+        if new:
+            rm["rows"] += new
+            self.add_rows(new)
+            self.draw()
+            self.app.doc.dirty = True
+            self.app.update_title()
+            el = time.time() - self.t0
+            self.status["text"] = (
+                "runway maps running: window %.2f us   pair (%d,%d)   %d/%d   %.1f min, "
+                "~%.1f min left   level change not seen %d   log %s"
+                % (last[0], last[1], last[2], self.k_done, self.n_todo, el / 60,
+                   el / self.k_done * (self.n_todo - self.k_done) / 60, self.nfail,
+                   self.log_csv))
+        self.after(300, self.poll)
+
+    def stop(self):
+        if self.running:
+            self.stop_ev.set()
+            self.buttons()
+            self.status["text"] = "runway maps: stopping after this pair..."
+
+    def shutdown(self):
+        if self.running:
+            self.stop_ev.set()
+            self.worker.join(timeout=15)
+
+
 # ======================================================================================
 # Adjust iris: live reading at the WWWWW peak
 # ======================================================================================
@@ -1501,8 +1821,9 @@ before the W). Until placed it starts where the WKKKK light ahead of green drops
 2 % of its peak. Use it to choose where to sample the projector for the 2-D maps."""),
     ("6. Save", """\
 File > Save writes a .sliprof: the sweeps, the edges, the runway, the iris setting and
-the projector (name and mode). Opening it later and pressing Run asks to reconnect and
-restores that projector mode; if a different projector is attached you are warned.
+the projector (name and mode). Opening it later and pressing Run reconnects on its own:
+same COM port, same projector, and the board put back in the saved mode. The Connect
+dialog appears only if that fails or a different projector is attached.
 
 Sweep > Export writes the sweeps as CSV and the window (with the runway) as JSON."""),
     ("7. RGB filters tab", """\
@@ -1514,6 +1835,17 @@ re-scanning one leaves the others.
 "Normalize" subtracts each sweep's dark level and scales its peak to 1, to compare the
 shapes when the filters pass different amounts of light. The profile tab's runway and
 edges are drawn for reference. Only one sweep runs at a time in the whole app."""),
+    ("8. Runway maps tab", """\
+Measures the runway (cyan, Profile tab) as grey-pair maps: the impulse generator
+alternates two full-field levels A B A B and each map pixel is the ROI mean for one
+pair. The runway is split where the previous frame's exposure ends, giving two maps: the
+part inside the previous exposure and the part between exposures.
+
+x is the level of the runway's frame; y is the level of the frames before and after it,
+which A B A B makes the same: the frame before and the exposure frame after.
+
+Pick how many levels (every 8th takes minutes, all 256 hours) and press Run. Stop keeps
+what has been measured. The maps are saved in the document."""),
     ("The plot", None),
     ("Mouse", """\
 Wheel: zoom the time axis around the cursor.
@@ -1587,7 +1919,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.doc = None
-        self.view = self.fview = self.tabs = None
+        self.view = self.fview = self.rview = self.tabs = None
         self.geometry("1300x820+40+40")
         self.protocol("WM_DELETE_WINDOW", self.exit)
 
@@ -1643,7 +1975,7 @@ class App(tk.Tk):
     # ---- state -----------------------------------------------------------------------
     def busy(self):
         """A sweep (either tab) or the iris dialog has the camera."""
-        return any(v is not None and v.running for v in (self.view, self.fview))
+        return any(v is not None and v.running for v in (self.view, self.fview, self.rview))
 
     def changed(self, redraw=True):
         """Something in the document changed: title, and the view if asked."""
@@ -1652,6 +1984,7 @@ class App(tk.Tk):
         if redraw and self.view is not None:
             self.view.refresh()
             self.fview.refresh()
+            self.rview.refresh()
         self.update_title()
 
     def update_title(self):
@@ -1673,7 +2006,7 @@ class App(tk.Tk):
         """Swap between the empty window and the document's view."""
         if self.tabs is not None:
             self.tabs.destroy()
-            self.tabs = self.view = self.fview = None
+            self.tabs = self.view = self.fview = self.rview = None
         self.empty.pack_forget()
         self.conn.pack_forget()
         if self.doc is None:
@@ -1684,7 +2017,9 @@ class App(tk.Tk):
             self.view = ProfileView(self.tabs, self)
             self.fview = FilterView(self.tabs, self)
             self.tabs.add(self.view, text="Profile")
+            self.rview = RunwayView(self.tabs, self)
             self.tabs.add(self.fview, text="RGB filters")
+            self.tabs.add(self.rview, text="Runway maps")
             self.tabs.pack(fill="both", expand=True)
         self.update_title()
 
@@ -1693,11 +2028,22 @@ class App(tk.Tk):
         d = self.doc
         if d.ser is not None:
             return True
-        dlg = SetupDialog(self, d.port, d.display, d.projector)
-        self.wait_window(dlg)
-        if dlg.result is None:
-            return False
-        ser, T, mx, port, disp, proj = dlg.result
+        # A reopened document reconnects as it was saved; the dialog only if that fails.
+        self.conn["text"] = "  connecting to %s as saved..." % (d.port or "-")
+        self.config(cursor="watch")
+        self.update_idletasks()
+        try:
+            res = reconnect(d)
+        finally:
+            self.config(cursor="")
+        if res is None:
+            dlg = SetupDialog(self, d.port, d.display, d.projector)
+            self.wait_window(dlg)
+            if dlg.result is None:
+                self.update_title()
+                return False
+            res = dlg.result
+        ser, T, mx, port, disp, proj = res
         old = d.projector
         if old and any(d.sweeps.values()) and (old.get("name"), old["idx"]) != (proj["name"],
                                                                                proj["idx"]):
@@ -1791,6 +2137,7 @@ class App(tk.Tk):
                 return False
             self.view.shutdown()
             self.fview.shutdown()
+            self.rview.shutdown()
         if self.doc.dirty:
             r = messagebox.askyesnocancel("Unsaved changes",
                                           "Save changes to %s?" % self.doc.name, parent=self)
