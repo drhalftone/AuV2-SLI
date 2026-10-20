@@ -129,3 +129,4 @@ _expo_choice.txt
 
 # ROI alignment results depend on where the camera sits on the projector -- keep them local
 align_roi*.csv
+/archive/

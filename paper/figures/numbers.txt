@@ -1,0 +1,13 @@
+T 8325.81 us, dark 18.333 ADU, max expo units 21962 = 8235.75 us
+WKKKK share [lead, trail] 95.63 %  (exposure 6256.83 us)
+runway [rw, lead] 4.00 %; overlap [rw, trail-T] 0.35 %; between [trail-T, lead] 3.65 %
+best window 2000.00 us: 38.61 % from 10285.8 us
+best window 4000.00 us: 68.45 % from 10175.8 us
+best window 6000.00 us: 92.33 % from 8900.8 us
+best window 6256.83 us: 95.77 % from 8750.8 us
+best window 8235.75 us: 99.24 % from 6775.0 us
+fit: R 0.4935 G 1.2192 B 0.6945 offset -3.277; rms 9.61 ADU, R2 0.99880, max |res| 70.6 at 12855.8 us
+shares of fitted light: R 27.4 %, G 44.7 %, B 27.8 %
+runway inside the previous exposure: 5970.99..6731.67 us, 65535 cells, 24.0..1023.0 ADU, median 401.3
+runway between exposures: 6731.67..8800.65 us, 65536 cells, 19.7..67.8 ADU, median 22.4
+figures written to C:\Users\dllau\Developer\AuV2-SLI\paper\figures
