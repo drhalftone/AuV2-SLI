@@ -381,6 +381,7 @@ start.
 | **Stop** | Ends after the current pair. Cells so far are kept; the maps are marked INCOMPLETE. |
 | **Levels** | every 8th (33 levels), every 4th (65), every 2nd (129), or all 256 |
 | **samples per cell** | readings averaged per (prev, this) cell, 2–100 (default 10) |
+| **Auto colour** | puts every map's top colour back on its largest cell (undoes the max sliders) |
 
 **Time.** The info line shows an estimate. For two windows at 120 Hz with 10 samples per
 cell, the formula gives:
@@ -409,6 +410,7 @@ between cells.
 | **Cells** | one per level in the chosen set (33, 65, 129 or 256 a side), stretched to fill the axes. The tick labels show about every eighth level |
 | **Colour** | ROI mean, magma, **log scale**. The colour bar reads *ROI mean (ADU, log scale)* |
 | **Scale** | each map on its own: from its smallest positive cell (at least 1 ADU) to its largest, re-fitted as cells arrive |
+| **max slider** | the vertical slider right of each colour bar sets that map's top colour, in ADU (log travel, value shown below it). Brighter cells clip to the top colour, so dim regions get the whole colour range. Each map keeps its own setting while cells arrive, until **Auto colour** |
 | **Title** | the part's name, its span in µs into the frame, and its length |
 
 How the cells fill:

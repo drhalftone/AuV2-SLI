@@ -72,6 +72,7 @@ from serial.tools import list_ports
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.transforms import blended_transform_factory
+from matplotlib.widgets import Slider
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -2002,6 +2003,8 @@ class RunwayView(ttk.Frame):
     runway's frame k sees that frame's level (x) and the level of frames k-1 and k+1,
     which are the same (y): the frame before, and the exposure frame after. Each map
     pixel is the ROI mean for one (y, x) pair; log colour, each map scaled on its own.
+    The vertical slider beside each colour bar sets that map's top colour (ADU, log), so
+    the dim corners can be stretched; "Auto colour" puts them back on the data's maximum.
     """
 
     def __init__(self, master, app):
@@ -2029,6 +2032,7 @@ class RunwayView(ttk.Frame):
         self.per_box = ttk.Spinbox(bar, from_=2, to=100, textvariable=self.per_v, width=5,
                                    command=self.refresh)
         self.per_box.pack(side="left", padx=(4, 12))
+        ttk.Button(bar, text="Auto colour", command=self.auto_colour).pack(side="left")
         self.status = ttk.Label(self, text="", font=("Consolas", 9))
         self.status.pack(fill="x", padx=8)
         self.info = ttk.Label(self, text="", font=("Consolas", 9))
@@ -2075,9 +2079,10 @@ class RunwayView(ttk.Frame):
         self.fig.clear()
         self.L, self.idx = L, {lv: i for i, lv in enumerate(L)}
         self.grids = [np.full((len(L), len(L)), np.nan) for _ in win]
-        self.ims = []
+        self.ims, self.sliders, self.vmax = [], [], [None] * len(win)
+        self.syncing = False
         n = max(1, len(win))
-        self.fig.subplots_adjust(left=0.07, right=0.97, top=0.86, bottom=0.11, wspace=0.3)
+        self.fig.subplots_adjust(left=0.07, right=0.93, top=0.86, bottom=0.11, wspace=0.45)
         step = max(1, len(L) // 8)
         for i, (s_, e_, name) in enumerate(win):
             ax = self.fig.add_subplot(1, n, i + 1)
@@ -2091,8 +2096,17 @@ class RunwayView(ttk.Frame):
             ax.set_ylabel("level of the frames before and after (A B A B: same level)")
             ax.set_title("%s\n%.2f .. %.2f us into the frame (%.2f us)"
                          % (name, s_, e_, e_ - s_), fontsize=10, pad=8)
-            self.fig.colorbar(im, ax=ax, label="ROI mean (ADU, log scale)")
+            cb = self.fig.colorbar(im, ax=ax, label="ROI mean (ADU, log scale)")
             self.ims.append(im)
+            # the top-of-colour slider, right of the colour bar's label, in log10(ADU)
+            p = cb.ax.get_position()
+            sax = self.fig.add_axes([p.x1 + 0.05, p.y0, 0.012, p.height])
+            s = Slider(sax, "max", 0.0, 3.0, valinit=3.0, orientation="vertical",
+                       color="#0891b2")
+            s.label.set_fontsize(8)
+            s.valtext.set_fontsize(8)
+            s.on_changed(lambda val, i=i: self.slid(i, val))
+            self.sliders.append(s)
         if not win:
             self.fig.text(0.5, 0.5, "No runway yet: set the edges and the runway in the "
                           "Profile tab.", ha="center", va="center", color="#666")
@@ -2132,12 +2146,41 @@ class RunwayView(ttk.Frame):
                 self.grids[delays.index(d)][self.idx[pl], self.idx[tl]] = m_
 
     def draw(self):
-        for g, im in zip(self.grids, self.ims):
+        for i, (g, im) in enumerate(zip(self.grids, self.ims)):
             im.set_data(g)
             v = g[np.isfinite(g) & (g > 0)]
-            if v.size:
-                im.set_clim(max(1.0, float(v.min())), max(float(v.max()), float(v.min()) + 1))
+            if not v.size:
+                continue
+            lo = max(1.0, float(v.min()))
+            hi = max(float(v.max()), lo + 1)
+            # the slider runs from just above the map's minimum to its maximum
+            s = self.sliders[i]
+            s.valmin, s.valmax = np.log10(lo) + 0.01, np.log10(hi)
+            s.ax.set_ylim(s.valmin, s.valmax)
+            top = hi if self.vmax[i] is None else min(max(self.vmax[i], 10 ** s.valmin), hi)
+            self.syncing = True
+            s.set_val(np.log10(top))
+            self.syncing = False
+            s.valtext.set_text("%.1f" % top)
+            im.set_clim(lo, top)
         self.canvas.draw_idle()
+
+    def slid(self, i, val):
+        """Slider i moved: its map's top colour is now 10**val ADU."""
+        top = 10 ** val
+        self.sliders[i].valtext.set_text("%.1f" % top)
+        if self.syncing:
+            return
+        self.vmax[i] = top
+        lo = self.ims[i].norm.vmin
+        self.ims[i].set_clim(lo, max(top, lo * 1.001))
+        self.canvas.draw_idle()
+
+    def auto_colour(self):
+        """Every map back to the full range of its data."""
+        if getattr(self, "vmax", None):
+            self.vmax = [None] * len(self.vmax)
+            self.draw()
 
     # ---- running ---------------------------------------------------------------------
     @property
