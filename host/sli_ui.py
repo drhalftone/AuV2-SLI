@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """Projector-profiling app, document style.
 
-    "C:\\Program Files\\Python312\\python.exe" host/sli_ui.py [profile.sliprof]
+    python host/sli_ui.py [profile.sliprof]
+
+SELF-CONTAINED: this one file is the whole app -- copy it anywhere. It needs numpy,
+pyserial and matplotlib (Tk comes with Python), and ftd3xx only when the board's genlock
+is off and has to be turned on over the Ft+. The board's offline mode table is embedded
+(MODE_ROWS); keep it in step with sources_1/imports/RTL/mode_table.vh. Full description:
+host/SLI_UI.md.
 
 A DOCUMENT is one profiling session: the connection it was measured on (COM port, video
 output, frame period, exposure limit), the WWWWW and WKKKK sweeps, and the chosen exposure
@@ -47,10 +53,12 @@ fix is corrected on import) and exports the sweeps as CSV and the window as JSON
 sweep runs, every reading is also written to a CSV in the temp folder, so a crash does
 not lose it; the status line names the file.
 """
+import collections
 import csv
 import json
 import os
 import queue
+import re
 import sys
 import tempfile
 import threading
@@ -58,21 +66,539 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+import numpy as np
+import serial
+from serial.tools import list_ports
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.transforms import blended_transform_factory
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-sys.path.insert(0, HERE)
-import numpy as np                                                 # noqa: E402
-import serial                                                      # noqa: E402
-from serial.tools import list_ports                                # noqa: E402
-from matplotlib.figure import Figure                               # noqa: E402
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg    # noqa: E402
-from matplotlib.transforms import blended_transform_factory        # noqa: E402
-import lag_core as lc                                              # noqa: E402
-from align_roi import displays, set_mode                           # noqa: E402
-from frame_sweep import rd, TICK_US                                # noqa: E402
-import gray_pair as gp                                             # noqa: E402
 
-MODE = lc.MODE
+
+# ======================================================================================
+# The board, over the UART (COM port)
+# ======================================================================================
+# SELF-CONTAINED. Everything below was lifted from lag_core.py, frame_sweep.py,
+# gray_pair.py, sli_background.py and ftlink.py -- only what the three tabs call -- so
+# this file runs on its own. Those modules are unchanged and still serve the command-line
+# tools; a fix to the protocol there has to be made here too.
+
+SYNC, OP_W, OP_R = 0xA5, 0x57, 0x52
+R_IMPLVL2, R_IMPRGB2 = 0x07, 0x08                # the odd frame's level and LED mask
+R_IMPCYC, R_IMPLVL = 0x11, 0x12                  # cycle length / position, the others' level
+R_SLICTL = 0x13                                  # SLI pattern engine; 0 = off
+R_MODEFORCE = 0x14                               # pin the offline mode: 0x80 | idx
+R_ROICTL, R_EXPO_LO, R_EXPO_HI = 0x17, 0x1A, 0x1B
+R_DLY0, R_DLY1, R_DLY2, R_IMPRGB = 0x1C, 0x1D, 0x1E, 0x1F
+EXPO_UNIT_US = 0.375                             # opcode 1's exposure unit
+TICK_US = 0.01                                   # genlock delay unit (100 MHz)
+ACTIVE_US = 432.5                                # 800x600@120: vsync -> first active pixel
+RESERVE_TICKS = 9000                             # usb_link.v: 80 us sensor gap + 10 us margin
+
+# One line per camera frame: R=mmm,nnn,rrggbb,cc[,hh,ll]<CR><LF>
+#   mmm ROI mean (10-bit)   nnn pixels in the ROI (must be 0x100)   rrggbb the top-left
+#   pixel transmitted on the frame that was on screen at the trigger   cc trigger ordinal
+#   hh/ll saturated (>= 1020) / clamped-low (<= 3) ROI pixels -- newer bitstreams only.
+# The CRLF anchor stops a half-arrived line from matching on its fixed-width fields.
+LINE = re.compile(b"R=([0-9A-F]{3}),([0-9A-F]{3}),([0-9A-F]{6}),([0-9A-F]{2})"
+                  + b"(?:,([0-9A-F]{2}),([0-9A-F]{2}))?"
+                  + bytes([13, 10]))
+
+
+def ck(s):
+    return (256 - (s & 0xFF)) & 0xFF
+
+
+def wr(ser, addr, val):
+    ser.write(bytes([SYNC, OP_W, addr, val, ck(OP_W + addr + val)]))
+    time.sleep(0.02)
+
+
+def wr_now(ser, addr, val):
+    """A register write without wr's 20 ms sleep (the ACK is ignored)."""
+    ser.write(bytes([SYNC, OP_W, addr, val, ck(OP_W + addr + val)]))
+
+
+def rd(ser, addr, window=0.6):
+    """Register read. The reply is THREE bytes -- addr, value, checksum -- with no sync
+    prefix, sharing the line with ASCII telemetry; scan for a triple whose checksum closes."""
+    ser.reset_input_buffer()
+    ser.write(bytes([SYNC, OP_R, addr, ck(OP_R + addr)]))
+    buf = bytearray()
+    dl = time.time() + window
+    while time.time() < dl:
+        buf += ser.read(ser.in_waiting or 1)
+        for i in range(len(buf) - 2):
+            if buf[i] == addr and ((buf[i] + buf[i + 1] + buf[i + 2]) & 0xFF) == 0:
+                return buf[i + 1]
+    return None
+
+
+def reg(ser, addr):
+    v = rd(ser, addr)
+    return 0 if v is None else v
+
+
+def set_delay(ser, ticks):
+    wr(ser, R_DLY0, ticks & 0xFF)
+    wr(ser, R_DLY1, (ticks >> 8) & 0xFF)
+    wr(ser, R_DLY2, (ticks >> 16) & 0xFF)
+
+
+def get_delay(ser):
+    lo, mid, hi = rd(ser, 0x5A), rd(ser, 0x5B), rd(ser, 0x5C)
+    if None in (lo, mid, hi):
+        return None
+    return lo | (mid << 8) | (hi << 16)
+
+
+def wait_delay(ser, want, timeout=1.5):
+    """Poll 0x5A..0x5C until they show the delay just written. Returns (value, matched).
+    The readback LAGS the write: it is served from a snapshot republished at ~10 Hz, so a
+    single read straight after a write returns the previous delay."""
+    t0 = time.time()
+    got = None
+    while time.time() - t0 < timeout:
+        got = get_delay(ser)
+        if got == want:
+            return got, True
+    return got, False
+
+
+def collect(ser, nframes, timeout=6.0, sat=False):
+    """Up to nframes camera lines as (mean, npx, tlp, tcnt); sat=True appends (nhi, nlo),
+    None from a bitstream too old to send them -- which is not the same as zero."""
+    out, buf, t0 = [], b"", time.time()
+    while len(out) < nframes and time.time() - t0 < timeout:
+        buf += ser.read(4096)
+        ms = list(LINE.finditer(buf))
+        if ms:
+            for m in ms:
+                row = (int(m.group(1), 16), int(m.group(2), 16),
+                       int(m.group(3), 16), int(m.group(4), 16))
+                if sat:
+                    row += ((int(m.group(5), 16) if m.group(5) else None),
+                            (int(m.group(6), 16) if m.group(6) else None))
+                out.append(row)
+            buf = buf[ms[-1].end():]
+        elif len(buf) > 8192:
+            buf = buf[-64:]
+    return out[:nframes]
+
+
+def spin(dt):
+    """Busy-wait dt seconds. NOT time.sleep(): Windows quantises sleep to the timer tick,
+    so a requested 0.5 ms can return 15 ms later -- longer than a 120 Hz frame."""
+    end = time.perf_counter() + dt
+    while time.perf_counter() < end:
+        pass
+
+
+# ---- the board's offline modes --------------------------------------------------------
+# EMBEDDED COPY of sources_1/imports/RTL/mode_table.vh (2026-10-19, idx 13 included). The
+# index is what the FPGA reports in MODE (0x20) and takes in MODEFORCE (0x14), so this
+# table MUST match the bitstream on the board: if mode_table.vh changes, change it here.
+#        idx: (HACT, VACT, Hz, pclk kHz, HFP, HSYNC, HBP, VFP, VSYNC, VBP, Hpol, Vpol)
+MODE_ROWS = {0: (800, 600, 120, 73270, 48, 32, 80, 3, 6, 27, 1, 0),        # CVT-RB
+             1: (640, 480, 120, 52420, 48, 32, 80, 3, 4, 59, 1, 0),        # CVT-RB
+             2: (1024, 768, 75, 78750, 16, 96, 176, 1, 3, 28, 1, 1),       # DMT
+             3: (800, 600, 75, 49500, 16, 80, 160, 1, 3, 21, 1, 1),        # DMT
+             4: (640, 480, 75, 31500, 16, 64, 120, 1, 3, 16, 0, 0),        # DMT
+             5: (1024, 768, 70, 75000, 24, 136, 144, 3, 6, 29, 0, 0),      # DMT
+             6: (800, 600, 72, 50000, 56, 120, 64, 37, 6, 23, 1, 1),       # DMT
+             7: (640, 480, 72, 31500, 24, 40, 128, 9, 3, 28, 0, 0),        # DMT
+             8: (1280, 720, 60, 74250, 110, 40, 220, 5, 5, 20, 1, 1),      # CEA/DMT
+             9: (1280, 800, 60, 71110, 48, 32, 80, 3, 6, 14, 1, 0),        # CVT-RB
+             10: (1024, 768, 60, 65000, 24, 136, 160, 3, 6, 29, 0, 0),     # DMT
+             11: (800, 600, 60, 40000, 40, 128, 88, 1, 4, 23, 1, 1),       # DMT
+             12: (640, 480, 60, 25175, 16, 96, 48, 10, 2, 33, 0, 0),       # DMT, failsafe
+             13: (1280, 1024, 60, 108000, 48, 112, 248, 1, 3, 38, 1, 1)}   # DMT, 108 MHz
+
+
+def mode_table():
+    """{idx: dict(idx, w, h, hz, khz, vtotal, vstart)}. vstart is the lines from the vsync
+    edge to the first active line (VSYNC + VBP)."""
+    out = {}
+    for i, (w, h, hz, khz, hfp, hs, hbp, vfp, vs, vbp, hp, vp) in MODE_ROWS.items():
+        out[i] = dict(idx=i, w=w, h=h, hz=hz, khz=khz, vtotal=h + vfp + vs + vbp,
+                      vstart=vs + vbp)
+    return out
+
+
+def mode_name(m):
+    return "%dx%d @ %d Hz" % (m["w"], m["h"], m["hz"])
+
+
+def board_modes(ser):
+    """(modes the projector's EDID supports, as table rows, index in use). The mask is
+    regs 0x29/0x2A, bit i = table index i; MODE 0x20 low nibble is the index in use."""
+    tbl = mode_table()
+    mask = reg(ser, 0x29) | (reg(ser, 0x2A) << 8)
+    return [tbl[i] for i in sorted(tbl) if mask >> i & 1], reg(ser, 0x20) & 0x0F
+
+
+def set_board_mode(ser, idx):
+    """Pin the offline mode to `idx` over MODEFORCE. It is sticky until released or the
+    FPGA reloads. Waits for the index to land and the frame period to settle."""
+    if reg(ser, 0x20) & 0x0F == idx:
+        return
+    wr(ser, R_MODEFORCE, 0x80 | idx)
+    t0 = time.time()
+    while reg(ser, 0x20) & 0x0F != idx:
+        if time.time() - t0 > 5:
+            raise RuntimeError("the board did not switch to mode %d" % idx)
+        time.sleep(0.2)
+    time.sleep(3)                                    # projector re-sync, period re-measured
+
+
+def read_edid(ser, tgt=0x03, n=256):
+    """The projector's EDID as the board read it off HDMI-OUT (table 0x03). The reply
+    shares the line with ASCII telemetry, so scan for a frame whose checksum closes:
+    tgt, n bytes, checksum."""
+    to = ser.timeout
+    ser.timeout = 0.05
+    try:
+        ser.reset_input_buffer()
+        ser.write(bytes([SYNC, 0x72, tgt, ck(0x72 + tgt)]))
+        need, buf, dl = n + 2, bytearray(), time.time() + 4.0
+        while time.time() < dl:
+            buf += ser.read(ser.in_waiting or 1)
+            for i in range(len(buf) - need + 1):
+                if buf[i] == tgt and sum(buf[i:i + need]) & 0xFF == 0:
+                    return bytes(buf[i + 1:i + 1 + n])
+        return None
+    finally:
+        ser.timeout = to
+
+
+def edid_name(b):
+    """'Name (MFG)' from an EDID: the monitor-name descriptor (tag 0xFC), and the
+    three-letter manufacturer ID from bytes 8-9. None if the block is not valid."""
+    if not b or b[:8] != bytes([0, 255, 255, 255, 255, 255, 255, 0]) or sum(b[:128]) & 0xFF:
+        return None
+    w = b[8] << 8 | b[9]
+    mfg = "".join(chr(64 + (w >> k & 31)) for k in (10, 5, 0))
+    name = None
+    for o in range(54, 126, 18):
+        if b[o:o + 3] == bytes(3) and b[o + 3] == 0xFC:
+            name = b[o + 5:o + 18].split(b"\n")[0].decode("ascii", "replace").strip()
+    return "%s (%s)" % (name, mfg) if name else mfg
+
+
+def projector_name(ser):
+    """The projector's name from its EDID, or None."""
+    return edid_name(read_edid(ser))
+
+
+def active_us(ser, T):
+    """Vsync -> first active pixel for the mode in use, from the measured frame period."""
+    m = mode_table()[reg(ser, 0x20) & 0x0F]
+    return T * m["vstart"] / m["vtotal"]
+
+
+def max_expo_units(T_us):
+    """The FPGA's MAXEXP (regs 0x53/0x54) for frame period T_us, computed the way
+    usb_link.v does it: (period ticks - RESERVE_TICKS) * 27962 >> 20, i.e. / 37.5,
+    rounded down, capped at the 16-bit register. Longer drops 120 fps to 60."""
+    ticks = int(round(T_us / TICK_US))
+    if ticks <= RESERVE_TICKS:
+        return 0
+    return min(0xFFFF, ((ticks - RESERVE_TICKS) * 27962) >> 20)
+
+
+# ---- genlock, over the Ft+ ------------------------------------------------------------
+def genlock_on(ser):
+    """Turn genlock on if it is off (gl_en resets to 0 on the merged build). The UART has
+    no register for it: it is camera opcode 7, which only the Ft+ (FT601, D3XX) can send --
+    one raw 32-bit word down OUT pipe 0x02. ftd3xx is imported here so a board whose
+    genlock is already on never needs it."""
+    if reg(ser, 0x5D) & 1:
+        return
+    try:
+        import ctypes
+        import struct
+        import ftd3xx
+        from ftd3xx.defines import FT_OPEN_BY_INDEX
+    except ImportError:
+        raise RuntimeError("genlock is off, and turning it on needs the Ft+ driver: "
+                           "pip install ftd3xx (and FTDI's D3XX driver)")
+    d = ftd3xx.create(0, FT_OPEN_BY_INDEX)
+    if d is None:
+        raise RuntimeError("genlock is off and no Ft+ (D3XX device) was found to turn it on")
+    try:
+        word = (7 << 28) | (1 << 27)                 # opcode 7: gl_en = 1, delay 0
+        buf = ctypes.create_string_buffer(struct.pack("<I", word))
+        try:
+            d.writePipe(0x02, buf, 4)
+        except Exception:
+            d.writePipeEx(0x02, buf, 4)
+        time.sleep(0.3)
+    finally:
+        try:
+            d.close()
+        except Exception:
+            pass
+
+
+def preflight(port):
+    """Open the port and check the board is ready to measure: generating its own video
+    (no PC on HDMI-IN), genlock on and live, a plausible frame period. Returns (open
+    serial, frame period us, exposure limit in 0.375 us units)."""
+    ser = serial.Serial(port, 115200, timeout=0.05)
+    time.sleep(0.3)
+    try:
+        st, md = reg(ser, 0x02), reg(ser, 0x20)      # STATUS bit 4: 1 = pass-through
+        if st & 0x10:
+            raise RuntimeError("the board is in pass-through: unplug the PC's HDMI from "
+                               "the board to run offline")
+        if not md & 0x80:
+            raise RuntimeError("the board has no valid offline mode (MODE 0x%02X)" % md)
+        genlock_on(ser)
+        T = (reg(ser, 0x4A) | (reg(ser, 0x4B) << 8) | (reg(ser, 0x4C) << 16)) * TICK_US
+        mx = reg(ser, 0x53) | (reg(ser, 0x54) << 8)
+        gl = reg(ser, 0x5D)
+        if not (1000 < T < 60000) or (gl & 3) != 3:
+            raise RuntimeError("frame %.1f us, genlock 0x%02X -- is video running?" % (T, gl))
+    except Exception:
+        ser.close()
+        raise
+    return ser, T, mx
+
+
+# ---- the 5-frame impulse sweep (Profile and RGB filters tabs) -------------------------
+def start_impulse(ser, level, bg, expo, mx):
+    """5-frame cycle: `level` at position 0, `bg` at 1-4, all LEDs. Returns the real exposure."""
+    u = max(1, int(round(expo / EXPO_UNIT_US)))
+    if u > mx:
+        raise RuntimeError("%.2f us is over the exposure limit" % expo)
+    wr(ser, R_IMPCYC, 5)                             # 5-frame cycle, odd frame at position 0
+    wr(ser, R_IMPLVL, bg & 0xFF)
+    wr(ser, R_IMPRGB, 0x07)
+    wr(ser, R_IMPLVL2, level & 0xFF)
+    wr(ser, R_IMPRGB2, 0x07)
+    wr(ser, R_ROICTL, 0xC0)                          # impulse_en | per-frame stream
+    wr(ser, R_EXPO_LO, u & 0xFF)
+    wr(ser, R_EXPO_HI, (u >> 8) & 0xFF)
+    time.sleep(0.4)
+    return u * EXPO_UNIT_US
+
+
+def stop_impulse(ser):
+    wr(ser, R_ROICTL, 0x00)
+    set_delay(ser, 0)
+
+
+def delays_for(T, e, step):
+    return list(np.arange(0.0, T - e - 1.0, step))
+
+
+def positions(rows, d, lit_px, active_us=ACTIVE_US):
+    """Camera lines at one delay -> {position: [ROI means]}."""
+    by = collections.defaultdict(list)
+    # FRAME NUMBERING. The profiling bitstream counts frames in `cc`; the merged one
+    # sends cc = 0 on every line. There, the per-frame stream still delivers one line
+    # per frame, so the line's ARRIVAL ORDER is the frame number -- and the anchor
+    # check below catches a dropped one.
+    use_cc = any((rows[k][3] - rows[k - 1][3]) & 0xFF for k in range(1, len(rows)))
+    absns, absn = [], 0
+    for k, r in enumerate(rows):
+        if k:
+            absn += ((r[3] - rows[k - 1][3]) & 0xFF) if use_cc else 1
+        absns.append(absn)
+    # THE WHITE FRAME'S TAG. The merged build latches only RED of the transmitted
+    # pixel, so white reads FF0000 there and FFFFFF on the profiling bitstream.
+    marks = [n for n, r in zip(absns, rows) if r[2] in (lit_px, lit_px & 0xFF0000)]
+    # Re-anchor on EVERY white frame, and drop any cycle whose marks are not exactly 5
+    # apart: a missed line then costs one cycle, instead of shifting every later
+    # reading onto the wrong position.
+    for n, r in zip(absns, rows):
+        prev = [m for m in marks if m <= n]
+        nxt = [m for m in marks if m > n]
+        if not prev or n - prev[-1] > 4:
+            continue
+        if nxt and nxt[0] - prev[-1] != 5:
+            continue
+        # A trigger before the first active pixel carries the previous frame's tag:
+        # it belongs one position later (4 -> 0 of the next cycle).
+        by[(n - prev[-1] + (d < active_us)) % 5].append(r[0])
+    return by
+
+
+SWEEP_CSV_HEAD = ["T_us", "expo_us", "delay_us", "position", "t_us", "mean", "sd", "n",
+                  "ref", "tag_fix_us"]
+
+
+def sweep(ser, T, e, delays, out, level=255, bg=0, frames=20, settle=4,
+          active_us=ACTIVE_US, stop=None, log=print):
+    """Step the delay; per delay kept, yield (i, len(delays), delay, [5 means], ref, rows).
+
+    `rows` are the five SWEEP_CSV_HEAD rows for that delay. Every reading is also written
+    to `out` as it arrives. `stop` is an optional threading.Event checked between delays.
+    The caller still owns `ser` and should call stop_impulse() afterwards.
+    """
+    lit_px = (level << 16) | (level << 8) | level
+    with open(out or os.devnull, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(SWEEP_CSV_HEAD)
+        for i, d in enumerate(delays):
+            if stop is not None and stop.is_set():
+                return
+            want = int(round(d / TICK_US))
+            set_delay(ser, want)
+            if i % 25 == 0:
+                wait_delay(ser, want)
+            ser.reset_input_buffer()
+            collect(ser, settle, timeout=4)
+            rows = [r for r in collect(ser, frames, timeout=6) if r[1] == 256]
+            by = positions(rows, d, lit_px, active_us)
+            if len(by) < 5:
+                log("  delay %.1f: positions seen %s -- skipped"
+                    % (d, sorted((k, len(v)) for k, v in by.items())))
+                continue
+            means = [float(np.mean(by[k])) for k in range(5)]
+            ref = 0.0 if bg else float(np.median(means))
+            rows = [[round(T, 2), round(e, 3), round(d, 2), k, round(k * T + d, 2),
+                     round(means[k], 3), round(float(np.std(by[k])), 3), len(by[k]),
+                     round(ref, 3), active_us] for k in range(5)]
+            w.writerows(rows)
+            if i % 10 == 0:
+                fh.flush()
+            yield i, len(delays), d, means, ref, rows
+
+
+# ---- grey pairs over the runway (Runway maps tab) -------------------------------------
+class Stream:
+    """Camera lines one at a time, as (mean, npx, level-from-tag, nhi)."""
+
+    def __init__(self, ser):
+        self.ser, self.buf, self.q = ser, b"", []
+
+    def get(self, timeout=0.5):
+        t0 = time.time()
+        while not self.q:
+            if time.time() - t0 > timeout:
+                return None
+            c = self.ser.read(4096)
+            if not c:
+                spin(0.0005)
+                continue
+            self.buf += c
+            ms = list(LINE.finditer(self.buf))
+            for m in ms:
+                self.q.append((int(m.group(1), 16), int(m.group(2), 16),
+                               (int(m.group(3), 16) >> 16) & 0xFF,
+                               int(m.group(5), 16) if m.group(5) else 0))
+            if ms:
+                self.buf = self.buf[ms[-1].end():]
+            elif len(self.buf) > 8192:
+                self.buf = self.buf[-64:]
+        return self.q.pop(0)
+
+
+PAIR_CSV_HEAD = ["delay_us", "expo_us", "prev_level", "this_level", "mean", "sd", "n",
+                 "nhi_max", "T_us"]
+
+
+def pairs_on(ser):
+    """Impulse generator: the 2-frame A B A B cycle, all LEDs, per-frame stream."""
+    wr(ser, R_SLICTL, 0x00)                          # no SLI patterns underneath
+    wr(ser, R_IMPCYC, 0x02)                          # 2-frame cycle, bpos 0
+    wr(ser, R_IMPRGB, 0x07)
+    wr(ser, R_IMPRGB2, 0x07)
+    wr(ser, R_ROICTL, 0xC0)                          # impulse + per-frame stream
+
+
+def pairs_off(ser):
+    """Back to the defaults: no stream, the 5-frame cycle, white, delay 0."""
+    ser.timeout = 0.05
+    time.sleep(0.05)
+    wr(ser, R_ROICTL, 0x00)
+    wr(ser, R_IMPCYC, 0x05)                          # back to the 5-frame default
+    wr(ser, R_IMPLVL, 0xFF)
+    wr(ser, R_IMPLVL2, 0xFF)
+    set_delay(ser, 0)
+
+
+def measure_window(ser, T, d, units, pairs, per=10, skip=2):
+    """One window (delay d us, `units` x 0.375 us) through the (A, B) pairs, pairs_on
+    already called. Yields (A, B, cells, seen) per pair, cells = [(prev, this, mean,
+    sd, n, nhi_max)] for both orders; seen is False when the level change never showed
+    in the tag."""
+    wr(ser, R_EXPO_LO, units & 0xFF)
+    wr(ser, R_EXPO_HI, (units >> 8) & 0xFF)
+    want = int(round(d / TICK_US))
+    set_delay(ser, want)
+    if not wait_delay(ser, want)[1]:
+        raise RuntimeError("delay %.1f did not land" % d)
+    ser.timeout = 0
+    ser.reset_input_buffer()
+    st = Stream(ser)
+    old, curA = set(), None
+    for A, B in pairs:
+        if A != curA:
+            wr_now(ser, R_IMPLVL2, A)
+            curA = A
+        wr_now(ser, R_IMPLVL, B)
+        newset = {A, B}
+        fresh = newset - old                      # a level only the new pair has
+        # WAIT FOR THE NEW LEVELS TO BE ON AIR. The tag names the level transmitted in
+        # each frame; once the new pair shows, drop `skip` more frames so the image on
+        # screen (one frame behind) is new as well.
+        prev, seen, t_w = None, False, time.time()
+        while time.time() - t_w < 1.0:
+            r = st.get()
+            if r is None:
+                break
+            lvl = r[2]
+            if fresh:
+                seen = lvl in fresh
+            else:                                 # e.g. (255,255) after (254,255)
+                seen = prev is not None and prev == lvl == A
+            prev = lvl
+            if seen:
+                break
+        for _ in range(skip):
+            st.get()
+        by = {}
+        need = [(A, B), (B, A)] if A != B else [(A, B)]
+        prev, t_c = None, time.time()
+        while time.time() - t_c < max(2.0, 3e-6 * T * per) and \
+                min(len(by.get(c, [])) for c in need) < per:
+            r = st.get()
+            if r is None:
+                break
+            if r[1] == 256 and prev is not None and (prev, r[2]) in need:
+                by.setdefault((prev, r[2]), []).append((r[0], r[3]))
+            prev = r[2]
+        cells = []
+        for (pl, tl), v in by.items():
+            ms = [x[0] for x in v]
+            cells.append((pl, tl, float(np.mean(ms)), float(np.std(ms)), len(ms),
+                          max(x[1] for x in v)))
+        old = newset
+        yield A, B, cells, seen
+
+
+def runway_windows(edges, Tp):
+    """The runway as measurement windows, split where the previous frame's exposure
+    (trail - T) ends: [(start, end, name)] in us into the runway's frame."""
+    if "runway_us" not in edges:
+        raise ValueError("no runway -- place it in the Profile tab")
+    rw, lead, cut = edges["runway_us"], edges["lead_us"], edges["trail_us"] - Tp
+    k = int(rw // Tp)
+    parts = []
+    if cut > rw:
+        parts.append((rw, min(cut, lead), "runway inside the previous exposure"))
+    if lead > max(rw, cut):
+        parts.append((max(rw, cut), lead, "runway between exposures"))
+    return [(round(s_ - k * Tp, 2), round(e_ - k * Tp, 2), n) for s_, e_, n in parts]
+
+
+# ======================================================================================
+# The app
+# ======================================================================================
 PAD = dict(padx=8, pady=4)
 EXT = ".sliprof"
 FORMAT = "auv2-sli-profile"
@@ -90,14 +616,14 @@ OLD_FILTER_SWEEPS = {"wkkkk_r": ("WKKKK red filter", 255, 0),
                      "wkkkk_g": ("WKKKK green filter", 255, 0),
                      "wkkkk_b": ("WKKKK blue filter", 255, 0)}
 ALL_SWEEPS = dict(SWEEPS, **FILTER_SWEEPS, **OLD_FILTER_SWEEPS)
-SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=lc.ACTIVE_US)
+SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=ACTIVE_US)
 
 
 # ======================================================================================
 # The document
 # ======================================================================================
 class Document:
-    """One profiling session. Rows are lag_core.CSV_HEAD rows, already tag-corrected."""
+    """One profiling session. Rows are SWEEP_CSV_HEAD rows, already tag-corrected."""
 
     def __init__(self):
         self.path = None
@@ -131,7 +657,7 @@ class Document:
                "port": self.port, "display": self.display, "T_us": self.T,
                "max_expo_units": self.mx, "edges": self.edges, "iris": self.iris,
                "projector": self.projector, "runway_maps": self.runway_maps,
-               "csv_head": lc.CSV_HEAD, "sweeps": self.sweeps}
+               "csv_head": SWEEP_CSV_HEAD, "sweeps": self.sweeps}
         tmp = path + ".tmp"
         with open(tmp, "w") as fh:
             json.dump(doc, fh)
@@ -168,7 +694,7 @@ class Document:
                              % (os.path.basename(path), T, self.T))
         # A CSV written before lag_sweep corrected the vblank tag has no tag_fix_us: move
         # its readings before the first active pixel one position later, as lag_core does.
-        fix = None if "tag_fix_us" in rows[0] else lc.ACTIVE_US
+        fix = None if "tag_fix_us" in rows[0] else ACTIVE_US
         out = []
         for r in rows:
             d, k = float(r["delay_us"]), int(r["position"])
@@ -176,7 +702,7 @@ class Document:
                 k = (k + 1) % 5
             out.append([float(r["T_us"]), float(r["expo_us"]), d, k, round(k * T + d, 2),
                         float(r["mean"]), float(r["sd"]), int(r["n"]), float(r["ref"]),
-                        float(r.get("tag_fix_us") or lc.ACTIVE_US)])
+                        float(r.get("tag_fix_us") or ACTIVE_US)])
         self.T = self.T or T
         self.sweeps[key] = {"settings": {"imported_from": os.path.abspath(path),
                                          "tag_fixed_on_import": fix is not None},
@@ -187,7 +713,7 @@ class Document:
     def export_csv(self, key, path):
         with open(path, "w", newline="") as fh:
             w = csv.writer(fh)
-            w.writerow(lc.CSV_HEAD)
+            w.writerow(SWEEP_CSV_HEAD)
             w.writerows(self.sweeps[key]["rows"])
 
     # ---- connection ------------------------------------------------------------------
@@ -310,9 +836,9 @@ class SetupDialog(tk.Toplevel):
         try:
             with serial.Serial(dev, 115200, timeout=0.05) as ser:
                 time.sleep(0.3)
-                self.modes, self.cur_idx = lc.board_modes(ser)
-                passthru = lc.reg(ser, 0x02) & 0x10
-                self.proj = lc.projector_name(ser)   # from the projector's EDID
+                self.modes, self.cur_idx = board_modes(ser)
+                passthru = reg(ser, 0x02) & 0x10
+                self.proj = projector_name(ser)   # from the projector's EDID
         except serial.SerialException as e:
             self.mode_msg["text"] = "%s: cannot open (%s)" % (dev, e.__class__.__name__)
             return
@@ -321,7 +847,7 @@ class SetupDialog(tk.Toplevel):
         if not self.modes:
             self.mode_msg["text"] = "%s: no modes -- not the camera board, or no projector?" % dev
             return
-        self.mode_box["values"] = [lc.mode_name(m) + ("   (in use)" if m["idx"] == self.cur_idx
+        self.mode_box["values"] = [mode_name(m) + ("   (in use)" if m["idx"] == self.cur_idx
                                                       else "") for m in self.modes]
         idx = [m["idx"] for m in self.modes]
         saved = self.want_proj["idx"] if self.want_proj else None
@@ -329,9 +855,9 @@ class SetupDialog(tk.Toplevel):
         self.mode_box.current(idx.index(pick) if pick in idx else 0)
         note = []
         if saved is not None:
-            sm = lc.mode_table()[saved]
+            sm = mode_table()[saved]
             note.append("the document's mode, %s, %s" % (
-                lc.mode_name(sm), "is selected" if saved in idx else
+                mode_name(sm), "is selected" if saved in idx else
                 "is NOT supported by this projector"))
             if self.want_proj.get("name") != self.proj:
                 note.append("document projector %s, attached %s"
@@ -349,9 +875,9 @@ class SetupDialog(tk.Toplevel):
             return
         want = self.modes[self.mode_box.current()]
         # What the document records as its video: the projector and the mode, offline.
-        disp = "%s, %s, offline" % (self.proj or "projector", lc.mode_name(want))
+        disp = "%s, %s, offline" % (self.proj or "projector", mode_name(want))
         self.msg["text"] = ("checking..." if want["idx"] == self.cur_idx else
-                            "switching to %s..." % lc.mode_name(want))
+                            "switching to %s..." % mode_name(want))
         self.ok_btn.state(["disabled"])
         self.update_idletasks()
         try:
@@ -378,9 +904,9 @@ def connect_board(port, idx, cur_idx):
     if idx != cur_idx:
         with serial.Serial(port, 115200, timeout=0.05) as ser:
             time.sleep(0.3)
-            lc.set_board_mode(ser, idx, log=lambda s: None)
-    ser, T, mx = lc.preflight(port, lc.OFFLINE, log=lambda s: None)
-    SETTINGS["active_us"] = lc.active_us(ser, T)     # vsync -> first active line
+            set_board_mode(ser, idx)
+    ser, T, mx = preflight(port)
+    SETTINGS["active_us"] = active_us(ser, T)     # vsync -> first active line
     return ser, T, mx
 
 
@@ -395,15 +921,15 @@ def reconnect(doc):
     try:
         with serial.Serial(doc.port, 115200, timeout=0.05) as ser:
             time.sleep(0.3)
-            modes, cur = lc.board_modes(ser)
-            name = lc.projector_name(ser)
+            modes, cur = board_modes(ser)
+            name = projector_name(ser)
         if name != proj.get("name") or proj["idx"] not in [m["idx"] for m in modes]:
             return None
         ser, T, mx = connect_board(doc.port, proj["idx"], cur)
     except Exception:
         return None
     m = next(m for m in modes if m["idx"] == proj["idx"])
-    disp = "%s, %s, offline" % (name or "projector", lc.mode_name(m))
+    disp = "%s, %s, offline" % (name or "projector", mode_name(m))
     return ser, T, mx, doc.port, disp, dict(proj)
 
 
@@ -487,8 +1013,8 @@ class SweepRunner:
 
     def start(self, doc):
         """Program the impulse cycle and start the worker. Raises on a bad setup."""
-        e = lc.start_impulse(doc.ser, self.level, self.bg, SETTINGS["expo_us"], doc.mx)
-        delays = lc.delays_for(doc.T, e, SETTINGS["step_us"])
+        e = start_impulse(doc.ser, self.level, self.bg, SETTINGS["expo_us"], doc.mx)
+        delays = delays_for(doc.T, e, SETTINGS["step_us"])
         self.log_csv = os.path.join(tempfile.gettempdir(), "auv2sli_%s_%s.csv"
                                     % (self.key, time.strftime("%Y-%m-%d_%H%M%S")))
         doc.sweeps[self.key] = {"settings": dict(SETTINGS, level=self.level, bg=self.bg,
@@ -504,7 +1030,7 @@ class SweepRunner:
 
     def work(self, ser, T, e, delays):
         try:
-            for i, n, d, means, ref, rows in lc.sweep(
+            for i, n, d, means, ref, rows in sweep(
                     ser, T, e, delays, self.log_csv, self.level, self.bg,
                     SETTINGS["frames"], SETTINGS["settle"], SETTINGS["active_us"],
                     stop=self.stop_ev, log=lambda s: self.q.put(("log", s))):
@@ -514,7 +1040,7 @@ class SweepRunner:
             self.q.put(("error", ex))
         finally:
             try:
-                lc.stop_impulse(ser)
+                stop_impulse(ser)
             except Exception:
                 pass
 
@@ -701,7 +1227,7 @@ class ProfileView(SweepHost, ttk.Frame):
         # THE 120 FPS LIMIT, from the frame period exactly as the FPGA computes MAXEXP
         # (usb_link.v): T - 80 us sensor gap - 10 us margin, in whole 0.375 us units.
         # The board's own answer wins when connected; longer drops the camera to 60 fps.
-        self.max_us = (doc.mx or lc.max_expo_units(self.T)) * lc.EXPO_UNIT_US
+        self.max_us = (doc.mx or max_expo_units(self.T)) * EXPO_UNIT_US
         self.fig.clear()
         self.bg_art = []                             # cleared with the figure
         ax = self.ax = timeline_axes(self.fig, self.T)
@@ -841,12 +1367,12 @@ class ProfileView(SweepHost, ttk.Frame):
         w = self.max_us
         gap = self.lead - self.rw
         if moving == "lead":
-            width = min(max(self.trail - self.lead, lc.EXPO_UNIT_US), w)
+            width = min(max(self.trail - self.lead, EXPO_UNIT_US), w)
             lead = min(max(lead, 0.0), 5 * self.T)
             trail = lead + width
         else:
             lead = min(max(lead, 0.0), 5 * self.T)
-            trail = min(max(trail, lead + lc.EXPO_UNIT_US), lead + w)
+            trail = min(max(trail, lead + EXPO_UNIT_US), lead + w)
         self.lead, self.trail = lead, trail
         self.store_edges(min(max(lead - gap, self.rw_lo()), lead))
 
@@ -882,13 +1408,13 @@ class ProfileView(SweepHost, ttk.Frame):
         fa, fb = lead, trail
         b0 = trail % self.T
         bw = max(0.0, lead + self.T - trail) if trail - lead < self.T else 0.0
-        units = int((fb - fa) / lc.EXPO_UNIT_US)
-        expo = units * lc.EXPO_UNIT_US
+        units = int((fb - fa) / EXPO_UNIT_US)
+        expo = units * EXPO_UNIT_US
         k = int(fa // self.T)
         over = expo > self.max_us
         cap = self.captured(fa, fb)
         rcap = self.captured(rw, lead) if rw < lead else (0.0 if cap is not None else None)
-        bu = int(bw / lc.EXPO_UNIT_US)
+        bu = int(bw / EXPO_UNIT_US)
         self.readout["text"] = (
             "foreground: delay %.2f us (frame %d + %.2f us)   %.3f us = %d units"
             "   white-frame light inside %s   limit %.2f us (T - 90 us, 120 fps)%s\n"
@@ -899,7 +1425,7 @@ class ProfileView(SweepHost, ttk.Frame):
             % (fa, k, fa - k * self.T, expo, units,
                "%.1f %%" % (100 * cap) if cap is not None else "- (needs WKKKK)",
                self.max_us, "   OVER THE LIMIT" if over else "",
-               b0, bu * lc.EXPO_UNIT_US, bu, (b0 + bu * lc.EXPO_UNIT_US) % self.T,
+               b0, bu * EXPO_UNIT_US, bu, (b0 + bu * EXPO_UNIT_US) % self.T,
                rw, int(rw // self.T), rw - int(rw // self.T) * self.T, lead - rw,
                "%.1f %%" % (100 * rcap) if rcap is not None else "- (needs WKKKK)"))
         self.readout["foreground"] = "#b00020" if over else ""
@@ -1147,14 +1673,14 @@ class ProfileView(SweepHost, ttk.Frame):
             filetypes=[("JSON", "*.json")])
         if not path:
             return
-        units = int(round((self.trail - self.lead) / lc.EXPO_UNIT_US))
+        units = int(round((self.trail - self.lead) / EXPO_UNIT_US))
         cap = self.captured(self.lead, self.trail)
         with open(path, "w") as fh:
             json.dump({"T_us": self.T, "runway_us": round(self.rw, 2),
                        "lead_us": round(self.lead, 2),
                        "trail_us": round(self.trail, 2),
                        "delay_ticks": int(round(self.lead / TICK_US)),
-                       "expo_units": units, "expo_us": units * lc.EXPO_UNIT_US,
+                       "expo_units": units, "expo_us": units * EXPO_UNIT_US,
                        "white_frame_light_inside": None if cap is None else round(cap, 4),
                        "max_expo_us": self.max_us}, fh, indent=2)
 
@@ -1172,7 +1698,8 @@ class FilterView(SweepHost, ttk.Frame):
     filter scaled by its least-squares weight so the three add up to WWWWW).
     WWWWW never goes dark, so the dark level is the camera's: the median of frames 2-4
     of the Profile tab's WKKKK sweep (else each sweep's minimum).
-    The profile tab's exposure edges and runway are drawn for reference (not draggable).
+    The profile tab's exposure edges and runway are drawn too; dragging them here goes
+    through the profile tab's rules.
     Wheel zooms time, drag pans, double-click shows all five frames.
     """
 
@@ -1520,7 +2047,7 @@ class RunwayView(ttk.Frame):
         if not d.T or not d.edges or "runway_us" not in d.edges:
             return []
         try:
-            return gp.runway_windows({"edges": d.edges, "T_us": d.T})[0]
+            return runway_windows(d.edges, d.T)
         except ValueError:
             return []
 
@@ -1641,10 +2168,10 @@ class RunwayView(ttk.Frame):
         except (tk.TclError, ValueError):
             per = 10
         L = self.levels()
-        units = {s_: max(1, int((e_ - s_) / lc.EXPO_UNIT_US)) for s_, e_, _ in win}
+        units = {s_: max(1, int((e_ - s_) / EXPO_UNIT_US)) for s_, e_, _ in win}
         if max(units.values()) > doc.mx:
             messagebox.showerror("Cannot start", "A runway part is longer than the %.1f us "
-                                 "exposure limit." % (doc.mx * lc.EXPO_UNIT_US), parent=self)
+                                 "exposure limit." % (doc.mx * EXPO_UNIT_US), parent=self)
             return
         pairs = [(A, B) for i, A in enumerate(L) for B in L[i:]]
         doc.runway_maps = {"settings": {"windows": [list(w) for w in win], "levels": L,
@@ -1667,12 +2194,12 @@ class RunwayView(ttk.Frame):
         try:
             with open(self.log_csv, "w", newline="") as fh:
                 w = csv.writer(fh)
-                w.writerow(gp.CSV_HEAD)
-                gp.pairs_on(ser)
+                w.writerow(PAIR_CSV_HEAD)
+                pairs_on(ser)
                 for s_, e_, _ in win:
-                    e = units[s_] * lc.EXPO_UNIT_US
-                    for A, B, cells, seen in gp.measure_window(ser, T, s_, units[s_], pairs,
-                                                               per, 2, None):
+                    e = units[s_] * EXPO_UNIT_US
+                    for A, B, cells, seen in measure_window(ser, T, s_, units[s_], pairs,
+                                                            per, 2):
                         rows = [[s_, round(e, 3), pl, tl, round(m_, 3), round(sd, 3), n,
                                  nhi, round(T, 2)] for pl, tl, m_, sd, n, nhi in cells]
                         w.writerows(rows)
@@ -1686,7 +2213,7 @@ class RunwayView(ttk.Frame):
             self.q.put(("error", ex))
         finally:
             try:
-                gp.pairs_off(ser)
+                pairs_off(ser)
             except Exception:
                 pass
 
@@ -1779,7 +2306,7 @@ class IrisDialog(tk.Toplevel):
         de.pack(side="left", padx=(4, 12))
         de.bind("<Return>", lambda e: self.retarget())
         ttk.Label(top, text="exposure %.3f us   (WWWWW peak %.0f ADU at this delay when swept)"
-                  % (13 * lc.EXPO_UNIT_US, sweep_peak), foreground="#555").pack(side="left")
+                  % (13 * EXPO_UNIT_US, sweep_peak), foreground="#555").pack(side="left")
         ttk.Button(top, text="Done", command=self.done).pack(side="right")
         self.big = ttk.Label(self, text="starting...", font=("Consolas", 22, "bold"))
         self.big.pack(fill="x", padx=8)
@@ -1807,7 +2334,7 @@ class IrisDialog(tk.Toplevel):
         fit_margins(self.fig)
 
         try:
-            lc.start_impulse(doc.ser, 255, 254, 5.0, doc.mx)   # the WWWWW cycle, 13 units
+            start_impulse(doc.ser, 255, 254, 5.0, doc.mx)   # the WWWWW cycle, 13 units
             self.set_delay(delay_us)
         except Exception as ex:
             messagebox.showerror("Adjust iris", str(ex), parent=self)
@@ -1819,8 +2346,8 @@ class IrisDialog(tk.Toplevel):
 
     def set_delay(self, d):
         ticks = int(round(d / TICK_US))
-        lc.set_delay(self.doc.ser, ticks)
-        lc.wait_delay(self.doc.ser, ticks)
+        set_delay(self.doc.ser, ticks)
+        wait_delay(self.doc.ser, ticks)
         self.delay_us = d
 
     def retarget(self):
@@ -1844,7 +2371,7 @@ class IrisDialog(tk.Toplevel):
         try:
             ser.reset_input_buffer()
             while not self.stop_ev.is_set():
-                rows = lc.collect(ser, 4, timeout=0.5, sat=True)
+                rows = collect(ser, 4, timeout=0.5, sat=True)
                 for r in rows:
                     if r[1] == 256:
                         self.q.put(("r", (r[0], r[4])))
@@ -1898,7 +2425,7 @@ class IrisDialog(tk.Toplevel):
         if w is not None:
             w.join(timeout=3)
         try:
-            lc.stop_impulse(self.doc.ser)
+            stop_impulse(self.doc.ser)
         except Exception:
             pass
         view, doc = self.view, self.doc
@@ -1906,7 +2433,7 @@ class IrisDialog(tk.Toplevel):
             recent = self.means[-30:]
             sats = [s for s in self.sats[-30:] if s is not None]
             had = [k for k in ALL_SWEEPS if doc.sweeps.get(k)]
-            doc.iris = {"delay_us": round(self.delay_us, 2), "expo_us": 13 * lc.EXPO_UNIT_US,
+            doc.iris = {"delay_us": round(self.delay_us, 2), "expo_us": 13 * EXPO_UNIT_US,
                         "peak_mean": round(float(np.median(recent)), 1),
                         "saturated_px": int(max(sats)) if sats else None,
                         "when": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -2161,7 +2688,7 @@ class App(tk.Tk):
         self.title("%s%s - AuV2-SLI projector profiling" % (d.name, " *" if d.dirty else ""))
         self.conn["text"] = ("  %s   %s   frame %s   exposure limit %s   %s" % (
             d.port or "-", d.display or "-", "%.1f us" % d.T if d.T else "-",
-            "%.1f us" % (d.mx * lc.EXPO_UNIT_US) if d.mx else "-",
+            "%.1f us" % (d.mx * EXPO_UNIT_US) if d.mx else "-",
             "CONNECTED" if d.ser is not None else "not connected (Run connects)"))
 
     def show_doc(self):
@@ -2214,7 +2741,7 @@ class App(tk.Tk):
                     "Different projector setup",
                     "This document was measured on %s at %s.\nThe board is now driving %s "
                     "at %s.\n\nConnect anyway?" % (
-                        old.get("name"), lc.mode_name(old), proj["name"], lc.mode_name(proj)),
+                        old.get("name"), mode_name(old), proj["name"], mode_name(proj)),
                     parent=self):
                 ser.close()
                 return False

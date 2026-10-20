@@ -2,6 +2,9 @@
 
 Two things live here, and they speak to the board over **different transports**.
 
+> **Projector profiling** is a separate, self-contained app: [`sli_ui.py`](sli_ui.py)
+> (one file, COM port plus Ft+ for genlock). It is documented in [`SLI_UI.md`](SLI_UI.md).
+
 ## 1. Python tools over the Ft+ (USB 3) — the current interface
 
 Everything the host does with the merged design goes through
