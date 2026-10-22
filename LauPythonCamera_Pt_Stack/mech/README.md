@@ -8,7 +8,7 @@
 | `gen_lens_box.py` | `../3dmodels/camera_lens_box.step` | **C-mount lens box** — open-bottomed, straddles the board, gravity-seated lens. Also the **upper half** of the two-part enclosure |
 | `gen_base_box.py` | `../3dmodels/camera_base_box.step` | **base box** — the lower half: encloses the Hd+/Ft+/Pt V2 and sandwiches to the lens box |
 | `gen_enclosure_assembly.py` | `../3dmodels/camera_enclosure_assembly.step` | **both halves in one file** — what you open to check they meet; not a printed part |
-| `gen_stack_assembly.py` | `../3dmodels/stack/*.step` | **the real boards**: camera + ESP32 card exported from KiCad, Pt V2 / Ft+ / Hd from Alchitry's STEPs, mated on the DF40 sites into `board_stack.step`, and with both case halves into `camera_stack_enclosure.step`. Needs OCP (cadquery) and kicad-cli; not a printed part |
+| `gen_stack_assembly.py` | `../3dmodels/stack/*.step` | **the real boards**: camera + ESP32 card exported from KiCad, Pt V2 / Ft+ / Hd from Alchitry's STEPs, mated on the DF40 sites into `board_stack.step`, and with both case halves and the Edmund #58-001 lens (its own STEP) into `camera_stack_enclosure.step`. Needs OCP (cadquery) and kicad-cli; not a printed part |
 | `gen_lens_holder.py` | `../3dmodels/camera_lens_holder.step` | M12 / S-mount alternative: plate on four posts with a threaded barrel |
 | `step_writer.py` | — | shared AP214 writer and 2D helpers |
 | `check_step.py` | — | validates any of the above |
@@ -23,7 +23,7 @@ python gen_socket_tile.py
 python gen_lens_box.py --bosses --open-face W --pcb-t 7.1 --washer-t 2.5 --port-notch W:2.5:20.5:-0.5:2.5 --port-notch W:-8.0:7.0:-5.0:1.0   # spacer stack (d6201f5) + USB-C notches
 python gen_base_box.py --open-face W         # ...and the lower half: 24.5 mm spacer stack, nut raised for M2 x 30
 python gen_enclosure_assembly.py             # both halves in ONE file, to check the fit
-python gen_stack_assembly.py                 # real board stack (camera/Pt/Ft+/ESP32/Hd) + both halves, ~1.5 min
+python gen_stack_assembly.py                 # real board stack (camera/Pt/Ft+/ESP32/Hd) + both halves + Edmund lens, ~2 min
 python gen_lens_holder.py                    # the M12 alternative
 python check_step.py
 ```
@@ -762,6 +762,49 @@ excluded from the STL. `--no-reference` drops them.
 
 Contact is by design, not coincidence: the lens box's washers meet the camera plate at z = 0,
 and the base box's bosses meet the Hd+ plate at z = −19.00.
+
+---
+
+## The lens in `camera_stack_enclosure.step` — Edmund #58-001
+
+The enclosure file includes the lens, so the whole camera can go into figures. It is the
+**Edmund Optics #58-001**, a 12 mm f/1.8 C Series fixed focal length lens, taken from
+**Edmund's own STEP** (`58001WEB.STEP`, SolidWorks 2007, 1,954,892 bytes). That file is not
+committed: like the Alchitry models, it is a vendor file saved as
+`LauEsp32Config_Pt_Stack/docs/EO_58001.step`. Fetch it from a regional Edmund site, because
+edmundoptics.com puts a Cloudflare browser check in front of downloads:
+
+```
+curl -o LauEsp32Config_Pt_Stack/docs/EO_58001.step https://www.edmundoptics.eu/document/download/384259
+```
+
+**Measured from the file, and checked against Edmund's drawing (document 376872).** In
+Edmund's file, the optical axis runs along +X at y = 18.15, z = 0, with the camera side at +X:
+
+| x in Edmund's file | Feature | From the file | Edmund's drawing |
+|---|---|---|---|
+| 29.438 | front face | | |
+| 57.338 | flange shoulder, annulus r 12.0–15.0 | 27.90 from the front | 27.90 overall length |
+| 61.338 | end of the 1"-32 thread | 4.00 | 4.00 |
+| 61.856 | rear element | 0.52 | 0.52 max rear protrusion |
+
+The body is Ø32.0, which matches the drawing's maximum outer diameter. The knurled focus and
+iris lock screws stand out to r 35.7, 16 and 8 mm above the shoulder respectively, so both
+are clear of the box.
+
+**Placement.** Two things fix it:
+- The shoulder sits on the lens box's top face, read from `camera_lens_box.step` (z =
+  18.786). That face is the C-mount datum, 17.526 above the image plane.
+- The axis is `OPTICAL_CENTER`.
+
+Edmund's +X becomes our −Z, so the lens points up out of the box. The thread and rear
+element hang 4.52 into the 25.3 bore, down to z = 14.27. The rotation about the axis,
+which sets where the two lock screws point, is arbitrary. `place_lens()` measures the
+placed lens back, and refuses to write the file unless it spans exactly 4.52 below the seat
+and 27.90 above it, centred on the axis. If Edmund ever reissues the file, that check is
+what catches it.
+
+`gen_stack_assembly.py --no-lens` leaves the lens out.
 
 ---
 

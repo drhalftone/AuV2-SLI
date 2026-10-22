@@ -76,15 +76,18 @@ def capture(module_name, argv):
     try:
         mod.main()
     except SystemExit as e:
-        rc = e.code if isinstance(e.code, int) else 0
+        # sys.exit("message") is a FAILURE: only None and 0 mean success.
+        # Treating a message as 0 used to hide every refusal.
+        rc = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        why = e.code if isinstance(e.code, str) else "Run it on its own to see why."
     else:
         rc = 0
     finally:
         sw.StepFile = orig
         sys.argv, sys.stdout = old_argv, old_stdout
     if rc:
-        sys.exit("%s failed (exit %s); assembly not built.\nRun it on its own to see why."
-                 % (module_name, rc))
+        sys.exit("%s failed (exit %s); assembly not built.\n%s"
+                 % (module_name, rc, why))
     if not made:
         sys.exit("%s built no StepFile" % module_name)
     return made[0]

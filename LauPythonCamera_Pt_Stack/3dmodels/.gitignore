@@ -1,0 +1,3 @@
+# gen_stack_assembly.py output: 60-70 MB per file, built from vendor STEPs that
+# are not committed either. Rebuild with  python ../mech/gen_stack_assembly.py
+stack/

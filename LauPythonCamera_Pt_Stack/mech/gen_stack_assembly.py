@@ -43,6 +43,14 @@ the 50-pin site on the wrong end, which is what that check catches.
 The Alchitry models are NOT committed (130 MB). Fetch them from
 https://cdn.alchitry.com/docs/{Pt-V2/Alchitry Platinum v2,Ft-V2/FtPlus,Hd-V2/Hd}.step
 into LauEsp32Config_Pt_Stack/docs/, where the ESP32 card work already put them.
+
+The lens, Edmund Optics #58-001 (12 mm f/1.8 C Series), goes in the enclosure
+file from Edmund's own STEP, saved there as EO_58001.step and not committed
+either. Fetch it from a regional Edmund site: edmundoptics.com puts a
+Cloudflare browser check in front of downloads, the others do not.
+    curl -o LauEsp32Config_Pt_Stack/docs/EO_58001.step \\
+        https://www.edmundoptics.eu/document/download/384259
+(1,954,892 bytes; FILE_NAME '58001WEB.STEP'). --no-lens leaves it out.
 """
 import argparse, os, subprocess, sys, time
 
@@ -60,12 +68,20 @@ from OCP.Interface import Interface_Static
 from OCP.Bnd import Bnd_Box
 from OCP.BRepBndLib import BRepBndLib
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from gen_lens_holder import OPTICAL_CENTER      # the optical axis, x/y in our frame
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))
 MODELS = os.path.normpath(os.path.join(HERE, "..", "3dmodels"))
 OUTDIR = os.path.join(MODELS, "stack")
 VENDOR = os.path.join(ROOT, "LauEsp32Config_Pt_Stack", "docs")
-KICAD_CLI = r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
+# The all-users install, else the per-user one (where this machine has it).
+KICAD_CLI = next((c for c in (
+    r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe",
+    os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "KiCad", "10.0",
+                 "bin", "kicad-cli.exe")) if os.path.exists(c)),
+    r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe")
 
 CAMERA_PCB = os.path.join(ROOT, "LauPythonCamera_Pt_Stack", "LauPythonCamera_Pt_Stack.kicad_pcb")
 ESP32_PCB = os.path.join(ROOT, "LauEsp32Config_Pt_Stack", "LauEsp32Config_Pt_Stack.kicad_pcb")
@@ -90,6 +106,23 @@ BOARDS = [
 SENSOR = ("sensor_U1", os.path.join(MODELS, "NOIP1SN1300A_LCC48.step"), (0.0, 0.0, 0.0))
 CASE = [("lens_box", os.path.join(MODELS, "camera_lens_box.step")),
         ("base_box", os.path.join(MODELS, "camera_base_box.step"))]
+# The lens: Edmund Optics #58-001, 12 mm f/1.8 C Series, from Edmund's own STEP
+# (58001WEB.STEP, SolidWorks 2007). In THAT file the optical axis is +X along
+# y = 18.15, z = 0, with the camera side toward +X. Measured from the file, and
+# each against Edmund's drawing (document 376872):
+#     x 29.438   front face
+#     x 57.338   flange shoulder, the annulus r 12.0..15.0   27.90 = OVERALL LENGTH
+#     x 61.338   end of the 1"-32 thread                      4.00 thread
+#     x 61.856   rear element                                 0.52 MAX REAR PROTRUSION
+# The shoulder goes on the lens box's top face -- the C-mount datum -- and the
+# axis on OPTICAL_CENTER, so the image plane lands where the box was designed
+# to put it. The rotation about the axis (where the two lock screws point) is
+# arbitrary. place_lens() re-measures the placed lens and refuses if it is off.
+LENS = ("lens_EO_58001", os.path.join(VENDOR, "EO_58001.step"))
+LENS_AXIS_YZ = (18.15, 0.0)
+LENS_SHOULDER_X = 57.338
+LENS_FRONT_X = 29.438
+LENS_REAR_X = 61.856
 
 # The three DF40 sites in OUR frame, for --check.
 SITES = [(2.0, -19.0), (2.0, 18.0), (-19.5, 18.0)]
@@ -147,7 +180,10 @@ class Assembly:
         self.keep = []                   # source docs must outlive the clone
         self.parts = {}
 
-    def add(self, name, fn, dx, dy, dz, parent=None, drop=()):
+    def add(self, name, fn, dx, dy, dz, parent=None, drop=(), trsf=None):
+        """Clone fn's shapes in, translated by (dx, dy, dz) -- or placed by
+        trsf, when given, which may also rotate; (dx, dy, dz) is then only its
+        translation, for the log line."""
         t = time.time()
         src = read(fn)
         self.keep.append(src)
@@ -175,8 +211,9 @@ class Assembly:
         if not XCAFDoc_Editor.Extract_s(take, part, False):
             sys.exit("XCAF extract failed for %s" % fn)
         self.parts[name] = (part, (dx, dy, dz), src)
-        trsf = gp_Trsf()
-        trsf.SetTranslation(gp_Vec(dx, dy, dz))
+        if trsf is None:
+            trsf = gp_Trsf()
+            trsf.SetTranslation(gp_Vec(dx, dy, dz))
         self.st.AddComponent(self.root if parent is None else parent, part,
                              TopLoc_Location(trsf))
         sys.stdout.write("  + %-10s %-28s at (%+8.3f, %+8.3f, %+8.3f)  %.1f s%s\n"
@@ -301,6 +338,33 @@ def check_mating(asm, layout):
     return ok
 
 
+def place_lens(asm, seat):
+    """Put the Edmund lens's shoulder at z = seat on the optical axis, axis +Z.
+
+    Edmund's +X (toward the camera) becomes our -Z, so the lens points up out
+    of the box:  ours = (z_src + ox,  y_src - 18.15 + oy,  57.338 - x_src + seat).
+    Then the placed lens is measured back and must span exactly the drawing's
+    0.52 + 4.00 below the shoulder and 27.90 above it, centred on the axis.
+    """
+    ox, oy = OPTICAL_CENTER
+    ay, az = LENS_AXIS_YZ
+    t = gp_Trsf()
+    t.SetValues(0.0, 0.0, 1.0, ox - az,
+                0.0, 1.0, 0.0, oy - ay,
+                -1.0, 0.0, 0.0, LENS_SHOULDER_X + seat)
+    part = asm.add(LENS[0], LENS[1], ox - az, oy - ay, LENS_SHOULDER_X + seat, trsf=t)
+    x0, y0, z0, x1, y1, z1 = bbox(asm.st.GetShape_s(part).Moved(TopLoc_Location(t)))
+    want = (seat - (LENS_REAR_X - LENS_SHOULDER_X), seat + (LENS_SHOULDER_X - LENS_FRONT_X))
+    off = max(abs(z0 - want[0]), abs(z1 - want[1]),
+              abs((x0 + x1) / 2 - ox), abs((y0 + y1) / 2 - oy))
+    w = sys.stdout.write
+    w("           lens %.3f -> %.3f (shoulder %.3f), centre (%.3f, %.3f), axis (%.3f, %.3f)\n"
+      % (z0, z1, seat, (x0 + x1) / 2, (y0 + y1) / 2, ox, oy))
+    if off > 0.05:
+        sys.exit("LENS MISPLACED by %.3f mm: expected z %.3f -> %.3f on the axis. Has "
+                 "EO_58001.step changed? Re-measure the LENS_* constants." % (off, *want))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -310,6 +374,8 @@ def main():
                    help="reuse the existing KiCad STEP exports")
     p.add_argument("--no-case", dest="case", action="store_false",
                    help="write board_stack.step only")
+    p.add_argument("--no-lens", dest="lens", action="store_false",
+                   help="leave the Edmund #58-001 lens out of the enclosure file")
     args = p.parse_args()
     w = sys.stdout.write
     os.makedirs(OUTDIR, exist_ok=True)
@@ -346,6 +412,11 @@ def main():
         asm.st.AddComponent(asm.root, stack, TopLoc_Location())
         for name, cfn in CASE:
             asm.add(name, cfn, 0.0, 0.0, 0.0)
+        if args.lens:
+            # The lens box's highest point IS its top face, the C-mount datum:
+            # nothing on the box stands above it.
+            seat = bbox(asm.st.GetShape_s(asm.parts["lens_box"][0]))[5]
+            place_lens(asm, seat)
         fn = os.path.join(OUTDIR, "camera_stack_enclosure.step")
         asm.write(fn)
         w("  wrote %s (%.1f MB)\n" % (fn, os.path.getsize(fn) / 1e6))
