@@ -30,6 +30,14 @@ MAGIC = 0x30494C53
 
 FMT_U16 = 2                  # 10-bit right-aligned in 16-bit little-endian
 FMT_PACK10 = 3               # dense packed 10-bit, 4 px in 5 bytes
+# Format 4 is taken: it marks the control-reply packets (ftlink.FMT_CTRL).
+FMT_LABEL = 5                # packed 10-bit + a 32-byte FRAME LABEL block
+HDR_EXT = 64                 # header length when fmt == FMT_LABEL
+
+
+def hdr_len(fmt):
+    """Header bytes before the payload. FBYTES (word 4) is always the payload."""
+    return HDR_EXT if fmt == FMT_LABEL else HDR
 
 FBYTES_U16 = NPIX * 2        # 2,621,440
 FBYTES_PACK10 = NPIX * 10 // 8   # 1,638,400
@@ -41,6 +49,34 @@ def parse_header(buf, off):
     h = struct.unpack_from("<8I", buf, off)
     if h[0] != MAGIC or h[7] != (~MAGIC & 0xFFFFFFFF):
         return None
+    out = _parse_base(h)
+    out["hdr_len"] = hdr_len(h[6])
+    if h[6] == FMT_LABEL:
+        # FRAME LABEL block, words 8..15. Word 15 repeats ~MAGIC so the block
+        # validates on its own; if it does not, refuse the header rather than
+        # report a label read from payload bytes.
+        if off + HDR_EXT > len(buf):
+            return None
+        x = struct.unpack_from("<8I", buf, off + HDR)
+        if x[7] != (~MAGIC & 0xFFFFFFFF):
+            return None
+        flags = x[1] & 0xFF
+        out.update({
+            # projected frames since the epoch frame (the frame on which the host's
+            # opcode-8 epoch reset landed and the pattern counter returned to 0)
+            "seq": x[0],
+            "pattern": flags & 0x1F,          # {frq[1:0], phase[2:0]}
+            "frq": (flags >> 3) & 3,
+            "phase": flags & 7,
+            "pat_ok": (flags >> 5) & 1,       # pattern ring still held that frame
+            "epoch_valid": (flags >> 6) & 1,  # an epoch reset has been applied
+            "lab_valid": (flags >> 7) & 1,    # a genlocked trigger made this frame
+            "ext_ver": x[3],
+        })
+    return out
+
+
+def _parse_base(h):
     return {
         "frame_idx": h[1],
         "nrow": h[2] >> 16,
@@ -130,7 +166,7 @@ def unpack10(raw):
 
 def to_frame(raw, fmt):
     """Decode a payload of either format into (NROW, NCOL) uint16."""
-    if fmt == FMT_PACK10:
+    if fmt in (FMT_PACK10, FMT_LABEL):
         return unpack10(raw)
     if fmt == FMT_U16:
         return np.frombuffer(raw, dtype="<u2").reshape(NROW, NCOL)
@@ -154,9 +190,10 @@ def iter_frames(data, want=None):
         if h is None:
             i += 4
             continue
-        if i + HDR + h["fbytes"] > len(data):
+        hl = h["hdr_len"]
+        if i + hl + h["fbytes"] > len(data):
             return
-        raw = bytes(data[i + HDR:i + HDR + h["fbytes"]])
+        raw = bytes(data[i + hl:i + hl + h["fbytes"]])
         yield h, to_frame(raw, h["fmt"])
-        i += HDR + h["fbytes"]
+        i += hl + h["fbytes"]
         n += 1

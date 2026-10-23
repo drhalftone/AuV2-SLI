@@ -340,6 +340,11 @@ architecture Behavioral of Au2_SLI is
     -- TLP hand-off into the camera module, gated by WITH_TLP (see the generic).
     signal tlp_to_cam     : std_logic_vector(23 downto 0);
     signal tlp_tog_to_cam : std_logic;
+    -- FRAME LABEL: pixel_pipe <-> cam_frame_ft. epoch_tog_s is driven only by the
+    -- WITH_CAM = 1 camera; in the other builds it keeps its default and never flips.
+    signal epoch_tog_s : std_logic := '0';
+    signal pat_tag_s   : std_logic_vector(5 downto 0);
+    signal pat_tog_s   : std_logic;
     component impulse_gen is
         generic ( CYCLE : integer );
         port ( pclk : in std_logic; vsync_pos : in std_logic; en : in std_logic;
@@ -426,7 +431,11 @@ architecture Behavioral of Au2_SLI is
             trig_cnt_dbg : out std_logic_vector(7 downto 0);
             -- radiometric transfer LUT seam -> uart_ctrl's host-uploadable corr table
             lut_din      : out std_logic_vector(7 downto 0);
-            lut_dout     : in  std_logic_vector(7 downto 0)
+            lut_dout     : in  std_logic_vector(7 downto 0);
+            -- FRAME LABEL: epoch arm in, {epoch_frame,frq,phase} + toggle out
+            epoch_tog    : in  std_logic;
+            pat_tag      : out std_logic_vector(5 downto 0);
+            pat_tog      : out std_logic
     );
     end component;
 
@@ -831,6 +840,9 @@ architecture Behavioral of Au2_SLI is
                ext_sync       : in  std_logic := '0';
                ext_tlp        : in  std_logic_vector(7 downto 0) := (others => '0');
                ext_tlp_tog    : in  std_logic := '0';
+               ext_pat        : in  std_logic_vector(5 downto 0) := (others => '0');
+               ext_pat_tog    : in  std_logic := '0';
+               epoch_tog_o    : out std_logic;
                cam_stat_tog_o : out std_logic;
                roi_col8_i     : in  std_logic_vector(7 downto 0) := (others => '0');
                roi_row8_i     : in  std_logic_vector(7 downto 0) := (others => '0');
@@ -1531,7 +1543,10 @@ i_processing: pixel_pipe Port map (
         olp_dbg      => olp_val,
         trig_cnt_dbg => trig_cnt,
         lut_din  => pat_lut_din,
-        lut_dout => pat_lut_dout
+        lut_dout => pat_lut_dout,
+        epoch_tog => epoch_tog_s,
+        pat_tag   => pat_tag_s,
+        pat_tog   => pat_tog_s
     );
 
 -- ---- WHITE, K, K, K, K sequence for projector profiling -------------------
@@ -1745,6 +1760,7 @@ i_cam_frame_ft : cam_frame_ft
         -- The top-left pixel of the incoming HDMI frame, and its update toggle,
         -- so the camera can stamp each captured frame with the pattern it saw.
         ext_tlp => tlp_to_cam(23 downto 16), ext_tlp_tog => tlp_tog_to_cam,
+        ext_pat => pat_tag_s, ext_pat_tog => pat_tog_s, epoch_tog_o => epoch_tog_s,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 

@@ -228,6 +228,13 @@ module cam_frame_ft #(
     // top) leaves them unused and the header simply reports tlp = 0.
     input  wire [7:0]  ext_tlp,
     input  wire        ext_tlp_tog,
+    // FRAME LABEL (see "FRAME LABEL" below). ext_pat = {epoch_frame, frq[1:0],
+    // phase[2:0]} of the pattern on screen, from pixel_pipe in the HDMI pixel clock
+    // domain, published once per frame with ext_pat_tog flipping in the same cycle.
+    // epoch_tog_o flips on opcode 8 bit 26 and arms pixel_pipe's epoch reset.
+    input  wire [5:0]  ext_pat,
+    input  wire        ext_pat_tog,
+    output reg         epoch_tog_o = 1'b0,
 
     input  wire        ft_clk,
     inout  wire [31:0] ft_data,
@@ -524,6 +531,10 @@ module cam_frame_ft #(
     // gl_now is captured AT the edge, so the delay is still measured from the vsync
     // itself and not from the deferred push.
     reg [23:0] gl_now_edge = 24'd0;
+    // FRAME LABEL: one projected-frame count per queued trigger, popped with it.
+    reg [31:0] raw_seq = 32'd0;                       // every ext_sync rise, never reset
+    reg [31:0] glq_lab [0:(1<<GLQ_AW)-1];
+    reg [31:0] lab_pop = 32'd0;
     reg [7:0]  xs_dly = 8'd0;
     wire       xs_use  = gl_div_i ? xs_dly[7] : xs_rise;
     wire       xs_want = gl_div_i ? (imp_phase_i == 3'd0) : 1'b1;
@@ -552,6 +563,10 @@ module cam_frame_ft #(
                     if (gl_ovf != 8'hFF) gl_ovf <= gl_ovf + 8'd1;
                 end else begin
                     glq[glq_wr] <= gl_base + gl_dly;
+                    // FRAME LABEL: the projected-frame count of the vsync that
+                    // scheduled this trigger. raw_seq increments ON xs_rise, so a push
+                    // in that same cycle must use the incremented value.
+                    glq_lab[glq_wr] <= xs_rise ? raw_seq + 32'd1 : raw_seq;
                     glq_wr      <= glq_nxt;
                 end
             end
@@ -572,6 +587,7 @@ module cam_frame_ft #(
             if (!glq_empty && !gl_late[23]) begin
                 gl_fire <= 1'b1;
                 glq_rd  <= glq_rd + 1'b1;
+                lab_pop <= glq_lab[glq_rd];   // FRAME LABEL of the entry being fired
             end
 
             // ---- outstanding count: push and pop resolved TOGETHER ----
@@ -772,6 +788,73 @@ module cam_frame_ft #(
         end
     end
     assign cam_trigger = {2'b00, (TRIGGERED != 0) ? trig0 : 1'b0};
+
+    //------------------------------------------- FRAME LABEL
+    // Which projected frame, and which pattern, did THIS exposure capture?
+    //
+    // THE COUNT. raw_seq counts ext_sync rises (one per projected frame) and is never
+    // reset. Each queued trigger carries the raw_seq of the vsync that scheduled it,
+    // through glq_lab -- the same FIFO, pushed and popped with the fire time, so the
+    // pairing is 1:1 by construction and cannot rotate.
+    //
+    // THE PATTERN. pixel_pipe publishes {epoch_frame, frq, phase} once per frame, a
+    // few microseconds after its vsync edge -- always AFTER this domain's xs_rise for
+    // the same frame -- so it is filed under the raw_seq that frame already holds. A
+    // 16-entry ring keeps the last 16 frames, tagged with their raw_seq so a lookup
+    // can prove it found the right one (delays up to 16 frames, 133 ms at 120 Hz).
+    //
+    // THE EPOCH. The frame pixel_pipe flags as its epoch frame -- the first after a
+    // host-armed reset, shown with pattern counter 0 -- becomes count 0: its raw_seq
+    // is taken as the origin, and every label is reported relative to it.
+    //
+    // WHEN THE LABEL IS TAKEN. At the end of the exposure as the FPGA scheduled it,
+    // trigger + exposure. The next trigger cannot come sooner than one frame period
+    // later, and the exposure limit guarantees exposure + 90 us <= T, so at that instant
+    // the most recent trigger IS this exposure's. The sensor starts reading the frame
+    // out after it, and the label is latched again at the sensor's own frame_start
+    // (wordclk, below) and rides with the pixels to the header like the ROI mean.
+    // Only triggers the sensor actually received count: gl_fire && since_ok, the
+    // same condition that restarts the trigger pulse.
+    reg  [2:0]  pat_cs = 3'b000;
+    reg  [4:0]  pat_ring  [0:15];
+    reg  [31:0] pat_rtag  [0:15];
+    reg  [31:0] epoch_base  = 32'd0;
+    reg         epoch_valid = 1'b0;
+    reg  [31:0] lab_fire = 32'd0;
+    reg  [23:0] lab_cnt  = 24'd0;
+    reg         lab_run  = 1'b0;
+    reg  [39:0] lab_done = 40'd0;   // {valid, epoch_valid, pat_ok, pat[4:0], seq[31:0]}
+    reg         lab_tog  = 1'b0;
+    // exposure in 10 ns ticks: expo_cur is in 375 ns units, x37.5
+    wire [23:0] expo_cyc = ({8'd0, expo_cur} * 24'd75) >> 1;
+    always @(posedge clk) begin
+        if (xs_rise) raw_seq <= raw_seq + 32'd1;
+        pat_cs <= {pat_cs[1:0], ext_pat_tog};
+        if (pat_cs[2] ^ pat_cs[1]) begin
+            pat_ring[raw_seq[3:0]] <= ext_pat[4:0];
+            pat_rtag[raw_seq[3:0]] <= raw_seq;
+            if (ext_pat[5]) begin
+                epoch_base  <= raw_seq;
+                epoch_valid <= 1'b1;
+            end
+        end
+        if (gl_live && gl_fire && since_ok) begin
+            lab_fire <= lab_pop;
+            lab_cnt  <= expo_cyc;
+            lab_run  <= 1'b1;
+        end else if (lab_run) begin
+            if (lab_cnt == 24'd0) begin
+                lab_run  <= 1'b0;
+                lab_done <= { 1'b1, epoch_valid,
+                              (pat_rtag[lab_fire[3:0]] == lab_fire),
+                              pat_ring[lab_fire[3:0]],
+                              lab_fire - epoch_base };
+                lab_tog  <= ~lab_tog;
+            end else begin
+                lab_cnt <= lab_cnt - 24'd1;
+            end
+        end
+    end
 
     //------------------------------------------- MONITOR-PIN TIMESTAMPING (G0)
     // What this measures: how long after the trigger edge the sensor ACTUALLY
@@ -977,6 +1060,7 @@ module cam_frame_ft #(
     // generator, which reads it.
     reg        rearm_tog = 1'b0;
     reg        rpl_tog   = 1'b0;   // M5: toggled on opcode 5
+    reg        hdr_ext   = 1'b0;   // FRAME LABEL: opcode 8 bit 27, format-5 header
 
     // FRAMES PER SCAN, runtime-settable (opcode 4). NFRAMES is only the power-on
     // default now. Bounded at MAXF because the burst has to fit DDR3 and the
@@ -1024,6 +1108,12 @@ module cam_frame_ft #(
                       nframes_r <= cw_ft[5:0];
             // G3: vsync -> trigger delay. bit27 enables genlock, [23:0] = 10 ns ticks.
             4'd7: begin gl_en <= cw_ft[27]; gl_dly <= cw_ft[23:0]; end
+            // FRAME LABEL: bit27 = extended (format 5) header on/off; bit26 = arm an
+            // epoch reset, applied by pixel_pipe on the next vsync.
+            4'd8: begin
+                hdr_ext <= cw_ft[27];
+                if (cw_ft[26]) epoch_tog_o <= ~epoch_tog_o;
+            end
             default: ;
             endcase
         end else if (cam_idle) begin
@@ -1179,10 +1269,33 @@ module cam_frame_ft #(
         roi_tlp_w <= tlp_w;
     end
 
+    // FRAME LABEL into wordclk: lab_done is stable for a whole frame period after
+    // lab_tog flips, so toggle + 3FF + sample is safe. Latched at frame_start like
+    // the phase and TLP above. A frame with no new label since the previous
+    // frame_start (free-running trigger, genlock off) reports valid = 0 instead of
+    // repeating the last one.
+    reg [2:0]  lab_ws    = 3'b000;
+    reg [39:0] lab_w     = 40'd0;
+    reg        lab_new   = 1'b0;
+    reg [39:0] roi_lab_w = 40'd0;
+    wire       lab_edge_w = lab_ws[2] ^ lab_ws[1];
+    always @(posedge wordclk) begin
+        lab_ws <= {lab_ws[1:0], lab_tog};
+        if (lab_edge_w) lab_w <= lab_done;
+        if (frame_start) begin
+            roi_lab_w <= lab_new ? lab_w : 40'd0;
+            lab_new   <= lab_edge_w;
+        end else if (lab_edge_w) begin
+            lab_new   <= 1'b1;
+        end
+    end
+
     reg [46:0] roi_hold_w = 47'd0;
+    reg [39:0] roi_labh_w = 40'd0;      // FRAME LABEL, held with the ROI result
     reg        roi_tog_w  = 1'b0;
     always @(posedge wordclk) if (roi_done_w) begin
         roi_hold_w <= {roi_tlp_w, roi_ph_w, roi_blk_w, roi_npx_w, roi_fcnt_w, roi_mean_w};
+        roi_labh_w <= roi_lab_w;
         roi_tog_w  <= ~roi_tog_w;
     end
 
@@ -1249,6 +1362,7 @@ module cam_frame_ft #(
                              roi_hold_w[38:36],                        // phase
                              1'b1 };                                   // valid
             roim_tlp_c  <= roi_hold_w[46:39];
+            roim_lab_c  <= roi_labh_w;
             roim_tog_c  <= ~roim_tog_c;
         end
     end
@@ -1290,6 +1404,7 @@ module cam_frame_ft #(
     //--------------------------------------------------------------------------
     reg [23:0] roim_hold_c = 24'd0;         // clk domain, packed for the header
     reg [7:0]  roim_tlp_c  = 8'd0;          // transmitted TLP for the same frame
+    reg [39:0] roim_lab_c  = 40'd0;         // FRAME LABEL for the same frame
     reg        roim_tog_c  = 1'b0;
 
     reg [2:0]  roim_s      = 3'b000;        // -> ui_clk
@@ -1329,6 +1444,7 @@ module cam_frame_ft #(
     // it. The extra MSB separates the two. 16 deep against a steady-state depth of
     // about one is margin, not need.
     reg [31:0] roim_fifo [0:15];
+    reg [39:0] roim_lfifo [0:15];            // FRAME LABEL, written and read with roim_fifo
     reg [4:0]  roim_wr = 5'd0, roim_rd = 5'd0;
     wire roim_empty = (roim_wr == roim_rd);
     wire roim_full  = (roim_wr[3:0] == roim_rd[3:0]) && (roim_wr[4] != roim_rd[4]);
@@ -1348,6 +1464,7 @@ module cam_frame_ft #(
         if (ui_rst) roim_wr <= 5'd0;
         else if (roim_pulse && roim_arm && !roim_full) begin
             roim_fifo[roim_wr[3:0]] <= {roim_tlp_c, roim_hold_c};
+            roim_lfifo[roim_wr[3:0]] <= roim_lab_c;      // FRAME LABEL, same entry
             roim_wr <= roim_wr + 5'd1;
         end
     end
@@ -1363,8 +1480,12 @@ module cam_frame_ft #(
     // WITH its frame is not about that frame. It arrives here already paired, from the
     // wordclk capture, so this array only has to store it.
     reg [31:0] roi_meta [0:7];
+    reg [39:0] lab_meta [0:7];               // FRAME LABEL per slot, stored with roi_meta
     integer rmi;
-    initial for (rmi = 0; rmi < 8; rmi = rmi + 1) roi_meta[rmi] = 32'd0;
+    initial for (rmi = 0; rmi < 8; rmi = rmi + 1) begin
+        roi_meta[rmi] = 32'd0;
+        lab_meta[rmi] = 40'd0;
+    end
 
     // ONE KERNEL, PACKED: 8 pixels x 10 bits = 80 bits = 10 bytes.
     //
@@ -1746,6 +1867,12 @@ module cam_frame_ft #(
     // ---- ring-buffer state (LIVE mode)
     reg        w_acc   = 1'b1;      // capturing this frame, or discarding it
     reg        r_busy  = 1'b0;      // reader owns r_slot right now
+    // FRAME LABEL: opcode-8 header-extension enable, clk -> ui_clk. Quasi-static,
+    // so a 2FF is enough; it is sampled once per packet (hext) so a change cannot
+    // split one header between two formats.
+    reg [1:0]  hext_s  = 2'b00;
+    reg        hext    = 1'b0;
+    always @(posedge ui_clk) hext_s <= {hext_s[0], hdr_ext};
     reg [2:0]  w_slot  = 3'd0;      // slot being written
     reg [2:0]  r_slot  = 3'd0;      // slot being read
     reg [15:0] w_skip  = 16'd0;     // frames discarded because the reader was on
@@ -2155,13 +2282,17 @@ module cam_frame_ft #(
                 // still describes those pixels, so leaving it alone is what keeps
                 // header and image agreeing.
                 if (!roim_empty) begin
-                    if (w_ddr) roi_meta[w_slot] <= roim_fifo[roim_rd[3:0]];
+                    if (w_ddr) begin
+                        roi_meta[w_slot] <= roim_fifo[roim_rd[3:0]];
+                        lab_meta[w_slot] <= roim_lfifo[roim_rd[3:0]];
+                    end
                     roim_rd <= roim_rd + 5'd1;
                 end else if (w_ddr) begin
                     // Queue empty: the result has not crossed yet. Say so with a
                     // clear valid bit rather than repeating the last frame's mean,
                     // which would read as a genuine measurement.
                     roi_meta[w_slot] <= 32'd0;
+                    lab_meta[w_slot] <= 40'd0;
                 end
                 w_slot <= w_next;
                 // THE RULE: never write the slot the reader is streaming from.
@@ -2339,11 +2470,23 @@ module cam_frame_ft #(
                 // distinguish "overflowed once at power-up" from "overflowing
                 // continuously", which is exactly the ambiguity that made this
                 // fault hard to pin down.
-                if (hw == 3'd0)
+                if (hw == 3'd0) begin
+                    hext <= hext_s[1];          // one header format per packet
                     ufifo_din <= { {2'd0, ldrop, (LIVE != 0) ? 6'd1 : nf_run,
                                    2'd0, (LIVE != 0) ? {3'd0, r_slot} : rf},
                                    {NROW[15:0], NCOL[15:0]},
                                    frame_idx, MAGIC };
+                end else if (hw == 3'd2)
+                    // FORMAT 5, word 2: the FRAME LABEL of this slot.
+                    //   [31:0]  seq          projected frames since the epoch frame
+                    //   [36:32] pattern      {frq[1:0], phase[2:0]} on screen in it
+                    //   [37]    pat_ok       the pattern ring still held that frame
+                    //   [38]    epoch_valid  an epoch reset has been applied
+                    //   [39]    lab_valid    a genlocked trigger produced this frame
+                    //   [127:96] 1           extension block version
+                    ufifo_din <= { 32'd1, 56'd0, lab_meta[r_slot] };
+                else if (hw == 3'd3)
+                    ufifo_din <= { ~MAGIC, 96'd0 };
                 else
                     // Format 3 = DENSE PACKED 10-BIT (4 px in 5 bytes). Format 2
                     // was 10-bit right-aligned in 16-bit words. The host MUST
@@ -2372,8 +2515,12 @@ module cam_frame_ft #(
                     // npx TRAVELS WITH THE MEAN ON PURPOSE. A mis-set ROI produces a
                     // perfectly plausible mean and no other symptom; npx is what
                     // separates a dark patch from a patch that is off the sensor.
-                    ufifo_din <= { ~MAGIC, 32'd3, roi_meta[r_slot], FBYTES };
-                if (hw == 3'd1) begin
+                    // FORMAT 5 = format 3 plus a second 32-byte block (words 2-3)
+                    // before the payload. FBYTES is still the PAYLOAD length; the
+                    // header length follows from the format. Format 4 is taken by
+                    // the control-reply packets.
+                    ufifo_din <= { ~MAGIC, hext ? 32'd5 : 32'd3, roi_meta[r_slot], FBYTES };
+                if (hw == (hext ? 3'd3 : 3'd1)) begin
                     hw <= 3'd0;
                     rd_iss <= 18'd0; rd_got <= 18'd0;
                     str <= R_RUN;

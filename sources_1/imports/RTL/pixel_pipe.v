@@ -64,7 +64,17 @@ module pixel_pipe(
     // (uart_ctrl, 256 entries, USB target 0x02); it powers up identity, so leaving it
     // unwritten is a no-op. COMBINATIONAL: lut_dout must come back in the same cycle.
     output wire [7:0] lut_din,     // raw 8-bit cosine value out of pattern_gen
-    input  wire [7:0] lut_dout     // linearized value back in
+    input  wire [7:0] lut_dout,    // linearized value back in
+    // FRAME LABEL. epoch_tog flips (in ANY clock domain) to arm a reset: on the next
+    // vsync the pattern counter returns to {frq,fra} = 0 and that frame is flagged as
+    // the epoch frame. pat_tag = {epoch_frame, frq[1:0], phase[2:0]} names the pattern
+    // ON SCREEN in the current frame and is published once per frame, 256 pixel clocks
+    // after the vsync edge, with pat_tog flipping in the same cycle (toggle + sample
+    // CDC on the far side). The delay puts the publish safely after the camera's own
+    // vsync edge, whichever polarity the sync has.
+    input  wire       epoch_tog,
+    output reg  [5:0] pat_tag = 6'd0,
+    output reg        pat_tog = 1'b0
     );
     parameter V=2'b01; parameter B=2'b10; parameter O=2'b11; //states for Vsync, V back porch + 1st hysnc period, others.
     reg flag=1'b0; // flag for pattern change
@@ -212,10 +222,27 @@ module pixel_pipe(
         rdy_cnt <= {3'b000, pending};
     end
 
+    //---- EPOCH RESET: arm from the host, apply on the next vsync ------------------
+    // The host cannot know which pattern a captured frame holds unless the pattern
+    // counter and the camera's frame count are zeroed on the SAME frame. The arm is a
+    // toggle from the camera's clock domain; it is applied here, at a frame edge, and
+    // the frame it lands on carries ep_frame = 1 in pat_tag so the camera block can
+    // take its own count's origin from that very frame.
+    wire       vs_edge = in_vsync && ~vsync_reg;
+    reg  [2:0] ep_s     = 3'b000;
+    reg        ep_pend  = 1'b0;
+    reg        ep_frame = 1'b0;
+    always@(posedge clk) begin
+        ep_s <= {ep_s[1:0], epoch_tog};
+        if (vs_edge && ep_pend)  ep_pend <= 1'b0;
+        else if (ep_s[2] ^ ep_s[1]) ep_pend <= 1'b1;
+        if (vs_edge) ep_frame <= ep_pend;
+    end
     always@(posedge clk) begin  //// examine rdy counter at rising edge of vsync
         if(mode==1'b0) begin frq<=2'd0; fra<=3'd0; hold<=1'b1; end
         else if (in_vsync && ~vsync_reg) begin
-            if (ori ^ ori_reg) begin frq<=2'd0; fra<=3'd0; hold<=1'b1; end
+            if (ep_pend) begin frq<=2'd0; fra<=3'd0; hold<=1'b0; end
+            else if (ori ^ ori_reg) begin frq<=2'd0; fra<=3'd0; hold<=1'b1; end
             // FREE-RUN: one advance per frame from the FPGA's own vsync. No serial
             // edges, so no ACK bytes in the camera lines and no late or doubled steps.
             else if  (rdy_cnt!= 4'h0 || seq_free)   begin //when edge counter is non-zero
@@ -375,6 +402,18 @@ module pixel_pipe(
     // The tag names the PHASE ON SCREEN (after the order table), not the slot, so a
     // reading says what was projected whatever order the host loaded.
     wire [7:0] tag     = {3'b000, frq, phase};
+    //---- publish the frame label, once per frame ---------------------------------
+    reg [8:0] pt_cnt = 9'd0;
+    always@(posedge clk) begin
+        if (vs_edge) pt_cnt <= 9'd256;
+        else if (pt_cnt != 9'd0) begin
+            pt_cnt <= pt_cnt - 9'd1;
+            if (pt_cnt == 9'd1) begin
+                pat_tag <= {ep_frame, frq, phase};
+                pat_tog <= ~pat_tog;
+            end
+        end
+    end
 
     // ---- WINDOW: fringes only inside [x0,x1) x [y0,y1), black elsewhere --------
     // Counted on the delayed blank that is aligned with pattern_gen's output, so

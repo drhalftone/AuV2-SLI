@@ -47,6 +47,7 @@ OP_W, OP_R, OP_L, OP_LR = 0x57, 0x52, 0x5B, 0x72
 MAGIC, RMAGIC = 0x30494C53, 0x31494C53
 HDR = 32
 FMT_STATUS, FMT_CTRL = 1, 4
+FMT_LABEL, HDR_EXT = 5, 64      # frames with the 32-byte FRAME LABEL block appended
 
 
 def ck(total):
@@ -153,6 +154,18 @@ class FtLink:
         """Opcode 6 with the enable low: release the idle hold immediately."""
         return self.send_word(6 << 28)
 
+    def frame_label(self, enable=True, epoch=False):
+        """Opcode 8: FRAME LABEL control.
+
+        enable -> frames carry the 64-byte format-5 header (seq, pattern, flags).
+        epoch  -> arm an epoch reset: on the next projected vsync the FPGA returns
+                  its pattern counter to {frq,phase} = 0 and that frame becomes
+                  seq 0, so seq and pattern name each captured frame exactly.
+        Both bits travel in one word; enable is a level, epoch a one-shot.
+        """
+        return self.send_word((8 << 28) | (int(bool(enable)) << 27)
+                              | (int(bool(epoch)) << 26))
+
     # ---------------- reply direction ----------------
     def pump(self):
         """Read once from the IN pipe and walk out whole packets."""
@@ -170,11 +183,15 @@ class FtLink:
                 break
             h = struct.unpack_from("<8I", self._acc, i)
             if h[0] == MAGIC and h[7] == (~MAGIC & 0xFFFFFFFF):
-                if len(self._acc) - i < HDR + h[4]:
+                # Format 5 frames carry a second 32-byte FRAME LABEL block; h[4] is
+                # always the payload length, so the skip has to add the header the
+                # format declares.
+                hl = HDR_EXT if h[6] == FMT_LABEL else HDR
+                if len(self._acc) - i < hl + h[4]:
                     break
                 self._synced = True
                 self.frames += 1
-                i += HDR + h[4]
+                i += hl + h[4]
             elif h[0] == RMAGIC and h[7] == (~RMAGIC & 0xFFFFFFFF):
                 if len(self._acc) - i < HDR + h[4]:
                     break
