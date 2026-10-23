@@ -18,27 +18,29 @@
 \newcommand{\nano}{n}\newcommand{\milli}{m}\newcommand{\mega}{M}
 \newcommand{\second}{s}\newcommand{\hertz}{Hz}\newcommand{\metre}{m}
 \newcommand{\percent}{\%}
+\newcommand{\ohm}{\ensuremath{\Omega}}
 \usepackage{xcolor}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,backgrounds}
 \usepackage{url}
 \usepackage[T1]{fontenc}
+\usepackage{algorithm}
+\usepackage[noend]{algpseudocode}
 
 \newcommand{\pending}[1]{\textcolor{red}{[#1]}}
 \newcommand{\us}{\,\si{\micro\second}}
 
 \begin{document}
 
-\title{Bring Your Own Projector: An FPGA Camera Inside the HDMI Path\\
-for Genlocked Structured Light and Projector Profiling}
+\title{Structured Light 3D Scanning By Means of a BYOP Machine Vision Camera}
 
-\author{Daniel~L.~Lau% \pending{IEEE membership grade?}
+\author{Daniel~L.~Lau,~\IEEEmembership{Fellow,~IEEE}%
 \IEEEcompsocitemizethanks{\IEEEcompsocthanksitem D.\,L.~Lau is with the Department of
 Electrical and Computer Engineering, University of Kentucky, Lexington, KY 40506, USA.\protect\\
 E-mail: dllau@uky.edu}}
 
 \markboth{IEEE Transactions on Pattern Analysis and Machine Intelligence}%
-{Lau: Bring Your Own Projector}
+{Lau: Structured Light 3D Scanning By Means of a BYOP Machine Vision Camera}
 
 \IEEEtitleabstractindextext{%
 \begin{abstract}
@@ -85,9 +87,7 @@ reconstruct depth based on the warping of the patterns over the target object's
 surface~\cite{salvi2004pattern,geng2011tutorial,zuo2018phase}. In this way, the projector takes
 the place of the second camera in a stereo pair, and the correspondence between a camera pixel
 and a projector row or column is established by the projected patterns rather than by the
-texture of the scene.
-
-Passive stereo vision, by comparison, must find correspondences from
+texture of the scene. Passive stereo vision, by comparison, must find correspondences from
 scene texture and fails on surfaces that have none~\cite{scharstein2002taxonomy}, while
 time-of-flight (ToF) cameras measure depth directly from the round-trip time of modulated light
 but at a lower lateral resolution and with depth errors caused by multi-path
@@ -102,41 +102,31 @@ resolution for spatial resolution such that each pixel can be independently proc
 neighbors to produce a single point for each pixel in the camera. In phase measuring
 profilometry (PMP), the projector coordinate of each pixel is encoded through phase modulation
 over a minimum of three patterns, with multi-frequency schemes requiring
-more~\cite{liu2010dualfreq,zuo2018phase}.
-
-As a scanning process, multiple pattern SLI assumes that
-the target object is stationary for the duration of the scan; when the object moves, the
+more~\cite{liu2010dualfreq,zuo2018phase}. As a scanning process, multiple pattern SLI assumes
+that the target object is stationary for the duration of the scan; when the object moves, the
 samples recorded at a pixel come from different surface points, and the reconstruction suffers
 from ripple and decoding errors~\cite{weise2007fast,zhang2018review}. For this reason, it is
 desirable for the pattern sequence to run as fast as possible.
 
 % ---- 3+4. Cameras cap the useful rate; light engines vs commodity projectors -----------
-In practice, the camera limits the scan rate since each pattern must be captured in its own
-image. Machine vision cameras with megapixel global-shutter sensors operate at around
-\SI{200}{fps}, and the PYTHON~1300 sensor used in this paper operates at up to \SI{210}{fps} at
-full resolution. DLP light engines built for structured light display binary patterns at tens
-of thousands of patterns per second, a rate that such cameras cannot use, and they are either
-expensive or dim (Section~\ref{sec:rw_engines}).
-
-The scan rate is further limited by the light output of the projector and by the bandwidth
-between the camera and the host computer. A projector with a low lumen output requires a longer
-exposure to collect the same signal, and since each exposure must end before the next pattern's
-exposure begins, the exposure time sets a lower bound on the time per pattern. At the same time,
-every image must be transferred to the host: a $1280\times1024$ image at 10 bits per pixel is
-\SI{1.64}{MB}, so \SI{120}{fps} requires \SI{197}{MB/s} of sustained bandwidth between the camera
-and the host. A structured light scanner is therefore limited both by its exposure, and through
-the exposure by its projector's light output, and by the bandwidth of its link to the host.
-Low light output also rules out a simple remedy for the color processing of commodity projectors
-described in Section~\ref{sec:rw_electronics}: projecting a single color and placing a matching
-color filter on the camera lens. A filter that passes one LED of an RGB projector rejects the
-light of the other two, and so it requires a still longer exposure for the same signal.
+In practice, three factors limit the scan rate: the frame rate of the camera, the light output of
+the projector, and the bandwidth between the camera and the host computer. Each pattern must be
+captured in its own image, and machine vision cameras with megapixel global-shutter sensors
+operate at around \SI{200}{fps}; the PYTHON~1300 sensor used in this paper operates at up to
+\SI{210}{fps} at full resolution. DLP light engines built for structured light display binary
+patterns at tens of thousands of patterns per second, a rate that such cameras cannot use, and
+they are either expensive or have low lumen counts (Section~\ref{sec:rw_engines}). A projector
+with a low lumen count requires a longer exposure to collect the same signal, and since each
+exposure must end before the next pattern's exposure begins, the exposure time sets a lower bound
+on the time per pattern. Every image must also be transferred to the host: a $1280\times1024$
+image at 10 bits per pixel is \SI{1.64}{MB}, so \SI{120}{fps} requires \SI{197}{MB/s} of
+sustained bandwidth between the camera and the host.
 
 For these reasons, commodity projectors are an attractive alternative. ``3D-ready'' DLP
 projectors accept \SI{120}{\hertz} video and can emit more than 1500 lumens, and if a light
 output below 1000 lumens is acceptable, then LED projectors can be used, whose LED lifetimes of
 tens of thousands of hours make them practical for industrial applications
 (Section~\ref{sec:rw_engines}).
-
 % ---- 5. Commodity projectors are hard to set up: no stored patterns, no GPIO -----------
 Commodity projectors are, however, difficult to integrate into a 3D scanner. A commodity
 projector cannot store a static set of patterns in hardware, so every pattern must be sent over
@@ -179,8 +169,9 @@ temporal sequence of mirror states, applies a nonlinear tone curve, and can redi
 input among illumination components that the HDMI signal cannot address independently
 (Section~\ref{sec:rw_electronics}).
 
-An RGB LED projector also creates a problem of its own for SLI. The white pattern is the sum of
-three patterns, one from each LED, and a pixel of a monochrome camera records each of them
+An RGB LED projector also creates a problem of its own for SLI. A structured light pattern sent
+as gray levels, with equal red, green, and blue values, is projected as the sum of three
+patterns, one from each LED, and a pixel of a monochrome camera records each of them
 weighted by the reflectance of the surface in that LED's band, so that a green surface returns
 mostly the green pattern and a blue surface mostly the blue. If the three LEDs produce the same
 phase, the recorded phase is independent of the surface color. If they do not, because the LEDs
@@ -190,6 +181,14 @@ the same form as the multi-path interference studied by Zhang
 \emph{et~al.}~\cite{zhang2019bimodal,zhang2024bimodalps}, and the error cannot be removed by a
 calibration made under the combined RGB light. Each LED must therefore be, by itself, a correct
 SLI projector that produces the same phase as the other two.
+
+Projecting through only one LED does not avoid this requirement. Restricting the patterns to a
+subset of the red, green, and blue channels discards the light of the other LEDs and so reduces
+the light output of the projector, which is the property for which a commodity projector is
+chosen. A pattern sent as pure red, green, or blue also need not be displayed by one LED alone:
+the projector's color processing maps each input color to the drive of its light sources, in the
+manner of an ICC color profile, and can turn on more than one LED to display a single
+primary~\cite{stone2001color,ti_dlpa038} (Section~\ref{sec:rw_electronics}).
 
 % ---- 8. What this paper does -----------------------------------------------------------
 This being the case, this paper studies the profiling of an LED commodity projector through the
@@ -259,117 +258,124 @@ the HDMI signal from these measurements, and its effect on phase and depth error
 \section{Related Work}
 \label{sec:related}
 
-This section reviews the patterns of SLI and the projection hardware that displays them, then the ways that cameras
-have been synchronized with commodity projectors, the FPGA cameras that use the same sensor as
-the BYOP camera, the processing inside a projector that stands between its video input and its
-light, and finally multi-path, the class of errors to which that processing contributes.
+This section reviews the patterns of SLI and the projection hardware that displays them, then the
+ways that cameras have been synchronized with commodity projectors, the FPGA cameras that use the
+same sensor as the BYOP camera, the processing inside a projector that stands between its video
+input and its light, and finally multi-path, the class of errors to which that processing
+contributes.
 
 \subsection{Structured light and phase shifting}
 Pattern codification strategies for SLI are surveyed by Salvi
 \emph{et~al.}~\cite{salvi2004pattern} and by Geng~\cite{geng2011tutorial}, and phase-shifting
 algorithms by Zuo \emph{et~al.}~\cite{zuo2018phase}. Liu \emph{et~al.}~\cite{liu2010dualfreq}
-combine a high and a low spatial frequency in each pattern to unwrap phase with fewer patterns,
-and Liu \emph{et~al.}~\cite{liu2010gamma} model the periodic phase error caused by the
-projector's gamma. The pattern generator of the BYOP camera uses three spatial frequencies in a
-fixed $1{:}6{:}36$ ratio, and it carries a lookup table in the pattern path so that the
-projector's tone curve can be corrected before the patterns are sent.
+combine a fine and a coarse stripe pattern in each image so that fewer patterns are needed to
+resolve which stripe a pixel sees, and Liu \emph{et~al.}~\cite{liu2010gamma} show that the
+projector's tone curve, which makes the displayed brightness grow faster than the input value,
+produces a repeating error in the measured phase. The pattern generator of the BYOP camera uses
+three stripe frequencies in a fixed 1:6:36 ratio, and it passes every pattern through a lookup
+table so that the projector's tone curve can be corrected before the patterns are sent.
 
-High-speed SLI systems avoid the limits of video projection by displaying binary patterns
-directly on a DMD. Zhang and Huang~\cite{zhang2006realtime} as well as Zhang
+High-speed SLI systems avoid the limits of video projection by displaying black-and-white
+patterns directly on a DMD. Zhang and Huang~\cite{zhang2006realtime} as well as Zhang
 \emph{et~al.}~\cite{zhang2010superfast} use this approach for real-time and superfast phase
-shifting, and Lei and Zhang~\cite{lei2009defocus} defocus the projector so that binary patterns
-blur into sinusoids. Gong and Zhang~\cite{gong2010ultrafast} apply binary defocusing with an
-off-the-shelf DLP projector. A review of these methods is given by Zhang~\cite{zhang2018review}. These systems depend on
+shifting, and Lei and Zhang~\cite{lei2009defocus} defocus the projector so that the
+black-and-white stripes blur into smooth gray-level stripes. Gong and
+Zhang~\cite{gong2010ultrafast} apply the same defocusing with an off-the-shelf DLP projector, and
+a review of these methods is given by Zhang~\cite{zhang2018review}. These systems depend on
 projection hardware that exposes the DMD directly, which brings us to the light engines built
 for that purpose.
 
 \subsection{Light engines and commodity projectors}
 \label{sec:rw_engines}
 The DLP chipsets designed for high-speed pattern display operate far faster than any camera that
-watches them. The DLPC410 controller drives the DLP7000 digital micromirror device (DMD) at up
-to 23\,000 binary patterns per second over the full array, and at up to 48\,000 binary patterns
-per second in its LOAD4 mode, which loads the same data into groups of four rows and so reduces
-the vertical resolution by a factor of four~\cite{ti_dlpc410,ti_dlp7000}. Either rate exceeds the
-frame rate of a megapixel machine vision camera by more than two orders of magnitude. Barreto
-describes the structured light modes, stored pattern sequences, and trigger outputs of TI's
-development kits~\cite{barreto2011dlp}; industrial light engines and development kits are
-either very expensive or have a low lumen output \pending{cite: price of an industrial engine;
-lumens of a DLP LightCrafter}.
+watches them. The DLPC410 controller drives the DLP7000 digital micromirror device (DMD) at up to
+23\,000 black-and-white patterns per second over the full array, and at up to 48\,000 patterns
+per second in a mode that repeats each row of the pattern four times and so gives up three
+quarters of the vertical resolution~\cite{ti_dlpc410,ti_dlp7000}. Either rate exceeds the frame
+rate of a megapixel machine vision camera by more than two orders of magnitude.
+
+Barreto describes the structured light modes, stored pattern sequences, and trigger outputs of
+TI's development kits~\cite{barreto2011dlp}. These kits and the industrial light engines built on
+the same chipsets are either expensive or have low lumen counts. TI's DLP LightCrafter~4500, for
+example, displays up to 4225 black-and-white patterns per second from an RGB LED light engine
+rated at 150 lumens~\cite{ti_dlplcr4500evm}. At the other extreme, TI's DLP Discovery~4100
+platform, which displays binary patterns at up to 32\,000 per second, consists of a controller
+board listed at about US\$2400 and a DMD board listed at about US\$2200 for the
+DLP7000~\cite{ti_dlpu040,mouser_d4100}, and these prices buy the mirrors and their electronics
+only: the platform includes no light source, illumination optics, or projection lens, which must
+be supplied separately~\cite{ti_dlpu040}.
 
 Commodity projectors make the opposite trade, displaying patterns at a rate that machine vision
-cameras can match. ``3D-ready'' DLP projectors, built for shutter-glass stereo viewing, accept \SI{120}{\hertz}
-video and can have light outputs above 1500 lumens. As an example, ProjectorCentral measured
-2494 lumens from the 3D-ready BenQ W600 in its brightest mode, and 1748 lumens in its standard
-mode~\cite{pc_benq_w600}. The Optoma ML750ST used in this paper is an LED DLP projector with
-individual red, green, and blue LEDs and a rated LED life of 20\,000 hours, and it accepts
-800$\times$600 video at \SI{120}{\hertz}~\cite{optoma_ml750st,pc_ml750st_specs}.
+cameras can match. ``3D-ready'' DLP projectors, built for shutter-glass stereo viewing, accept
+\SI{120}{\hertz} video and can have light outputs above 1500 lumens. As an example,
+ProjectorCentral measured 2494 lumens from the 3D-ready BenQ W600 in its brightest mode, and 1748
+lumens in its standard mode~\cite{pc_benq_w600}. The Optoma ML750ST used in this paper is an LED
+DLP projector with individual red, green, and blue LEDs and a rated LED life of 20\,000 hours, and
+it accepts 800$\times$600 video at \SI{120}{\hertz}~\cite{optoma_ml750st,pc_ml750st_specs}.
 
 Optoma rates the ML750ST at 700 lumens, a figure that ProjectorCentral reports as the perceived
-equivalent of a lamp projector's ANSI lumens rather than a measured light output;
-ProjectorCentral measured 490 lumens in the ML750ST's brightest mode and 322 lumens in its
-cinema mode~\cite{pc_ml750st_review}. ProjectorCentral also lists the ML750ST's input lag, the
-delay between the arrival of a frame at the HDMI input and its appearance on screen, as
+equivalent of a lamp projector's lumens rather than a measured light output; ProjectorCentral
+measured 490 lumens in the ML750ST's brightest mode and 322 lumens in its cinema
+mode~\cite{pc_ml750st_review}. ProjectorCentral also lists the ML750ST's input lag, the delay
+between the arrival of a frame at the HDMI input and its appearance on screen, as
 \SI{16.5}{\milli\second} for 1080p video at \SI{60}{\hertz}~\cite{pc_ml750st_specs}.
 
 We further note that faster scan rates are available from commodity 4K DLP projectors. TI's
-0.47-inch 4K UHD DMD has an array of $1920\times1080$ micromirrors and displays a
-$3840\times2160$ image by shifting the image among four positions with an optical actuator
-(four-way XPR), and the chipsets built on this DMD accept 4K UHD video at \SI{60}{\hertz} or
-1080p video at \SI{240}{\hertz}~\cite{ti_dlp471te,ti_dlpc6540}. An SLI scanner built around a
-commodity 4K DLP projector could therefore scan at \SI{240}{\hertz}; such a scanner has not yet
-been demonstrated. Whatever its rate, a commodity projector accepts patterns only through its
-video input and offers no trigger, so a scanner built on one must synchronize its camera by
-other means.
+0.47-inch 4K UHD DMD has 1920$\times$1080 micromirrors and builds a 3840$\times$2160 image by
+shifting the picture among four positions with an optical actuator, and the chipsets built on
+this DMD accept 4K video at \SI{60}{\hertz} or 1080p video at
+\SI{240}{\hertz}~\cite{ti_dlp471te,ti_dlpc6540}. An SLI scanner built around a commodity 4K DLP
+projector could therefore scan at \SI{240}{\hertz}; such a scanner has not yet been demonstrated.
+Whatever its rate, a commodity projector accepts patterns only through its video input and
+offers no trigger, so a scanner built on one must synchronize its camera by other means.
 
 \subsection{Synchronizing commodity projectors and cameras}
 \label{sec:rw_sync}
-Examples of how to deal with this lack of synchronization include
-Wilm \emph{et~al.}~\cite{wilm2014calibration}, who insert fixed pauses between pattern
-presentation and image capture to accommodate buffering in the graphics card and projector, as
-well as Petkovi\'c \emph{et~al.}~\cite{petkovic2016software}, who use the vertical blanking
-interval of the video output as a timing reference and estimate the combined projector--camera
-delay from captured images. Moreno \emph{et~al.}~\cite{moreno2015unsync} take the approach of
-operating projector and camera independently and synthesizing, from the unsynchronized images,
-the images that a synchronized system would have captured. Zuo
-\emph{et~al.}~\cite{zuo2012highspeed}, alternatively, modify a commodity projector with custom
-hardware that drives its DMD directly.
+Examples of how to deal with this lack of synchronization include Wilm
+\emph{et~al.}~\cite{wilm2014calibration}, who insert fixed pauses between pattern presentation and
+image capture to accommodate buffering in the graphics card and projector, as well as Petkovi\'c
+\emph{et~al.}~\cite{petkovic2016software}, who use the blanking interval between video frames as
+a timing reference and estimate the combined projector--camera delay from captured images. Moreno
+\emph{et~al.}~\cite{moreno2015unsync} take the approach of running projector and camera
+independently and computing, from the unsynchronized images, the images that a synchronized
+system would have captured. Zuo \emph{et~al.}~\cite{zuo2012highspeed}, alternatively, modify a
+commodity projector with custom hardware that drives its DMD directly.
 
-While each of these systems uses a commodity projector,
-none of them solves the problem of triggering the camera from the projector. To the best of our
-knowledge, Yu \emph{et~al.}~\cite{yu2019dualspie,yu2020dualprojector} are the first and only to
-demonstrate an SLI scanner with a controller fully interfaced between the HDMI video signal and
-the GPIO trigger of the camera.
+While each of these systems uses a commodity projector, none of them solves the problem of
+triggering the camera from the projector. To the best of our knowledge, Yu
+\emph{et~al.}~\cite{yu2019dualspie,yu2020dualprojector} are the first and only to demonstrate an
+SLI scanner with a controller fully interfaced between the HDMI video signal and the GPIO trigger
+of the camera.
 
-Their controller operates either in an offline mode, in which it generates the
-video and patterns itself, or in a pass-through mode, in which it forwards video from a host
-computer; for their dual-projector scanner, both of the controller's HDMI ports were used as
-outputs, one to each projector~\cite{yu2020dualprojector}. As an example of a feature of the
-pass-through mode, Yu~\cite{yu2019dissertation} describes reading the top-left pixel of each
-incoming frame and triggering the camera only when that pixel's value changes, so that frames
-duplicated by the host's graphics processing unit (GPU) are not captured. Their controller waits
-out the trigger delay and the exposure before handling the next frame, a limitation analyzed in
-Section~\ref{sec:stacking}. That limitation follows from controlling an external camera
-through GPIO, and removing it means building the camera into the FPGA itself.
+Their controller operates either in an offline mode, in which it generates the video and patterns
+itself, or in a pass-through mode, in which it forwards video from a host computer; for their
+dual-projector scanner, both of the controller's HDMI ports were used as outputs, one to each
+projector~\cite{yu2020dualprojector}. As an example of a feature of the pass-through mode,
+Yu~\cite{yu2019dissertation} describes reading the top-left pixel of each incoming frame and
+triggering the camera only when that pixel's value changes, so that frames repeated by the host's
+graphics processing unit (GPU) are not captured. Their controller waits out the trigger delay and
+the exposure before handling the next frame, a limitation analyzed in
+Section~\ref{sec:stacking}. That limitation follows from controlling an external camera through
+GPIO, and removing it means building the camera into the FPGA itself.
 
 \subsection{FPGA cameras built on the PYTHON 1300}
 Building the camera into the FPGA requires the FPGA to configure the image sensor itself, and the
 configuration of most image sensors is not public. The onsemi PYTHON~1300 is a 1.3-megapixel
-global-shutter CMOS sensor that reads out at up to \SI{210}{fps} at its full $1280\times1024$
+global-shutter CMOS sensor that reads out at up to \SI{210}{fps} at its full 1280$\times$1024
 resolution over four LVDS data lanes, and it is configured over a serial peripheral interface
-(SPI). Its datasheet publishes the register map, but not the values that make the sensor stream:
-the registers of the clock generator, image core, analog front end, bias, and LVDS outputs are
-listed only as ``configure according to recommendation,'' the reserved registers must be
-uploaded with values that are not given, and the datasheet states that the SPI uploads for each
-operating mode are available to customers under a non-disclosure agreement
-(NDA)~\cite{onsemi_python1300}. An FPGA design that is to be published therefore cannot be
-written from the datasheet alone.
+(SPI). Its datasheet lists the sensor's registers, but not the values that make the sensor
+stream: the registers of the clock generator, image core, analog front end, bias, and LVDS
+outputs are listed only as ``configure according to recommendation,'' the reserved registers must
+be loaded with values that are not given, and the datasheet states that the register uploads for
+each operating mode are available to customers under a non-disclosure agreement
+(NDA)~\cite{onsemi_python1300}. An FPGA design that is to be published therefore cannot be written
+from the datasheet alone.
 
 For this reason, we chose a sensor for which a working configuration had already been published
 with an FPGA design. Three such designs connect the PYTHON~1300 directly to an FPGA. Avnet
-publishes a reference design for its PYTHON-1300-C camera module, with
-constraint files for several Zynq development boards, an SPI controller for the sensor, and the
-complete register upload sequence, including the sensor's sequencer timing
-program~\cite{avnet_hdl}. The Open Vision Computer of Quigley
+publishes a reference design for its PYTHON-1300-C camera module, with files for several Zynq
+development boards, an SPI controller for the sensor, and the complete register upload sequence,
+including the sensor's timing program~\cite{avnet_hdl}. The Open Vision Computer of Quigley
 \emph{et~al.}~\cite{quigley2019ovc} is an embedded vision system for mobile robots: its first
 revision carries three PYTHON~1300 sensors on an Artix-7 FPGA with DRAM and a USB~3 controller,
 and later revisions pair two PYTHON~1300 sensors with an Intel Cyclone FPGA and an NVIDIA Jetson
@@ -377,9 +383,9 @@ TX2~\cite{osrf_ovc}.
 
 Chalich \emph{et~al.}~\cite{chalich2020lowcost} built a low-cost, standalone high-speed camera
 around the monochrome PYTHON~1300 and a MicroZed board with a Zynq-7020, reaching \SI{211}{fps}
-at full resolution and \SI{2329}{fps} at $256\times256$, with frames stored in DDR3 memory and
-saved to an SD card, and they release the design as open source~\cite{hfrc}. Each of these
-designs reads the sensor and stores or streams its images; none of them has a video interface or
+at full resolution and \SI{2329}{fps} at 256$\times$256, with frames stored in DDR3 memory and
+saved to an SD card, and they release the design as open source~\cite{hfrc}. Each of these designs
+reads the sensor and stores or streams its images; none of them has a video interface or
 synchronizes the sensor to a projector. The BYOP camera's receive path was written for this work,
 using the Avnet register sequence and the pixel ordering of the Open Vision Computer's decoder as
 references.
@@ -388,28 +394,27 @@ references.
 \label{sec:rw_electronics}
 With the camera inside the video path, the remaining question is how the projector turns that
 video into light, since its electronics stand between the frame the camera knows about and the
-light the camera receives. Petkovi\'c \emph{et~al.}~\cite{petkovic2016software} note that triggering a camera from the
-video signal ignores the projector's input lag, which they measured at \SI{16.8}{\milli\second}
-in one projector's \SI{120}{\hertz} 3D mode and 30--\SI{42}{\milli\second} in its other modes.
-Narasimhan \emph{et~al.}~\cite{narasimhan2008dithering} as well as Koppal
-\emph{et~al.}~\cite{koppal2012dlp} show that a DLP projector renders a constant input intensity as
-a rapid temporal sequence of binary mirror states, such that the light integrated by a short
+light the camera receives. Petkovi\'c \emph{et~al.}~\cite{petkovic2016software} note that
+triggering a camera from the video signal ignores the projector's input lag, which they measured
+at \SI{16.8}{\milli\second} in one projector's \SI{120}{\hertz} 3D mode and 30--\SI{42}{\milli\second}
+in its other modes. Narasimhan \emph{et~al.}~\cite{narasimhan2008dithering} as well as Koppal
+\emph{et~al.}~\cite{koppal2012dlp} show that a DLP projector displays a constant gray level as a
+rapid sequence of mirror flips between on and off, such that the light collected by a short
 exposure depends on when that exposure occurs within the frame.
 
 The projector also changes what is displayed, not only when. Stone~\cite{stone2001color}
-describes the gamma-shaped intensity transfer functions applied by projector electronics, and
-she, as well as Seime and Hardeberg~\cite{seime2003colorimetric} and Wyble and
-Zhang~\cite{wyble2003dlp}, show that DLP projectors with a clear color-wheel segment redistribute
-the input RGB values into red, green, blue, and white contributions.
+describes the tone curves that projector electronics apply to the input, and she, as well as
+Seime and Hardeberg~\cite{seime2003colorimetric} and Wyble and Zhang~\cite{wyble2003dlp}, show that
+DLP projectors with a clear segment in their color wheel convert the input red, green, and blue
+values into red, green, blue, and white light.
 
-Cotting
-\emph{et~al.}~\cite{cotting2004embedding} measured the consequence directly, finding that for
-some pixel values a small change in one primary changes the mirror sequence of the other
-primaries; they measured these sequences first with a phototransistor and then with a camera
-whose exposure start time was swept across the frame. LED projectors eliminate the color wheel
-but not necessarily the problem, since DLP controllers can turn on two or more LEDs at once to
-produce yellow, cyan, magenta, or white intervals~\cite{ti_dlpa038}, an illumination component
-that cannot be addressed independently through the three channels of an HDMI signal.
+Cotting \emph{et~al.}~\cite{cotting2004embedding} measured the consequence directly, finding that
+for some pixel values a small change in one color changes the mirror sequence of the other
+colors; they measured these sequences first with a phototransistor and then with a camera whose
+exposure start time was swept across the frame. LED projectors eliminate the color wheel but not
+necessarily the problem, since DLP controllers can turn on two or more LEDs at once to produce
+yellow, cyan, magenta, or white intervals~\cite{ti_dlpa038}, light that cannot be controlled
+independently through the three color channels of an HDMI signal.
 
 \subsection{Light transport and multi-path}
 Light that reaches a camera pixel from more than one source is a familiar problem in SLI,
@@ -422,35 +427,65 @@ off specular surfaces onto neighboring surface points before returning to the ca
 Examples of how to deal with multi-path in ToF include Dorrington
 \emph{et~al.}~\cite{dorrington2011separating} as well as Bhandari
 \emph{et~al.}~\cite{bhandari2013multifrequency} and Godbaz \emph{et~al.}~\cite{godbaz2012closed},
-who take the common approach of making depth measurements at many modulation frequencies and
-fitting the phase and magnitude of each component path. Freedman
-\emph{et~al.}~\cite{freedman2014sra} assume that the reflection is sparse, Naik
-\emph{et~al.}~\cite{naik2015light} combine ToF measurements with a model of direct and global
-light transport, and Kadambi \emph{et~al.}~\cite{kadambi2013coded}, O'Toole
+who take the common approach of measuring depth at many modulation frequencies and fitting the
+strength and delay of each path. Freedman \emph{et~al.}~\cite{freedman2014sra} assume that only a
+few paths contribute, Naik \emph{et~al.}~\cite{naik2015light} combine ToF measurements with a model
+of direct and indirect light, and Kadambi \emph{et~al.}~\cite{kadambi2013coded}, O'Toole
 \emph{et~al.}~\cite{otoole2014temporal}, and Gupta \emph{et~al.}~\cite{gupta2015phasor} code the
 illumination in time to separate the paths.
 
-In SLI, Nayar \emph{et~al.}~\cite{nayar2006separation} separate the direct and global components
-of a scene with high-frequency illumination, Gupta \emph{et~al.}~\cite{gupta2011global} design
-patterns that are robust to global illumination, and Gupta and Nayar~\cite{gupta2012micro}
-restrict phase shifting to a narrow band of high frequencies. Chen
-\emph{et~al.}~\cite{chen2008modulated} modulate the phase-shifting patterns to reject
-subsurface scattering, Couture \emph{et~al.}~\cite{couture2011unstructured} replace striped
-patterns with random ones to overcome interreflections, and Dedrick~\cite{dedrick2011sli} studies
-SLI in optically challenging environments. O'Toole
-\emph{et~al.}~\cite{otoole2012primaldual,otoole2014slt,otoole2015homogeneous} synchronize coded
-exposure to the projector to select or reject light-transport paths.
+In SLI, Nayar \emph{et~al.}~\cite{nayar2006separation} separate the light that travels directly
+from the projector to a surface point from the light that arrives indirectly, using finely
+striped illumination, Gupta \emph{et~al.}~\cite{gupta2011global} design patterns that are robust
+to indirect light, and Gupta and Nayar~\cite{gupta2012micro} restrict phase shifting to a narrow
+band of fine stripe patterns. Chen \emph{et~al.}~\cite{chen2008modulated} modulate the
+phase-shifting patterns to reject light scattered beneath the surface, Couture
+\emph{et~al.}~\cite{couture2011unstructured} replace striped patterns with random ones to
+overcome interreflections, and Dedrick~\cite{dedrick2011sli} studies SLI in optically
+challenging environments. O'Toole
+\emph{et~al.}~\cite{otoole2012primaldual,otoole2014slt,otoole2015homogeneous} synchronize the
+camera's exposure to the projector to select or reject particular light paths.
 
 Zhang \emph{et~al.}~\cite{zhang2019bimodal,zhang2024bimodalps} address the case in which a camera
-pixel receives light from exactly two projector positions, such as along a step edge, and
-separate the two phases by measuring how their phasors interfere constructively and
-destructively as the spatial frequency of the PMP patterns changes. An RGB LED projector viewed
-by a monochrome camera produces a mixture of the same form without any second surface: each
-pixel records the sum of three patterns, one per LED, weighted by the reflectance of the surface
-in each LED's band, and if the three patterns do not share the same phase, the recorded phase is
-a reflectance-weighted mixture of three. Light from a neighboring pattern that falls inside the
-exposure, which this paper measures, adds a further component of the same kind, separated from
-the intended pattern in time rather than in space.
+pixel receives light from exactly two points on the projector, such as along a step edge, and
+separate the two by measuring how the two stripe signals reinforce and cancel as the stripe
+frequency changes. An RGB LED projector viewed by a monochrome camera produces a mixture of the
+same kind without any second surface. Each pixel records the sum of three stripe patterns, one
+per LED, each scaled by how strongly the surface reflects that LED's color. If the three LEDs
+place their stripes at the same position, the surface color changes only the contrast of the
+recorded stripes, and the measured phase is correct. If they do not, the measured phase is pulled
+toward the LED that the surface reflects most, so the same shape measures differently in
+different colors. Light from a neighboring pattern that falls inside the exposure, which this
+paper measures, adds a further contribution of the same kind, separated from the intended pattern
+in time rather than in space.
+
+The three LEDs can also place their stripes at different positions because of the projection
+lens. Zhang, Towers, and Towers~\cite{zhang2010lateral} show that lateral chromatic aberration
+gives the red, green, and blue channels of a color fringe projection system different phase maps,
+and they correct it from the difference between channels. Huang
+\emph{et~al.}~\cite{huang2016lateral} compare the shift between color channels seen on printed
+targets, which comes only from the camera's lens, against the shift seen on projected targets,
+which comes from both lenses, and find that the projector dominates in their DLP system, with a
+shift that changes with the distance to the target. Zhang \emph{et~al.}~\cite{zhang2022chromatic}
+separate the projector's shift from the camera's with an LCD phase target and attribute it to the
+projection lens: although every color is formed by the same DMD mirrors, the lens images each
+color at a slightly different position, by up to 1.96~pixels in their DLP projector.
+
+How strongly each LED contributes is set by the target. Wang
+\emph{et~al.}~\cite{wang2021nonuniform} project red, green, and blue stripes with a DLP light
+engine onto colored surfaces viewed by a monochrome camera, observe that each colored region
+returns strong stripes only under the LED of its own color, and adapt the projected color and
+exposure to the surface; they attribute the wrinkles that remain in their reconstructions to the
+projector's tone curve. Zhu \emph{et~al.}~\cite{zhu2022colorful} calibrate the projector's
+brightness response in advance to measure colorful objects.
+
+The same dependence on surface color limits what a brightness calibration on a white target can
+establish. Projecting a series of gray levels onto a white target and recording them with a
+monochrome camera measures the sum of the three LEDs' responses, and a lookup table built from
+that measurement straightens only the sum. If the three LEDs have tone curves of different
+shapes, one LED's curvature can cancel another's on the white target and then return on a colored
+target that reflects one LED more than the others, distorting the recorded stripes. A single
+correction works for every target only when the three LEDs' tone curves have the same shape.
 
 \pending{Calibration~\cite{moreno2012calibration}; event and motion-contrast
 scanners~\cite{matsuda2015mc3d}.}
@@ -491,75 +526,308 @@ projector's EDID. Camera triggers are timed from the \emph{output} vertical sync
 \label{fig:arch}
 \end{figure*}
 
-Fig.~\ref{fig:arch} shows the device. It is built on an Alchitry Pt~V2 board with a Xilinx
-Artix-7 XC7A100T and carries an ON~Semiconductor PYTHON~1300 sensor (1280$\times$1024, global
-shutter, four LVDS lanes at \SI{720}{Mbps}, 10-bit) on a stacked daughter board. The HDMI
-datapath is adapted from~\cite{hamsternz}; the original SLI pattern design is by Q.~Hu.
+The BYOP camera is a stack of four functional circuit boards and two spacers, joined by
+Alchitry's board-to-board connectors, with no internal cables. Three of the functional boards are
+commercially available. The Alchitry Pt~V2 carries a Xilinx Artix-7 XC7A100T FPGA, \SI{256}{MB}
+of DDR3L memory, a \SI{100}{\mega\hertz} oscillator, and 206 I/O pins~\cite{alchitry_pt}. Below it,
+the Alchitry Ft+~V2 provides a USB~3.0 link through an FTDI FT601Q bridge with a 32-bit parallel
+FIFO interface to the FPGA~\cite{alchitry_ftplus,ftdi_ft601}, and below that, the Alchitry Hd~V2
+provides two HDMI ports, each configurable as an input or an output, which carry the video from
+the host computer and to the projector~\cite{alchitry_hd}. One spacer between the Pt~V2 and the
+Ft+~V2 clears the capacitors on the underside of the Pt~V2, and a second between the Ft+~V2 and
+the Hd~V2 is needed because, without it, the Ft+~V2's USB connector blocks the cable of the
+Hd~V2's transmitting HDMI port~\cite{alchitry_pt,alchitry_hd}.
+
+The three boards must share the Pt~V2's I/O pins without conflict, and each FPGA bank has a
+single I/O supply voltage. On the Pt~V2, banks 14, 16, 34, and 35 are fixed at \SI{3.3}{V},
+bank~15 runs at \SI{1.35}{V} for the on-board DDR3L, and bank~13 is the only bank whose voltage
+can be switched, between \SI{3.3}{V}, \SI{2.5}{V}, and
+\SI{1.8}{V}~\cite{alchitry_pt_sch,alchitry_labs}. The Hd~V2 uses pins A45--A78 of the bottom
+connectors, at \SI{3.3}{V}, for its TMDS pairs and its DDC, CEC, and hot-plug lines, and the
+Ft+~V2 uses pins A3--A42 and B3--B24, also at \SI{3.3}{V}, for the FT601's data bus and control
+lines; the two sets are disjoint, so these boards conflict only mechanically. The sensor's LVDS
+lanes require \SI{2.5}{V}, and the only pins that can run at that voltage are the 32 pins of
+bank~13, which appear only on the top connector, as pins B33--B78. Neither the Hd~V2 nor the
+Ft+~V2 uses any of them, so the sensor card takes all 32, which is why it sits on top of the
+stack. For the same reason, the Alchitry Fn board cannot take the place of a spacer, because one
+of its solder jumpers lands on pin B36 and would take half of one LVDS pair.
+
+An off-the-shelf alternative would combine an FPGA board that has HDMI ports with a camera module.
+Avnet's MicroZed Embedded Vision Kit, for example, pairs a Zynq-7020 module with a carrier card
+that has an HDMI output through an ADV7511 transmitter, an HDMI input through an ADV7611 receiver,
+and a connector for the same PYTHON-1300-C camera module whose register sequence we
+use~\cite{avnet_mzevk,avnet_hdl}. In its reference designs, the video timing is generated in the
+programmable logic, but the frames are read from memory buffers that Linux fills and selects, and
+the timing reaches the ADV7511 as sync codes embedded in the pixel data rather than as a vertical
+sync pin~\cite{avnet_hdl}; tying a frame's pattern to a camera trigger requires writing the video
+timing, pattern generation, and trigger logic in the FPGA fabric, which is the design this paper
+describes. The MicroZed's links to a host computer are also Gigabit Ethernet and USB~2.0, while
+1280$\times$1024 images at 10 bits per pixel and \SI{120}{fps} require \SI{197}{MB/s}. A camera
+module with a MIPI CSI-2 interface does not avoid these problems: the Zynq-7000 and Artix-7 have
+no hardened MIPI receiver, so the receiver must be written in the fabric with an external analog
+front end~\cite{xilinx_xapp894}, and the global-shutter modules that a DLP projector requires
+have register settings that, like the PYTHON~1300's, are not public.
+
+To interface the PYTHON~1300 to the FPGA, we designed a custom daughter card that mounts on top
+of the Pt~V2, using the board schematics and the connector pin assignments that Alchitry
+publishes for designing boards that join its stack~\cite{alchitry_pt_sch,alchitry_labs}. The card
+carries the PYTHON~1300 (1280$\times$1024, global shutter, four LVDS data lanes at
+\SI{720}{Mbps}, 10-bit pixels)~\cite{onsemi_python1300}, routes its LVDS lanes to an FPGA bank
+powered at \SI{2.5}{V}, and sits under a C-mount lens in a printed enclosure. The sensor is held in an Andon Electronics 48-pin LCC socket rather than soldered to the card.
+Because the monochrome and color versions of the PYTHON~1300 share the same 48-pin LCC package
+and pinout~\cite{onsemi_python1300}, the socket lets either version be inserted; the measurements
+in this paper use the monochrome NOIP1SN1300A. The footprint dimensions of the socket, which
+Andon's catalog does not give, were taken from the LUPA300 sensor carrier of
+Ruffner~\cite{ruffner2018thesis,ruffner_lupa300}, and we compared our decoupling against the
+same carrier.
+
+The sensor board also generates the sensor's supplies, and the Pt~V2 cannot supply them directly.
+The PYTHON~1300 requires \SI{1.8}{V}, \SI{3.3}{V}, and a pixel supply of \SI{3.3}{V} held within
+\SIrange{3.25}{3.35}{V}, and it must be powered up in the order \SI{1.8}{V}, \SI{3.3}{V}, pixel
+supply, and down in the reverse order~\cite{onsemi_python1300}. The Pt~V2's \SI{3.3}{V} rail is
+produced by an ADP5052 regulator whose feedback resistors set it to \SI{3.278}{V}, with a
+tolerance of $\pm$\SI{1.5}{\percent}~\cite{alchitry_pt_sch,adi_adp5052}, so at its low limit
+it falls below the pixel supply's window. We therefore boost that rail to \SI{4.45}{V} with a
+TPS61023 and regulate it back down with two TPS7A2033 low-dropout regulators, one for the
+\SI{3.3}{V} supply and one for the pixel supply; a TPS7A2018 produces \SI{1.8}{V} directly from
+the Pt~V2's rail, and two TLV803S voltage supervisors enforce the power-up and power-down
+order~\cite{ti_tps61023,ti_tps7a20,ti_tlv803s}.
+
+Figure~\ref{fig:arch} shows how the FPGA design connects these boards. The HDMI datapath is
+adapted from~\cite{hamsternz}, and the SLI pattern design follows the controller of Yu
+\emph{et~al.}~\cite{yu2019dualspie,yu2020dualprojector}. The following
+subsections describe the video path, the pattern generator, the genlock that times the camera to
+the projector, and the image and control path.
 
 \subsection{Video path}
-In pass-through, the receiver deserializes and decodes TMDS and selects the recovery clock band
-from a measured input frequency, so the multiplier follows the source; a high-bandwidth MMCM
-tracks spread-spectrum GPU clocks. The board reads the projector's EDID over the output DDC
-channel and serves the PC a merged EDID, the intersection of the projector's modes (including
-CEA-861 video data blocks) with the modes it can pass.
+Algorithm~\ref{alg:edid} gives the procedure by which the BYOP camera detects the projector and
+learns which video modes it accepts. A projector lists those modes in its extended display
+identification data (EDID), a block of 128 or 256 bytes that a video source reads over the display
+data channel (DDC), an I$^2$C bus in the HDMI cable. The Hd~V2 board does not connect the
+projector's hot-plug detect pin to the FPGA, so the BYOP camera detects the projector by whether
+its DDC answers. Every \SI{0.5}{\second}, the FPGA reads the projector's EDID; a read that is not acknowledged means that
+no projector is attached. After a successful read, the FPGA builds the EDID that it will present
+to a host computer, keeping only the projector's modes whose pixel clocks the receiver can
+recover, and writes it into the idle half of a double-buffered memory, so that a host never reads
+a partly built block.
 
-With no PC, the device drives the projector itself. A dedicated MMCM is retuned at run time
-through its dynamic reconfiguration port and a timing generator is loaded from a table of 14
-modes; the projector's EDID acts as a filter on that table, never as a source of timings, and
-modes are preferred by refresh rate and then by pixel count. The fastest modes are
-1280$\times$1024@60 and 800$\times$600@120 (CVT reduced blanking, \SI{73.27}{\mega\hertz}). All
-results in this paper use the second.
+\begin{algorithm}[t]
+\caption{Projector detection and EDID merging}
+\label{alg:edid}
+\begin{algorithmic}[1]
+\Loop \ every \SI{0.5}{\second}
+  \State read EDID block~0 from the projector's DDC at address \texttt{0xA0}
+  \If{the read is not acknowledged}
+    \State $\mathit{present} \gets$ false \Comment{no projector}
+    \State \textbf{continue}
+  \EndIf
+  \If{byte 126 of block~0 is non-zero} \State read block~1 (CEA-861 extension) \EndIf
+  \State $\mathit{present} \gets$ true
+  \State $M \gets$ projector's established and standard timings
+  \State $M \gets \{m \in M : \text{pixel clock of } m \in [25, 90]\,\text{MHz}\}$
+  \If{block~1 lists 1280$\times$720@60 (VIC~4)} \State add it to $M$ as a standard timing \EndIf
+  \State $E \gets$ template EDID with timings $M$, a preferred detailed timing, range limits,
+         and a name
+  \State write a new serial number into $E$ and recompute its checksum
+  \State write $E$ into the idle buffer; swap buffers
+  \State $\mathit{changed} \gets$ ($E$, less serial and checksum, differs from the last build)
+\EndLoop
+\end{algorithmic}
+\end{algorithm}
+
+Algorithm~\ref{alg:hpd} then decides what the host sees and which source drives the projector.
+The FPGA raises the hot-plug signal on its HDMI input only when a projector is present and a
+merged EDID has been built, and whenever either condition changes, or the content of the merged
+EDID changes, it holds the signal low for \SI{500}{\milli\second} before raising it again. A host
+that sees the signal fall for longer than its debounce interval treats the display as unplugged
+and, when the signal returns, reads the new EDID; this matters for projectors that present a
+placeholder EDID while warming up and replace it with their real EDID seconds later. Each new
+build carries a new serial number, which prevents the host from reusing a cached copy.
+
+\begin{algorithm}[t]
+\caption{Host hot-plug and source selection}
+\label{alg:hpd}
+\begin{algorithmic}[1]
+\Loop \ every clock cycle
+  \State $\mathit{sink} \gets \mathit{present} \wedge (\text{a merged EDID has been built})$
+  \If{$\mathit{sink}$ changed $\vee\ \mathit{changed}$}
+    \State $\mathit{HPD} \gets 0$; $t \gets$ \SI{500}{\milli\second}
+  \ElsIf{$\neg\mathit{sink}$} \State $\mathit{HPD} \gets 0$
+  \ElsIf{$t > 0$} \State $\mathit{HPD} \gets 0$; decrement $t$
+  \Else \State $\mathit{HPD} \gets 1$ \Comment{host reads the merged EDID}
+  \EndIf
+  \If{the input has a TMDS clock, its recovery MMCM is locked, and its symbols decode}
+    \State drive the projector from the host's video \Comment{pass-through}
+  \ElsIf{decoding has been lost for \SI{0.5}{\second}}
+    \State drive the projector from the FPGA's own timing \Comment{offline}
+  \EndIf
+\EndLoop
+\end{algorithmic}
+\end{algorithm}
+
+These steps address flaws in the EDID handling of the controller of Yu
+\emph{et~al.}~\cite{yu2019dualspie,yu2020dualprojector}, most of which follow from its hardware.
+Their HDMI shield wires the hot-plug signal of its input permanently to the computer's
+\SI{5}{V} supply, so the FPGA cannot tell the computer to read the EDID again~\cite{mojo_hdmi_sch},
+and it connects the video lines to the FPGA without the \SI{50}{\ohm} termination to \SI{3.3}{V}
+that an HDMI receiver presents; in our experience, computers with NVIDIA graphics cards did not
+detect it as a display. Its EDID was a fixed list of three modes chosen for one projector, and the
+projector's own EDID was never read. The Hd~V2 terminates every video line and lets the FPGA drive
+the hot-plug signal through a level translator~\cite{alchitry_hd_sch}, which makes
+Algorithm~\ref{alg:hpd} possible.
 
 \subsection{Pattern generator}
-The fringe generator is a direct digital synthesizer whose periods adapt to the active
-resolution. With $F$ the active size along the varying axis and $b=\lceil F/288\rceil$, the
-three periods are $288b$, $48b$ and $8b$ pixels, an exact $1{:}6{:}36$ ratio, re-solved on
-every mode change. One sequence is three frequencies $\times$ eight phases, plus a flat
-full-field frame for texture. A 256-entry lookup table in the fringe path, identity at power-up,
-pre-distorts the levels. For profiling, the same generator produces impulse sequences: a cycle
-of five full-field frames with programmable levels (Section~\ref{sec:profiling}).
+\label{sec:pattern}
+In pass-through, the receiver deserializes and decodes TMDS and selects the recovery clock band
+from a measured input frequency, so the multiplier follows the source, and a high-bandwidth MMCM
+tracks spread-spectrum GPU clocks. With no PC, the device drives the projector itself: a dedicated
+MMCM is retuned at run time through its dynamic reconfiguration port and a timing generator is
+loaded from a table of 14 modes, with the projector's EDID acting as a filter on that table, never
+as a source of timings, and modes preferred by refresh rate and then by pixel count. The fastest
+modes in the table are 1280$\times$1024@60 and 800$\times$600@120 (CVT reduced blanking,
+\SI{73.27}{\mega\hertz}), and all results in this paper use the second.
 
-\subsection{Genlock}
-The trigger is referenced to the vertical sync the device \emph{sends}, so the reference is
-exact by construction. A trigger fires a programmable delay $D$ after that edge, set in
-\SI{10}{\nano\second} ticks of a 24-bit time base. Because a useful delay can exceed one frame
-period $T$, triggers are not single timers but entries in a 32-deep queue of absolute fire
-times: every vsync enqueues one, and capture therefore advances at the full video rate whatever
-$D$ is, with image $n$ holding pattern $n-\lfloor D/T\rfloor$. The device reports that offset
-and whether sync is actually arriving.
+The two modes produce the same kind of pixel stream, a pixel clock with blanking, horizontal sync,
+vertical sync, and 8-bit red, green, and blue values, and the FPGA switches between them at a
+single point. In pass-through, the decoded pixels cross from the receiver's clock into the
+transmitter's clock through a small elastic buffer, since the two clocks have the same frequency
+but reach their circuits through different clock buffers, with a phase offset that the design
+does not control. Offline, a timing generator loaded with the selected mode produces the
+blanking and sync signals from the dedicated MMCM. A clock multiplexer chooses the receiver's clock
+only while the input has a clock, the receiver's MMCM is locked, and its symbols decode, and falls
+back to the offline clock once decoding has been lost for \SI{0.5}{\second}; a registered
+multiplexer selects the matching stream. Everything after that point, the pattern generator, the
+lookup table, the TMDS encoder and serializer, and the vertical sync from which the camera's
+trigger is timed, is the same circuit in both modes, so the patterns and the trigger timing do not
+depend on where the video came from.
 
-Exposure is set in units of \SI{0.375}{\micro\second}. The sensor needs a readout gap between
-exposures, and the firmware therefore limits the exposure to $T$ less \SI{90}{\micro\second} (an \SI{80}{\micro
-\second} gap and a \SI{10}{\micro\second} margin), which at the measured
-$T=\SI{8325.81}{\micro\second}$ is 21\,962 units, \SI{8235.75}{\micro\second}; a longer exposure
-would halve the frame rate.
+In either mode, the pattern generator replaces the active pixels with PMP patterns whose
+parameters are derived from the resolution of the current video mode. The orientation of the
+stripes is set by the user, either from the host over USB or from switches on the board, as are
+the color channels, red, green, or blue, that carry the pattern. Let $F$ be the number of active
+pixels along the axis on which the patterns vary: the number of rows for horizontal stripes, or
+the number of columns for vertical stripes. The generator sets
+\begin{equation}
+b = \left\lceil F/288 \right\rceil, \qquad P_k = \frac{288\,b}{m_k}, \quad m_k \in \{1, 6, 36\},
+\label{eq:periods}
+\end{equation}
+so that the three periods $P_k$ are $288b$, $48b$, and $8b$ pixels, in the exact ratio
+$1{:}6{:}36$, and the coarsest period spans the whole image. In our experience, about 36
+periods across the field is the highest frequency that our scanners resolve reliably, and since
+each frequency's phase is unwrapped using the next lower one, we want the scale factor between
+successive frequencies to be as small as possible; with three frequencies reaching 36 periods,
+equal steps of 6 minimize that factor. Every period is a multiple of 8, so
+one eighth of a period, $P_k/8 = 36b$, $6b$, or $b$ pixels, is a whole number of pixels. For
+800$\times$600 with horizontal stripes, $F=600$, $b=3$, and the periods are 864, 144, and 24 rows.
 
-\subsection{Image and control path}
-The sensor reads a full frame in a \SI{4.55}{\milli\second} burst at \SI{576}{MB/s}, faster than
-USB can drain it, so frames pass through a four-slot DDR3 ring. An FT601 USB~3 bridge carries
-frames and a 32-bit command channel. For
-profiling, the fabric also computes the mean of a 16$\times$16 region of interest (ROI) with
-counts of clipped pixels and writes it into each frame header and to an independent UART, so a
-sweep needs no image transfer at all. \pending{Resource utilization of the current bitstream.}
+The value of pattern $n \in \{0,\ldots,7\}$ at frequency $k$ and position $y$, the row or column index along the varying axis, is
+\begin{align}
+I_{k,n}(y) &= L\!\left[\,c\big((\phi_k(y) - 512\,n) \bmod 4096\big)\right], \label{eq:pattern}\\
+c(a) &= \left\lfloor 255\left(\tfrac12 + \tfrac12 \cos\tfrac{2\pi a}{4096}\right) + \tfrac12 \right\rfloor, \nonumber
+\end{align}
+where $c$ is a 4096-entry table of one cosine period, $L$ is a programmable 256-entry lookup
+table that maps each 8-bit pattern level to the level sent to the projector, and $\phi_k(y)$ is the
+table address of position $y$, produced by a phase accumulator that advances by
+$m_k\lfloor 2^{24}/(288b) \rfloor$ per row or column and is read through its top 12 bits, so that it
+advances by 4096 entries over one period $P_k$. Because $\phi_k(y)$ does not depend on $n$, and
+$512$ is exactly one eighth of the 4096-entry table, pattern $n$ is pattern~0 shifted by exactly
+one eighth of a period: the eight patterns read the same table entries in the same order, and
+the rounding of the cosine and of the phase accumulator is identical in all eight, so it cancels
+when the phase is recovered.
 
-% =====================================================================================
-\section{Triggering with a Long Delay}
+The lookup table $L$ is the point at which the BYOP camera compensates the HDMI signal for the
+projector's electronics. It is the identity at power-up, so that the projector receives the
+cosine levels unchanged, and the host can upload any 256-entry mapping over USB and read it back;
+Section~\ref{sec:experiments} describes how the table is populated from
+measurements of the projector. One sequence is the three frequencies times eight phases, plus flat
+black and white frames for texture, which bypass $L$. For profiling, the same generator produces
+impulse sequences, cycles of five full-field frames with programmable levels
+(Section~\ref{sec:profiling}).
+
+\subsection{Image path}
+\label{sec:imagepath}
+The FPGA configures the PYTHON~1300 over its serial peripheral interface (SPI), clocked at no
+more than \SI{10}{\mega\hertz}, with a sequencer that walks the sensor's documented start-up
+flow. After pulsing the sensor's reset and confirming its chip identifier, the sequencer uploads
+the register sequence published by Avnet~\cite{avnet_hdl}: two stages of clock management with a
+wait for the sensor's PLL to lock, the required upload of reserved registers, the soft power-up
+that enables the LVDS drivers, and the sensor's 104-entry timing program, which sets how the
+pixel array samples and transfers each exposure.
+
+The sensor runs in its PLL mode, in which the FPGA supplies a \SI{72}{\mega\hertz} reference and
+the sensor multiplies it by five, so that it sends data on four LVDS lanes and a fifth sync lane
+at \SI{720}{Mbps}, together with a forwarded \SI{360}{\mega\hertz} clock. The FPGA receives the
+forwarded clock through an I/O clock buffer and a regional buffer that divides it by five, and
+deserializes each lane into 10-bit words at \SI{72}{\mega\hertz}. While idle, the sensor sends
+the same training word on every lane, and the FPGA shifts the word boundary of each lane until
+that word appears, which aligns all five lanes independently.
+
+The sync lane carries codes that mark the start and end of each frame and line and say whether
+the data lanes hold image pixels, black reference pixels, or a checksum. The data lanes deliver
+the pixels in kernels of eight, two words per kernel, with even kernels in ascending and odd
+kernels in descending order; the FPGA reorders each kernel and emits all eight pixels at once,
+so that it keeps pace with the sensor's four pixels per word clock, 288 million pixels per second.
+A full 1280$\times$1024 frame therefore arrives in \SI{4.55}{\milli\second}, faster than USB
+can carry it, so each frame crosses into the clock of the DDR3 controller through a dual-clock
+FIFO and is written into a four-slot ring of frames in DDR3 memory.
+
+A second dual-clock FIFO carries the frames from DDR3 to the FT601 bridge on the Ft+~V2, whose
+32-bit FIFO interface runs on a \SI{100}{\mega\hertz} clock that the bridge itself supplies. Each
+frame is sent as a header followed by its pixels, packed at 10 bits, four pixels in five bytes.
+The same USB link carries a command channel through which the host reads and writes the FPGA's
+registers and uploads the lookup table of Section~\ref{sec:pattern}. \pending{Resource
+utilization of the current bitstream.}
+
+The header carries everything that the host would otherwise have to infer about the frame, so
+that each frame describes itself. Its first 32 bytes begin with a marker word and end with the
+marker's bitwise complement, so that a host that loses its place in the stream can find the next
+frame, and between them hold the frame's rows and columns, its length in bytes, the pixel
+format, and a frame index that increments with every frame sent, so that a gap in the index
+reveals a lost frame. They also hold the number of frames that arrived short and were padded,
+the value of the top-left pixel of the HDMI frame being transmitted when the frame began, and the
+mean of a 16$\times$16 pixel region of interest (ROI) at the center of the sensor, computed by the
+fabric from the frame's own pixels as they arrive, with the number of pixels averaged, a flag for
+an ROI that fell on the sensor's black reference rows, and a bit that marks whether a mean was
+paired with the frame at all. The profiling of Section~\ref{sec:profiling} reads only this mean,
+so a sweep transfers no images.
+
+When the host enables it, a second 32-byte block names the projected frame that the exposure
+captured: the number of projected frames since a reference frame, the frequency and phase of the
+pattern on screen in that projected frame, and flags for whether each value is known. The host sets the reference frame with a command that zeroes, on the same vertical sync,
+both this count and the pattern generator's sequence, so that frame zero always shows pattern
+zero. Section~\ref{sec:stacking} describes how the label is carried from the trigger that opened
+the exposure to the frame's header. \pending{The label block is implemented in the FPGA design
+and host software but not yet verified on hardware.}
+
+\subsection{Triggering with a long delay}
 \label{sec:stacking}
+The camera is synchronized to the projector by the vertical sync that the FPGA \emph{sends}, so
+the timing reference is exact by construction, whether the video comes from a host or from the
+FPGA itself. A trigger fires a programmable delay $D$ after that edge, counted in
+\SI{10}{\nano\second} ticks of a 24-bit time base, and the exposure $\tau$ is set in units of
+\SI{0.375}{\micro\second}.
 
-A machine vision camera triggered through GPIO accepts a trigger only when it is ready for one,
-and it reports that state on an output line; the Allied Vision Alvium~1800, for example, can
-drive an output with its \texttt{FrameTriggerWait} signal, which is active while the camera
-waits for a trigger \pending{cite Alvium and Basler manuals}. A trigger that arrives while the
-camera is not ready, during its trigger delay or its exposure, produces no image. With a
-commodity projector, the exposure for a frame must begin after the projector's input lag, which
-can be longer than one frame period, and so the trigger of the next frame can arrive before the
-camera is ready for it.
+The controller of Yu \emph{et~al.}~\cite{yu2020dualprojector} triggers an external Allied Vision
+or Basler camera through GPIO, and the camera, not the controller, applies the trigger delay. The
+controller expects the camera to drive one of its output lines from its \texttt{FrameTriggerWait}
+signal, active while the camera waits for a trigger and inactive during its trigger delay and its
+exposure, and it reads that line as camera-ready. The
+controller issues a trigger only at a vertical sync that follows a rising edge of camera-ready,
+so the trigger of the next frame is withheld until the camera has finished its delay and its
+exposure.
 
-Let the controller send pattern $k$ with the vertical sync at time $kT$, and let the exposure
-for pattern $k$ open at $kT+D$ and close at $kT+D+\tau$. For the ML750ST at \SI{120}{\hertz},
-the profiled exposure has $D=\SI{8800.65}{\micro\second}$ and $\tau=\SI{6256.83}{\micro\second}$
-with $T=\SI{8325.81}{\micro\second}$ (Section~\ref{sec:results}), so $D>T$: the exposure of
-pattern $k$ opens after the vertical sync of pattern $k+1$.
+Whether a scanner can run at the projector's full frame rate depends on when the light of each
+pattern reaches the camera relative to the vertical sync that sent it. A projector does not
+display a frame when it receives it: its electronics hold the frame for an input lag before the
+light leaves the lens, and the exposure that captures a pattern must wait for that light. To
+compare the two triggering schemes, let pattern $k$ be sent with the vertical sync at time $kT$,
+and let its exposure open at $kT+D$ and close at $kT+D+\tau$. If $D$ is shorter than $T$, each
+exposure opens before the next pattern is sent, and the camera is ready again in time. If $D$
+is longer than $T$, the exposure of pattern $k$ opens after pattern $k+1$ has already been sent,
+and the trigger for pattern $k+1$ falls while the camera is still waiting out the delay of
+pattern~$k$. The second case is the one that a commodity projector produces: for the ML750ST
+profiled in Section~\ref{sec:profiling}, the delay that collects the most light from a frame is
+about $1.06\,T$.
 
 \begin{figure}[t]
 \centering
@@ -597,7 +865,7 @@ pattern advances every frame. Drawn to scale for the ML750ST at \SI{120}{\hertz}
 \label{fig:stacking}
 \end{figure}
 
-\subsection{Ready-gated triggering}
+\subsubsection{Ready-gated triggering}
 The controller of Yu \emph{et~al.}~\cite{yu2020dualprojector} connects to each external camera
 through four GPIO lines: a trigger output, a camera-ready input, a mode input that selects
 between pass-through and pattern generation, and an output that marks the first frame of the
@@ -620,7 +888,31 @@ scan rate falls from \SI{120}{\hertz} to \SI{60}{\hertz}. In pass-through mode t
 handshake reaches the host, which waits for the camera to report ready before it plays the next
 frame.
 
-\subsection{Queued triggering}
+The camera's side of the handshake is set up by the host software. For an Allied Vision camera,
+the software makes Line0 the trigger input, firing on a rising edge after a \SI{10}{\micro\second}
+debounce, and drives Line3 from \texttt{FrameTriggerWait}, so that the controller sees the camera
+become ready. Line1 is an output under software control that selects between pass-through and
+pattern generation; the software sets it low and then high to reset the controller's pattern
+counter and start the sequence, and low again when the scan ends. That reset is how the host
+knows which pattern each captured frame holds: after it, the $n$th frame captured holds the $n$th
+pattern of the sequence. Line2 is an input that reads
+the controller's first-frame marker. The camera captures a fixed number of frames equal to the
+length of the pattern sequence, with a trigger delay of \SI{17.167}{\milli\second}, one frame at
+\SI{60}{\hertz} plus \SI{500}{\micro\second}. When several cameras are used, all of them take
+the trigger, but only the first reports ready and controls the mode. A Basler camera is
+configured the same way on different lines, with Line1 as the trigger input and Line4 driven by
+\texttt{FrameTriggerWait}.
+
+Because the controller counts rising edges of the ready line, a burst or a glitch on that line
+queues extra advances, and the pattern sequence then runs ahead of the captured frames by a
+fixed amount for the rest of the scan. Before integrating the sensor, we revised this logic so
+that at most one advance is owed at a time and a second ready edge before the next vertical sync
+is discarded, the first advance after the mode line rises requires a new low-to-high transition
+of the ready line, and the ready line must hold its level for about \SI{135}{\micro\second}
+before it is believed, since the camera cable is long and unshielded. These changes remove the
+failure, but not the limit of~\eqref{eq:oneshot}.
+
+\subsubsection{Queued triggering}
 The BYOP camera drives the PYTHON~1300 sensor directly, and the FPGA sets both the exposure and
 the delay, so there is no ready signal to wait for. The sensor operates in pipelined global
 shutter mode, integrating the next frame while it reads out the current one, and the pattern
@@ -648,205 +940,236 @@ may exceed several frame periods. The modular comparison is valid for delays bel
 ticks (\SI{83.9}{\milli\second}), at which point the queue holds $\lceil D/T\rceil=11$ triggers
 at \SI{120}{\hertz}, within its 32 entries. For the ML750ST, $\lceil D/T\rceil=2$ triggers are
 outstanding at a time, and the scan runs at the full \SI{120}{\hertz}.
+
+Each of the four GPIO functions of the ready-gated design has an internal counterpart. The
+trigger is a signal inside the FPGA from the queue to the sensor, and the ready line is not
+needed, since the FPGA itself enforces~\eqref{eq:stacked}; it remains as a register that the host
+can drive, so that the ready-gated pacing can still be tested without a camera. The selection
+between pass-through and pattern generation is a register written by the host over USB.
+
+The reset line and the first-frame marker are replaced by the frame label of
+Section~\ref{sec:imagepath}. The host's reset command zeroes the FPGA's count of projected frames
+and the pattern generator's sequence on the same vertical sync, and from then on every vertical
+sync has a number. Each entry of the trigger queue carries the number of the vertical sync that
+scheduled it, so the label leaves the queue with its own trigger and cannot drift from it. The
+FPGA records the pattern on screen in each projected frame in a 16-entry ring indexed by that
+number, and when the scheduled exposure ends, at the trigger time plus $\tau$, it combines the two
+into the label. Because the next trigger cannot fire until one frame period later and $\tau$ is
+less than $T$ by~\eqref{eq:stacked}, the most recent trigger at that instant is always the one
+that opened this exposure. The label then travels with the frame's pixels into its header, so
+the host reads which pattern each frame holds from the frame itself rather than from the order in
+which frames arrive.
 \pending{Measure: scan rate and image--pattern pairing with the queue versus ready-gated
 triggering on the ML750ST.}
 
 % =====================================================================================
-\section{Profiling a Projector with a Genlocked Exposure}
+\section{Profiling the Projector}
 \label{sec:profiling}
 
-\subsection{Measurement model}
-Let $E(t)$ be the light reaching a pixel at time $t$ after the vsync of frame~0, periodic in the
-cycle length $5T$. An exposure of length $\tau$ opened at delay $d$ reads
+Before the BYOP camera can scan with a commodity projector, it must know when the light of
+each video frame leaves the projector, so that the trigger delay $D$ and the exposure $\tau$
+can be chosen to collect that light. To measure it, we built a profiling tool that uses the
+BYOP camera itself as the instrument. The tool drives the projector from the FPGA's pattern
+generator, sweeps a short exposure across the frame, and saves every sweep, together with the
+chosen delay and exposure, in a single document. All of the measurements in this section come
+from one such document, recorded with the Optoma ML750ST driven at 800$\times$600 and
+\SI{120}{\hertz} with no host computer attached; the measured frame period is
+$T=\SI{8325.81}{\micro\second}$.
+
+For profiling, the sensor is mounted without a lens on the axis of the projection lens, about
+\SI{17}{\milli\metre} in front of it in a printed cap, so that it receives light only when an LED
+is on and the corresponding mirrors are in their on state. An iris on the cap keeps the brightest
+reading below saturation, and filters can be placed in front of the sensor. Each reading is the
+mean of the $16\times16$ pixel region of interest that the FPGA computes and returns in the frame
+header, so a sweep transfers no images.
+
+\subsection{Sweeping the exposure}
+Let $E(t)$ be the light reaching the sensor at time $t$ after the vertical sync of frame~0. An
+exposure of length $\tau$ opened at delay $d$ reads
 \begin{equation}
 r(d) \;=\; g\!\int_{d}^{d+\tau}\! E(t)\,dt \;+\; o \;+\; n,
 \label{eq:model}
 \end{equation}
-with gain $g$, an offset $o$ that does not scale with $\tau$, and noise $n$. A sweep of $d$ in
-steps $\le\tau$ is therefore $E$ filtered by a box of width $\tau$; we use
-$\tau=\SI{4.875}{\micro\second}$ (13 units) and steps of \SI{5}{\micro\second}, 1664 delays per
-frame. Each delay is held for 24 frames, the first four discarded, and the ROI mean is recorded
-for every frame of the cycle, so one sweep yields all five frames at once.
+with gain $g$, an offset $o$, and noise $n$. A sweep of $d$ in steps no longer than $\tau$
+therefore samples $E$ filtered by a box of width $\tau$. The tool uses
+$\tau=\SI{4.875}{\micro\second}$, a requested \SI{5}{\micro\second} exposure rounded to 13 of the sensor's
+\SI{0.375}{\micro\second} exposure units, and steps of
+\SI{5}{\micro\second}, for 1664 delays per frame. At each delay it discards four frames and
+averages the next 20.
 
-\subsection{Impulse sequences}
-Two five-frame sequences are swept. \emph{WKKKK} shows full white (255) in frame~0 and black in
-frames~1--4; its profile is the response to one frame, and frames~2--4, far from the light,
-give the camera dark level $\bar r_0$. \emph{WWWWW} shows white in every frame (254 in
-frames~1--4, so that frame~0 can still be identified); its profile is the steady-state pulse
-train. Since the projector re-times its input, the two are needed together: WKKKK says which
-frame's light lands where, WWWWW what a continuously lit pixel sees.
-
-\subsection{Choosing the exposure}
-With $x(t)=\max(0,\,r_{\text{WKKKK}}(t)-\bar r_0)$, the fraction of one frame's light that an
-exposure $[s,\,s+\tau]$ collects is
-\begin{equation}
-C(s,\tau) \;=\; \frac{\int_{s}^{s+\tau} x(t)\,dt}{\int_{0}^{5T} x(t)\,dt},
-\qquad
-C^\ast(\tau) \;=\; \max_{s}\, C(s,\tau).
-\label{eq:capture}
-\end{equation}
-$C^\ast$ is non-decreasing in $\tau$, so the best exposure is the longest the sensor allows,
-placed at the maximizing $s$. The \emph{leading} and \emph{trailing} edges of that window are the
-delay $D=s$ and $s+\tau$.
-
-\subsection{The runway}
-Light can arrive before the leading edge, during the interval we call the \emph{runway}
-$[\rho,\,s]$, with $\rho\ge s-T$. We place $\rho$ by walking back from $s$ while
-$x(t)$ stays above \SI{2}{\percent} of its peak. Part of the runway can fall inside the
-\emph{previous} exposure, which ended at $s+\tau-T$; the runway therefore splits into
-\begin{equation}
-\mathcal R_1=[\rho,\; s+\tau-T], \qquad \mathcal R_2=[s+\tau-T,\; s],
-\end{equation}
-the part inside the previous exposure and the part between exposures.
-
-\subsection{Leakage maps}
-To see whose light arrives in each part, the generator switches to a two-frame cycle
-$A\,B\,A\,B$ of full-field levels. A reading in a window of frame $k$ then sees that frame's
-level $x$ and the level $y$ of frames $k\pm1$, which are equal. Sweeping all
-$(A,B)$ pairs, each giving the two mirrored cells $(y,x)=(B,A)$ and $(A,B)$, fills a
-$256\times256$ map $M_i(y,x)$ for each window $\mathcal R_i$, the exposure opened at the
-window's start and lasting its length, 10 readings per cell. A map that varies with $y$ shows
-light from the neighbouring patterns; one that varies with $x$ shows light from the runway's own
-frame. The A--B--A--B cycle cannot tell the previous pattern from the next one; separating
-them needs a longer cycle. \pending{Three-frame cycle to break the ambiguity.}
-
-\subsection{Colour decomposition}
-WWWWW is repeated through red, green and blue filters on the camera. With
-$w(t)$ and $f_c(t)$ the white and filtered sweeps less $\bar r_0$, we fit
-\begin{equation}
-w(t) \;\approx\; \sum_{c\in\{R,G,B\}} a_c\, f_c(t) + b
-\label{eq:rgbfit}
-\end{equation}
-by least squares over every delay. The weights absorb the filters' transmission; the
-fitted terms $a_c f_c(t)$ are the per-LED pulse trains of white, and the residual shows
-whatever white contains that the three filtered sweeps do not.
-
-% =====================================================================================
-\section{Experiments}
-\label{sec:results}
-
-\paragraph*{Setup}
-The projector is an Optoma ML750ST LED DLP driven by the device at 800$\times$600@120 with no PC
-(on this model \SI{120}{\hertz} enables its 3D mode). The sensor, without a lens, sits on the
-projection lens axis about \SI{17}{\milli\metre} in front of the lens in a printed cap, so it
-sees light only when an LED is on and the corresponding mirrors are in the on state; a lens iris
-on the cap keeps the peak below clipping, and filters fit in front of it. The ROI is the
-16$\times$16 patch at the sensor centre. The measured period is
-$T=\SI{8325.81}{\micro\second}$; the vsync-to-first-active-line time is
-\SI{432.0}{\micro\second}. All sweeps are from one profiling session saved as a single document
-(19 Oct 2026); every number below is printed by the figure script from that document.
-
-\subsection{Latency and pulse train}
+The pattern generator repeats a cycle of five full-field frames, and the tool records the reading
+of every frame in the cycle, so a single sweep across one frame period yields a profile of all
+five frames. The first sequence we swept, \emph{WWWWW}, shows white in every frame (255 in
+frame~0 and 254 in frames~1--4, so that the frame header still marks the start of the cycle).
+Its purpose was to see when the projector emits light. Figure~\ref{fig:timeline} shows the result
+in blue: within each frame, the light arrives as a train of separate pulses, and the reading
+never returns to the camera's dark level of 18.33~ADU (its minimum is 30.25~ADU), so with a
+continuously lit picture there is no dark interval anywhere in the frame.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/timeline.pdf}
-\caption{Five-frame profiles of the ML750ST at 800$\times$600@120 (exposure
-\SI{4.875}{\micro\second}, step \SI{5}{\micro\second}, ROI mean). The light of the white frame~0
-(red, WKKKK) appears in frame~1: the projector is one frame late. Blue (WWWWW) is the
-steady-state pulse train. Shaded: the chosen exposure (lead to trail) and the runway before it;
-hatched: the part of the runway inside the previous exposure.}
+\caption{Five-frame profiles of the ML750ST at 800$\times$600 and \SI{120}{\hertz} (exposure
+\SI{4.875}{\micro\second}, step \SI{5}{\micro\second}, ROI mean). WWWWW (blue) shows when the
+projector emits light; WKKKK (red) shows the light of the white frame~0, which appears in
+frame~1. Shaded: the chosen exposure (lead to trail) and the runway before it; hatched: the part
+of the runway inside the previous exposure.}
 \label{fig:timeline}
 \end{figure*}
 
-Fig.~\ref{fig:timeline} shows both sequences. The white frame's light falls in frame~1: the
-projector delays its input by exactly one frame. Within a frame the light is a train of separate
-pulses; the WKKKK pulses in frame~1 and the WWWWW pulses in any frame coincide, with a median
-ratio of 1.009 between them in lit slices. The camera dark level is $\bar r_0=18.33$~ADU. The
-WWWWW profile never returns to it (minimum 30.25~ADU), so with a continuously lit picture there
-is no dark interval anywhere in the frame.
+Because WWWWW repeats the same frame, its profile does not show where one frame's light ends and
+the next frame's begins. The second sequence, \emph{WKKKK}, shows white in frame~0 and black in
+frames~1--4, so that only one frame of the cycle emits light. Its profile, in red in
+Fig.~\ref{fig:timeline}, contains the pulses that belong to the white frame, and they coincide
+with the WWWWW pulses. They appear not in frame~0 but in frame~1: the ML750ST displays each frame
+one frame period after it is sent. Frames~2--4 of WKKKK, far from any light, give the dark
+level $\bar r_0$ that is subtracted from every reading below.
 
-\subsection{Exposure window}
+\subsection{Choosing the delay and the exposure}
+With the white frame's light identified, the delay and exposure follow from it. Let
+$x(t)=\max(0,\,r_{\text{WKKKK}}(t)-\bar r_0)$. The share of one frame's light that an exposure
+$[s,\,s+\tau]$ collects is
+\begin{equation}
+C(s,\tau) \;=\; \frac{\int_{s}^{s+\tau} x(t)\,dt}{\int_{0}^{5T} x(t)\,dt},
+\label{eq:capture}
+\end{equation}
+and the tool places the exposure at the start $s$ that maximizes $C$ for the longest exposure the
+sensor allows, after which the user can move either edge. The trigger delay is $D=s$. For the
+ML750ST, the edges saved in the document are $s=\SI{8800.65}{\micro\second}$ and
+$s+\tau=\SI{15057.48}{\micro\second}$, an exposure of \SI{6256.83}{\micro\second} that collects
+\SI{95.6}{\percent} of the white frame's light. Since $D>T$, the exposure for each pattern opens
+after the vertical sync of the next pattern, which is the case analyzed in
+Section~\ref{sec:stacking}.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{figures/captured_vs_exposure.pdf}
-\caption{Best fraction of a frame's light captured, $C^\ast(\tau)$ of~\eqref{eq:capture}, against
-exposure length, from the WKKKK profile. The sensor's limit at this frame rate is
-\SI{8235.75}{\micro\second}.}
+\caption{Largest share of the white frame's light that an exposure of a given length can
+collect, $\max_s C(s,\tau)$ of~\eqref{eq:capture}, from the WKKKK profile. The sensor's limit at
+this frame rate is \SI{8235.75}{\micro\second}.}
 \label{fig:capture}
 \end{figure}
 
-Fig.~\ref{fig:capture} plots $C^\ast(\tau)$. A \SI{2}{\milli\second} exposure collects at best
-\SI{38.6}{\percent} of a frame's light, \SI{4}{\milli\second} \SI{68.5}{\percent} and
-\SI{6}{\milli\second} \SI{92.3}{\percent}. The edges saved in the session,
-$s=\SI{8800.65}{\micro\second}$ and $s+\tau=\SI{15057.48}{\micro\second}$
-($\tau=\SI{6256.83}{\micro\second}$), collect \SI{95.6}{\percent}; the runway holds
-\SI{4.0}{\percent} and everything else \SI{0.04}{\percent}. At the sensor's limit the best
-window collects \SI{99.2}{\percent}. \pending{Decide which exposure the 3D experiments use and
-re-save the edges at the limit if so.}
+Figure~\ref{fig:capture} shows how this share grows with the exposure. At the sensor's limit of
+\SI{8235.75}{\micro\second}, the best placed exposure collects \SI{99.2}{\percent} of the frame's
+light. \pending{Decide which exposure the scanning experiments use.}
 
-\subsection{LED decomposition}
+\subsection{The runway}
+The WKKKK sweep was intended only to locate the white frame's light, but it showed something we
+had not expected: the difference between the white frame and the black frames extends beyond one
+frame period. Light from the white frame begins to arrive before the leading edge of the
+exposure window, in an interval we call the \emph{runway}, $[\rho,\,s]$ with $\rho\ge s-T$. The
+tool places $\rho$ by walking back from $s$ while $x(t)$ remains above \SI{2}{\percent} of its
+peak, which for the ML750ST gives $\rho=\SI{5970.99}{\micro\second}$.
 
-\begin{figure*}[t]
-\centering
-\includegraphics[width=\textwidth]{figures/rgb_fit.pdf}
-\caption{White (grey band, WWWWW less dark) as a weighted sum of red-, green- and
-blue-filtered sweeps~\eqref{eq:rgbfit}, one frame. Bottom: residual.}
-\label{fig:rgb}
-\end{figure*}
+The runway overlaps the exposure of the previous pattern, which ended at
+$s+\tau-T=\SI{6731.67}{\micro\second}$, and within that overlap lies a pulse of light from the
+prior frame. The runway therefore divides into two parts,
+\begin{equation}
+\mathcal R_1=[\rho,\; s+\tau-T], \qquad \mathcal R_2=[s+\tau-T,\; s],
+\end{equation}
+the part inside the previous exposure, \SI{760.7}{\micro\second} long, and the part between
+exposures, \SI{2069.0}{\micro\second} long. They hold \SI{0.35}{\percent} and \SI{3.65}{\percent}
+of the white frame's light, respectively.
 
-The least-squares weights of~\eqref{eq:rgbfit} are $a_R=0.4935$, $a_G=1.2192$, $a_B=0.6945$ and
-$b=-3.28$~ADU; the residual is 9.61~ADU RMS against a 771.7~ADU peak, $R^2=0.99880$
-(Fig.~\ref{fig:rgb}). Of the fitted light, red carries \SI{27.4}{\percent}, green
-\SI{44.7}{\percent} and blue \SI{27.8}{\percent}. Folded onto one frame and thresholded at
-\SI{25}{\percent}, the pulses are red at 1450--1535, 1715--1995 and
-\SIrange{4150}{4940}{\micro\second}; green at 555--850, 2145--2520,
-3685--3975 and \SIrange{5620}{5870}{\micro\second}; and blue at
-2715--3135 and \SIrange{6320}{6675}{\micro\second}, with a short blue flash near
-\SI{3367}{\micro\second}. No two colours are lit at once, and some LED is lit in
-\SI{37.8}{\percent} of the frame. The largest residuals sit on pulse edges (largest
-70.6~ADU), where a small timing difference between sweeps leaves a spike, and inside the long
-red pulse. \pending{Red sweep may be partly clipped (143 readings $\ge$1000~ADU); re-run with the
-iris closed a step.}
-
-\subsection{Leakage before the exposure}
+\subsection{Crosstalk maps}
+To find whose light arrives in each part of the runway, the pattern generator switches to a
+two-frame cycle $A\,B\,A\,B$ of full-field levels. A reading in frame $k$ then sees that frame's
+level $x$ and the level $y$ of frames $k\pm1$, which are equal. For each part $\mathcal R_i$, the
+tool opens an exposure at the start of the part, lasting its length, and records 10 readings for
+every pair $(A,B)$; each pair fills the two cells $(y,x)=(B,A)$ and $(A,B)$ of a $256\times256$
+map. A map that varies with $y$ shows light from the neighboring patterns, and one that varies
+with $x$ shows light from the runway's own frame. Because $A\,B\,A\,B$ makes the previous and the
+next frame equal, the maps cannot tell those two apart.
 
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/runway_maps.pdf}
-\caption{Leakage maps for the two parts of the runway (A\,B\,A\,B cycle, all $256\times256$
-level pairs, 10 readings per cell; log colour). Left: inside the previous exposure,
+\caption{Crosstalk maps for the two parts of the runway (A\,B\,A\,B cycle, all $256\times256$
+level pairs, 10 readings per cell; log color). Left: inside the previous exposure,
 \SI{760.5}{\micro\second} exposure. Right: between exposures, \SI{2068.9}{\micro\second}.}
 \label{fig:runway}
 \end{figure*}
 
-The runway of the saved edges runs from $\rho=\SI{5970.99}{\micro\second}$ to $s$; the previous
-exposure ended at $s+\tau-T=\SI{6731.67}{\micro\second}$, so $\mathcal R_1$ is
-\SI{760.7}{\micro\second} long and $\mathcal R_2$ \SI{2069.0}{\micro\second}. They hold
-\SI{0.35}{\percent} and \SI{3.65}{\percent} of the white frame's light.
+The two maps in Fig.~\ref{fig:runway} behave differently. In $\mathcal R_1$, the reading is set by
+the level $y$ of the neighboring frames and spans 24 to more than 1023~ADU as $y$ changes, but
+not monotonically: it stays near 24~ADU up to $y\approx88$, rises in a band near $y=96$--120,
+returns to the floor near $y=136$, and saturates from about $y=164$. In $\mathcal R_2$, the
+reading is set instead by the runway frame's own level $x$, rising from 20.0 to 57.2~ADU across
+$x$ at $y=0$, with a step of about 8~ADU between $y=240$ and $y=248$. Read with the one-frame
+latency, $\mathcal R_1$ contains light of the previous pattern, which the previous exposure is
+meant to collect and the current one must not, while $\mathcal R_2$ contains early light of the
+pattern about to be captured. \pending{Interpret the non-monotonic dependence on $y$; test
+whether the order of the prior frame's bit-planes explains it.}
 
-The two maps in Fig.~\ref{fig:runway} behave differently. In $\mathcal R_1$ the reading is set
-almost entirely by the level of the neighbouring frames $y$: a linear fit in $x$ alone explains
-none of the variance, and the full range of the map, 24 to beyond 1023~ADU, is crossed by
-changing $y$. The dependence on $y$ is not monotonic: about 24~ADU up to $y\approx88$, a band
-near $y=96$--$120$, a return to the floor near $y=136$, and saturation from about $y=164$.
-\pending{Interpret: consistent with the bit-plane order of the last LED pulse
-(\SIrange{6320}{6675}{\micro\second}, blue); test with filtered maps.} In $\mathcal R_2$ the
-reading is set by the runway frame's own level $x$: from \SI{20.0}{} to \SI{57.2}{ADU} across $x$
-at $y=0$ ($R^2=0.694$ for a linear fit in $x$, 0.005 in $y$), with a step of about 9~ADU only
-when $y\gtrsim244$.
+Over most of their range, each map therefore depends on one level only. The map of
+$\mathcal R_2$ is constant along $y$ for $y<248$, and the map of $\mathcal R_1$ is constant along
+$x$ for $x<193$. Above that level, the reading in $\mathcal R_1$ rises by 5 to 8~ADU at every
+value of $y$ that does not saturate the sensor, from 24.7 to 29.0~ADU at $y\le88$. This step is
+the one place in either map where the reading depends on the level of a second frame, and it is
+small against the light of the previous pattern in the same interval. On the edges of the bands
+in $y$, near $y=96$, 128, and 144, the reading in $\mathcal R_1$ also varies by up to about
+100~ADU across $x$.
 
-Read with the one-frame latency, the first map is light of the \emph{previous} pattern, which
-the previous exposure is meant to collect and the current one must not, while the second is
-early light that tracks the pattern about to be captured. An exposure may therefore be extended
-backwards into $\mathcal R_2$ at the cost of a level-dependent but self-consistent bias, but not
-into $\mathcal R_1$. \pending{Confirm with a three-frame cycle; quantify the phase error each
-would introduce.}
+\subsection{Color sweeps}
+The pulse that falls inside $\mathcal R_1$ raises the question of which LED emits it, and so we
+repeated the WWWWW sweep through red, green, and blue filters on the camera. With $w(t)$ and
+$f_c(t)$ the white and filtered sweeps less $\bar r_0$, the tool fits
+\begin{equation}
+w(t) \;\approx\; \sum_{c\in\{R,G,B\}} a_c\, f_c(t) + b
+\label{eq:rgbfit}
+\end{equation}
+by least squares over every delay, where the weights $a_c$ absorb the transmission of each
+filter. For the ML750ST the fit gives $a_R=0.4935$, $a_G=1.2192$, $a_B=0.6945$ and
+$b=-3.28$~ADU, with a residual of 9.61~ADU RMS against a 771.7~ADU peak and $R^2=0.99880$
+(Fig.~\ref{fig:rgb}). The white output of the projector is therefore the sum of its red, green,
+and blue pulses, with no interval in which a fourth component, such as white from two LEDs at
+once, contributes light that the three filtered sweeps do not account for. The largest residuals
+sit on pulse edges, where a small timing difference between sweeps leaves a spike, and inside the
+long red pulse. \pending{The red sweep may be partly clipped; repeat it with the iris closed one
+step.}
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/rgb_fit.pdf}
+\caption{White (gray band, WWWWW less dark) as a weighted sum of the red-, green-, and
+blue-filtered sweeps~\eqref{eq:rgbfit}, over one frame. Bottom: residual.}
+\label{fig:rgb}
+\end{figure*}
+
+The color sweeps also show that the red, green, and blue pulses occupy separate intervals of the
+frame, and that the pulse inside $\mathcal R_1$, near the end of the frame, is blue. A scan made
+through a red or green filter on the camera lens would therefore receive no light from the prior
+frame inside its exposure, so that a target can be scanned without this crosstalk by choosing the
+filter on the camera. The filter must be on the camera and not the projector's video: sending a
+single primary over HDMI does not guarantee that only one LED emits light, since the projector's
+color processing can drive other LEDs from a pure primary input (Section~\ref{sec:rw_electronics}),
+whereas a filter on the camera lens passes only the light of one LED whatever the projector does.
+The cost of the filter is the light of the other two LEDs, which lengthens the exposure.
+
+These measurements give the delay and exposure for the scanner, and they identify where its
+crosstalk comes from. Whether the scanner then measures phase correctly is the subject of the
+next section.
 
 % =====================================================================================
-\section{Implications for Structured Light}
-\label{sec:sli}
+\section{Experiments}
+\label{sec:experiments}
 
-\pending{PLANNED EXPERIMENTS, no results yet.
-(1) Phase error on a flat target with the 24-frame sequence, for exposures placed naively
-(delay 0), at the profiled window of 6257\,\textmu s, and at the sensor limit.
-(2) The same with a per-pixel leakage correction derived from the maps.
-(3) Depth RMS on calibrated planes and a sphere; comparison with a PC-driven projector and a
-free-running camera.
-(4) Several projectors (DLP LED, DLP lamp with colour wheel, LCD) to show the profiling
-generalizes.
-(5) Frame rate and latency of the full 3D pipeline.}
+\pending{Scanning experiments, no results yet. They measure how well the scanner recovers phase
+with the delay and exposure chosen in Section~\ref{sec:profiling}.
+(1) Phase error on a flat target with the 24-frame PMP sequence at \SI{120}{\hertz}, for an
+exposure placed at delay~0, at the profiled window, and at the sensor's exposure limit.
+(2) The same scans through red, green, and blue filters on the camera lens, to test whether each
+LED alone produces the same phase, at the center and at the edge of the field, and whether a
+filter removes the crosstalk from the prior frame.
+(3) The response through each filter on red, green, blue, and white targets after a lookup
+table linearizes the gray-level response on a white target.
+(4) Phase error with pattern levels above 192, where the next frame adds 5 to 8~ADU inside
+$\mathcal R_1$, against patterns held below 193.
+(5) Scan rate and image--pattern pairing with queued versus ready-gated triggering.
+(6) Depth error on calibrated planes and a sphere.
+(7) Populating the lookup table $L$ of~\eqref{eq:pattern} from measurements of the projector, and
+its effect on phase error.}
 
 % =====================================================================================
 \section{Limitations}
@@ -867,7 +1190,7 @@ leaks into that window from neighbouring patterns. \pending{Summarize the 3D res
 
 \section*{Acknowledgments}
 The HDMI datapath derives from M.~Field's Artix-7 HDMI processing design~\cite{hamsternz}; the
-original SLI design is by Q.~Hu. \pending{Funding.}
+SLI controller design follows Yu~\emph{et~al.}~\cite{yu2020dualprojector}. \pending{Funding.}
 
 \bibliographystyle{IEEEtran}
 \bibliography{refs}
