@@ -519,9 +519,10 @@ scanners~\cite{matsuda2015mc3d}.}
       label={[font=\scriptsize]above right:Artix-7 XC7A100T (Alchitry Pt V2)}] {};
 \end{scope}
 \end{tikzpicture}
-\caption{The BYOP camera. The FPGA sits on the HDMI cable; it either passes the PC's video or
-replaces it with on-board fringes, and drives the projector in a mode read from the
-projector's EDID. Camera triggers are timed from the \emph{output} vertical sync.
+\caption{The BYOP camera sits on the HDMI cable between the PC and the projector. Its FPGA
+either passes the PC's video through or replaces it with fringe patterns generated on the board,
+and it drives the projector in a video mode read from the projector's EDID. The camera's triggers
+are timed from the vertical sync of the \emph{output} video.
 \pending{Redraw: the EDID arrow should feed the transmit side; add the UART witness.}}
 \label{fig:arch}
 \end{figure*}
@@ -644,7 +645,7 @@ and, when the signal returns, reads the new EDID; this matters for projectors th
 placeholder EDID while warming up and replace it with their real EDID seconds later. Each new
 build carries a new serial number, which prevents the host from reusing a cached copy.
 
-\begin{algorithm}[t]
+\begin{algorithm}[b]
 \caption{Host hot-plug and source selection}
 \label{alg:hpd}
 \begin{algorithmic}[1]
@@ -703,8 +704,8 @@ depend on where the video came from.
 
 In either mode, the pattern generator replaces the active pixels with PMP patterns whose
 parameters are derived from the resolution of the current video mode. The orientation of the
-stripes is set by the user, either from the host over USB or from switches on the board, as are
-the color channels, red, green, or blue, that carry the pattern. Let $F$ be the number of active
+stripes is set by the user from the host over USB, as are the color channels, red, green, or
+blue, that carry the pattern. Let $F$ be the number of active
 pixels along the axis on which the patterns vary: the number of rows for horizontal stripes, or
 the number of columns for vertical stripes. The generator sets
 \begin{equation}
@@ -857,11 +858,11 @@ about $1.06\,T$.
     \draw[->,gray] (\k*\T,{-4.2-0.35*\k}) -- ({\k*\T+1.057*\T},{-4.2-0.35*\k});
   }
 \end{tikzpicture}
-\caption{Triggering with a delay $D$ longer than the frame period $T$. Ready-gated: the camera is
-not ready at the vertical sync of frame~1, so the controller holds pattern~0 for a second frame
-and issues no trigger. Queued: every vertical sync schedules a trigger at $kT+D$, and the
-pattern advances every frame. Drawn to scale for the ML750ST at \SI{120}{\hertz}
-($D=1.057\,T$, $\tau=0.752\,T$).}
+\caption{Two ways to trigger the camera when the delay $D$ is longer than the frame
+period $T$, drawn to scale for the ML750ST at \SI{120}{\hertz} ($D=1.057\,T$, $\tau=0.752\,T$). In
+ready-gated triggering, the camera is not ready at the vertical sync of frame~1, so the controller
+holds pattern~0 for a second frame and issues no trigger. In queued triggering, every vertical sync
+schedules a trigger at $kT+D$, and the pattern advances every frame.}
 \label{fig:stacking}
 \end{figure}
 
@@ -1009,11 +1010,12 @@ continuously lit picture there is no dark interval anywhere in the frame.
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/timeline.pdf}
-\caption{Five-frame profiles of the ML750ST at 800$\times$600 and \SI{120}{\hertz} (exposure
-\SI{4.875}{\micro\second}, step \SI{5}{\micro\second}, ROI mean). WWWWW (blue) shows when the
-projector emits light; WKKKK (red) shows the light of the white frame~0, which appears in
-frame~1. Shaded: the chosen exposure (lead to trail) and the runway before it; hatched: the part
-of the runway inside the previous exposure.}
+\caption{Five-frame profiles of the ML750ST at 800$\times$600 and \SI{120}{\hertz},
+measured as the ROI mean with a \SI{4.875}{\micro\second} exposure swept in
+\SI{5}{\micro\second} steps. The blue WWWWW profile shows when the projector emits light, and the
+red WKKKK profile shows the light of the white frame~0, which appears in frame~1. The shaded
+regions mark the chosen exposure, from lead to trail, and the runway before it, and the hatched
+region marks the part of the runway that lies inside the previous exposure.}
 \label{fig:timeline}
 \end{figure*}
 
@@ -1025,7 +1027,88 @@ with the WWWWW pulses. They appear not in frame~0 but in frame~1: the ML750ST di
 one frame period after it is sent. Frames~2--4 of WKKKK, far from any light, give the dark
 level $\bar r_0$ that is subtracted from every reading below.
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/timeline_zoom.pdf}
+\caption{A close-up of Fig.~\ref{fig:timeline} from the start of the runway, $\rho$, to the
+trailing edge of the exposure, $s+\tau$, with WWWWW in blue and WKKKK in red. The red dashed line
+represents the output when all frames are black (K). The shaded regions mark the runway $[\rho,\,s]$ and the chosen exposure
+$[s,\,s+\tau]$, the hatched region marks the part of the runway inside the previous exposure,
+which ends at $s+\tau-T$, and the dotted line marks the vertical sync of frame~1.}
+\label{fig:zoom}
+\end{figure}
+
+Figure~\ref{fig:zoom} enlarges Fig.~\ref{fig:timeline} around the white frame's light, from the
+start of the runway to the trailing edge of the exposure
+(Sections~\ref{sec:exposure} and~\ref{sec:runway}), and adds, dashed, the WKKKK profile of
+frames~3 and~4 shifted back three frame periods. Because those frames are black and lie among
+black frames, the dashed line is the reading that an all-black KKKKK sequence would give. Two things can be seen
+by eye. First, inside frame~0, before the pulses of the white frame begin, the WKKKK reading ramps
+up from the dark level, reaching 75~ADU by the vertical sync of frame~1 and 87~ADU at the leading
+edge. This is a runway into the white frame: light that is due to the white level displayed in
+frame~1 but arrives during frame~0.
+
+Without the white frame, in the KKKKK line, the same interval
+stays at the dark level, 18.2~ADU on average against 47.2~ADU for WKKKK. The ramp therefore depends on the frame that is displayed next and appears before that
+frame begins, so it is a non-causal artifact with respect to the displayed frames. Second, the
+WWWWW profile shows that the runway also contains light of frame~0 itself: the last pulse of the
+frame displayed before the white one overlaps the start of the runway (hatched), and it is missing
+from WKKKK only because that frame is black there. The runway thus holds the late light of one
+frame and the early light of the next, and for this reason we split it into two regions,
+$\mathcal R_1$ inside the previous exposure and $\mathcal R_2$ between exposures
+(Section~\ref{sec:runway}). Figures~\ref{fig:runway_prev} and~\ref{fig:runway_between} map, for
+each region, how the reading depends on the level of the runway's own frame and on the level of
+the frames around it (Section~\ref{sec:crosstalk}).
+
+Figure~\ref{fig:rgb_zoom} repeats Fig.~\ref{fig:zoom} for the red, green, and blue profiles of
+the color sweeps (Section~\ref{sec:color}), and what Fig.~\ref{fig:zoom} shows for white is true
+for all three colors, to varying degrees. Each profile ramps up through the part of the runway
+between exposures, from near the dark level at its start to 29.1, 53.6, and 41.0~ADU for red,
+green, and blue at the leading edge, so the ramp is strongest in green and weakest in red. The
+pulse of the prior frame that overlaps the start of the runway comes from one color alone: it is
+blue, and peaks at 654~ADU, while the red and green profiles stay within 13~ADU of the dark level
+there.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/runway_map_prev.pdf}
+\caption{The crosstalk map for $\mathcal R_1$, the part of the runway inside the
+previous exposure, 5971--\SI{6732}{\micro\second} after the vertical sync of frame~0. Each cell
+is the mean ROI reading, in ADU, of 10 \SI{760.5}{\micro\second} exposures of an A\,B\,A\,B cycle,
+and the map covers all $256\times256$ pairs of levels. The map is split at $y=88$, with a log
+color scale above and a linear one below, where the reading stays between 24 and 32~ADU.}
+\label{fig:runway_prev}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/runway_map_between.pdf}
+\caption{The crosstalk map for $\mathcal R_2$, the part of the runway between
+exposures, 6732--\SI{8801}{\micro\second} after the vertical sync of frame~0. Each cell is the
+mean ROI reading, in ADU, of 10 \SI{2068.9}{\micro\second} exposures of an A\,B\,A\,B cycle,
+shown on a log color scale, and the map covers all $256\times256$ pairs of levels.}
+\label{fig:runway_between}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/timeline_zoom_rgb.pdf}
+\caption{The red, green, and blue profiles over the same interval as Fig.~\ref{fig:zoom}, from
+the start of the runway, $\rho$, to the trailing edge of the exposure, $s+\tau$. The shaded
+regions mark the runway $[\rho,\,s]$ and the chosen exposure $[s,\,s+\tau]$, the hatched region
+marks the part of the runway inside the previous exposure, and the dotted line marks the vertical
+sync of frame~1.}
+\label{fig:rgb_zoom}
+\end{figure}
+
+These observations rule out the usual approach to tone correction, in which the output of the
+projector is measured against the level of the current frame alone. Because the light collected
+during one frame's exposure also depends on the frame before it, the correction for the current
+frame must instead be measured as a function of the level of the previous frame, and because the
+effect differs from one LED to the next, it must be measured separately for red, green, and blue.
+
 \subsection{Choosing the delay and the exposure}
+\label{sec:exposure}
 With the white frame's light identified, the delay and exposure follow from it. Let
 $x(t)=\max(0,\,r_{\text{WKKKK}}(t)-\bar r_0)$. The share of one frame's light that an exposure
 $[s,\,s+\tau]$ collects is
@@ -1041,26 +1124,19 @@ $s+\tau=\SI{15057.48}{\micro\second}$, an exposure of \SI{6256.83}{\micro\second
 after the vertical sync of the next pattern, which is the case analyzed in
 Section~\ref{sec:stacking}.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{figures/captured_vs_exposure.pdf}
-\caption{Largest share of the white frame's light that an exposure of a given length can
-collect, $\max_s C(s,\tau)$ of~\eqref{eq:capture}, from the WKKKK profile. The sensor's limit at
-this frame rate is \SI{8235.75}{\micro\second}.}
-\label{fig:capture}
-\end{figure}
-
-Figure~\ref{fig:capture} shows how this share grows with the exposure. At the sensor's limit of
-\SI{8235.75}{\micro\second}, the best placed exposure collects \SI{99.2}{\percent} of the frame's
+At the sensor's limit of \SI{8235.75}{\micro\second}, the best placed
+exposure collects \SI{99.2}{\percent} of the frame's
 light. \pending{Decide which exposure the scanning experiments use.}
 
 \subsection{The runway}
+\label{sec:runway}
 The WKKKK sweep was intended only to locate the white frame's light, but it showed something we
 had not expected: the difference between the white frame and the black frames extends beyond one
 frame period. Light from the white frame begins to arrive before the leading edge of the
 exposure window, in an interval we call the \emph{runway}, $[\rho,\,s]$ with $\rho\ge s-T$. The
 tool places $\rho$ by walking back from $s$ while $x(t)$ remains above \SI{2}{\percent} of its
-peak, which for the ML750ST gives $\rho=\SI{5970.99}{\micro\second}$.
+peak, which for the ML750ST gives $\rho=\SI{5970.99}{\micro\second}$
+(Fig.~\ref{fig:zoom}).
 
 The runway overlaps the exposure of the previous pattern, which ended at
 $s+\tau-T=\SI{6731.67}{\micro\second}$, and within that overlap lies a pulse of light from the
@@ -1073,6 +1149,7 @@ exposures, \SI{2069.0}{\micro\second} long. They hold \SI{0.35}{\percent} and \S
 of the white frame's light, respectively.
 
 \subsection{Crosstalk maps}
+\label{sec:crosstalk}
 To find whose light arrives in each part of the runway, the pattern generator switches to a
 two-frame cycle $A\,B\,A\,B$ of full-field levels. A reading in frame $k$ then sees that frame's
 level $x$ and the level $y$ of frames $k\pm1$, which are equal. For each part $\mathcal R_i$, the
@@ -1082,16 +1159,7 @@ map. A map that varies with $y$ shows light from the neighboring patterns, and o
 with $x$ shows light from the runway's own frame. Because $A\,B\,A\,B$ makes the previous and the
 next frame equal, the maps cannot tell those two apart.
 
-\begin{figure*}[t]
-\centering
-\includegraphics[width=\textwidth]{figures/runway_maps.pdf}
-\caption{Crosstalk maps for the two parts of the runway (A\,B\,A\,B cycle, all $256\times256$
-level pairs, 10 readings per cell; log color). Left: inside the previous exposure,
-\SI{760.5}{\micro\second} exposure. Right: between exposures, \SI{2068.9}{\micro\second}.}
-\label{fig:runway}
-\end{figure*}
-
-The two maps in Fig.~\ref{fig:runway} behave differently. In $\mathcal R_1$, the reading is set by
+The two maps, Figs.~\ref{fig:runway_prev} and~\ref{fig:runway_between}, behave differently. In $\mathcal R_1$, the reading is set by
 the level $y$ of the neighboring frames and spans 24 to more than 1023~ADU as $y$ changes, but
 not monotonically: it stays near 24~ADU up to $y\approx88$, rises in a band near $y=96$--120,
 returns to the floor near $y=136$, and saturates from about $y=164$. In $\mathcal R_2$, the
@@ -1112,6 +1180,7 @@ in $y$, near $y=96$, 128, and 144, the reading in $\mathcal R_1$ also varies by 
 100~ADU across $x$.
 
 \subsection{Color sweeps}
+\label{sec:color}
 The pulse that falls inside $\mathcal R_1$ raises the question of which LED emits it, and so we
 repeated the WWWWW sweep through red, green, and blue filters on the camera. With $w(t)$ and
 $f_c(t)$ the white and filtered sweeps less $\bar r_0$, the tool fits
@@ -1132,13 +1201,15 @@ step.}
 \begin{figure*}[t]
 \centering
 \includegraphics[width=\textwidth]{figures/rgb_fit.pdf}
-\caption{White (gray band, WWWWW less dark) as a weighted sum of the red-, green-, and
-blue-filtered sweeps~\eqref{eq:rgbfit}, over one frame. Bottom: residual.}
+\caption{The white sweep, less the dark level, over one frame (gray band), fitted as a
+weighted sum of the red-, green-, and blue-filtered sweeps by~\eqref{eq:rgbfit}. The lower panel
+shows the residual of the fit.}
 \label{fig:rgb}
 \end{figure*}
 
 The color sweeps also show that the red, green, and blue pulses occupy separate intervals of the
-frame, and that the pulse inside $\mathcal R_1$, near the end of the frame, is blue. A scan made
+frame, and that the pulse inside $\mathcal R_1$, near the end of the frame, is blue
+(Fig.~\ref{fig:rgb_zoom}). A scan made
 through a red or green filter on the camera lens would therefore receive no light from the prior
 frame inside its exposure, so that a target can be scanned without this crosstalk by choosing the
 filter on the camera. The filter must be on the camera and not the projector's video: sending a
