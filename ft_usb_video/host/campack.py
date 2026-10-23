@@ -63,7 +63,7 @@ def parse_header(buf, off):
         flags = x[1] & 0xFF
         out.update({
             # projected frames since the epoch frame (the frame on which the host's
-            # opcode-8 epoch reset landed and the pattern counter returned to 0)
+            # SEQCTL (0x09) bit-2 epoch reset landed and the pattern counter returned to 0)
             "seq": x[0],
             "pattern": flags & 0x1F,          # {frq[1:0], phase[2:0]}
             "frq": (flags >> 3) & 3,

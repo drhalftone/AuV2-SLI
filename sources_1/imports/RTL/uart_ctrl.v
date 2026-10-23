@@ -151,6 +151,8 @@ module uart_ctrl #(
     // needs no host pacing and no PC-drawn frames. Packed for pixel_pipe:
     //   [7:0]   0x09 SEQCTL  bit0 free-run: advance every frame, rdy not needed
     //                        bit1 window:   fringes only inside the window, black outside
+    //                        bit2 epoch:    TOGGLE to reset the pattern counter on the next
+    //                                       vsync (frame label epoch, see pixel_pipe.v)
     //   [31:8]  0x0A..0x0C ORDER  phase shown in slot i = order[3i+2:3i]
     //                        default 0xFAC688 = 0 1 2 3 4 5 6 7; Bayer 0 4 2 6 1 5 3 7 = 0xEE9CA0
     //   [39:32] 0x0D WIN_X0  window, in 4-pixel units: x0 <= x < x1, y0 <= y < y1

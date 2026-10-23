@@ -340,9 +340,9 @@ architecture Behavioral of Au2_SLI is
     -- TLP hand-off into the camera module, gated by WITH_TLP (see the generic).
     signal tlp_to_cam     : std_logic_vector(23 downto 0);
     signal tlp_tog_to_cam : std_logic;
-    -- FRAME LABEL: pixel_pipe <-> cam_frame_ft. epoch_tog_s is driven only by the
-    -- WITH_CAM = 1 camera; in the other builds it keeps its default and never flips.
-    signal epoch_tog_s : std_logic := '0';
+    -- FRAME LABEL: pixel_pipe -> cam_frame_ft. The epoch arm does NOT cross from the
+    -- camera: connecting cam_frame_ft.epoch_tog_o to pixel_pipe.epoch_tog made Vivado
+    -- 2026.1 drop the projector-DDC IOBUFs (see pixel_pipe.v). It is SEQCTL bit 2.
     signal pat_tag_s   : std_logic_vector(5 downto 0);
     signal pat_tog_s   : std_logic;
     component impulse_gen is
@@ -1544,7 +1544,7 @@ i_processing: pixel_pipe Port map (
         trig_cnt_dbg => trig_cnt,
         lut_din  => pat_lut_din,
         lut_dout => pat_lut_dout,
-        epoch_tog => epoch_tog_s,
+        epoch_tog => '0',     -- unused: the epoch arm is SEQCTL bit 2 (see pixel_pipe)
         pat_tag   => pat_tag_s,
         pat_tog   => pat_tog_s
     );
@@ -1760,7 +1760,7 @@ i_cam_frame_ft : cam_frame_ft
         -- The top-left pixel of the incoming HDMI frame, and its update toggle,
         -- so the camera can stamp each captured frame with the pattern it saw.
         ext_tlp => tlp_to_cam(23 downto 16), ext_tlp_tog => tlp_tog_to_cam,
-        ext_pat => pat_tag_s, ext_pat_tog => pat_tog_s, epoch_tog_o => epoch_tog_s,
+        ext_pat => pat_tag_s, ext_pat_tog => pat_tog_s, epoch_tog_o => open,
         ctl_byte => ctl_byte_w, ctl_valid => ctl_valid_w,
         rpl_byte => rpl_byte_w, rpl_we => rpl_we_w, rpl_full => rpl_full_w,
 

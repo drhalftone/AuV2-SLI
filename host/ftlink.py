@@ -155,16 +155,23 @@ class FtLink:
         return self.send_word(6 << 28)
 
     def frame_label(self, enable=True, epoch=False):
-        """Opcode 8: FRAME LABEL control.
+        """FRAME LABEL control.
 
-        enable -> frames carry the 64-byte format-5 header (seq, pattern, flags).
-        epoch  -> arm an epoch reset: on the next projected vsync the FPGA returns
-                  its pattern counter to {frq,phase} = 0 and that frame becomes
-                  seq 0, so seq and pattern name each captured frame exactly.
-        Both bits travel in one word; enable is a level, epoch a one-shot.
+        enable -> opcode 8 bit 27: frames carry the 64-byte format-5 header
+                  (seq, pattern, flags).
+        epoch  -> arm an epoch reset by TOGGLING SEQCTL (reg 0x09) bit 2: on the
+                  next projected vsync the FPGA returns its pattern counter to
+                  {frq,phase} = 0 and that frame becomes seq 0, so seq and pattern
+                  name each captured frame exactly. (Opcode 8 bit 26 is the old,
+                  unconnected arm -- see pixel_pipe.v for why.)
         """
-        return self.send_word((8 << 28) | (int(bool(enable)) << 27)
-                              | (int(bool(epoch)) << 26))
+        self.send_word((8 << 28) | (int(bool(enable)) << 27))
+        if epoch:
+            v = self.read_reg(0x09)
+            if v is None:
+                raise RuntimeError("could not read SEQCTL (0x09) to arm the epoch")
+            self.write_reg(0x09, v ^ 0x04)
+        return 1
 
     # ---------------- reply direction ----------------
     def pump(self):

@@ -80,7 +80,7 @@ def main():
     link = FtLink()
     try:
         link.drain()
-        link.write_reg(0x09, 0x01)                 # free-running fringe sequence
+        link.write_reg(0x09, 0x01)                 # free-running fringe sequence (bit2 = epoch)
         link.write_reg(0x13, 0xEE)                 # USB switches, SLI on, RGB, rows
         dly = int(round(a.delay_us * 100))         # 10 ns ticks
         link.send_word((7 << 28) | (1 << 27) | (dly & 0xFFFFFF))
@@ -103,14 +103,21 @@ def main():
             h["frame_idx"], h["seq"], h["pattern"], h["frq"], h["phase"],
             h["pat_ok"], h["epoch_valid"], h["lab_valid"], h["tlp"]))
 
+    # A step of 0 over one frame_idx is a REPEATED FRAME: the DDR ring sent the same
+    # slot twice (measured 2026-10-23: such pairs carry byte-identical pixels from the
+    # same slot). The label is right to repeat, so it is reported, not failed.
     bad = 0
+    rep = 0
     good = [h for h in lab if h["lab_valid"] and h["epoch_valid"]]
     for p, q in zip(good, good[1:]):
         dfi = (q["frame_idx"] - p["frame_idx"]) & 0xFFFFFFFF
         dsq = (q["seq"] - p["seq"]) & 0xFFFFFFFF
-        if dsq != dfi:
+        if dsq == 0 and dfi == 1 and q["slot"] == p["slot"]:
+            rep += 1
+        elif dsq != dfi:
             bad += 1
             print("seq step %d over %d frames at frame_idx %d" % (dsq, dfi, q["frame_idx"]))
+    print("repeated frames (same slot sent twice): %d" % rep)
     mism = [h for h in good if h["pat_ok"] and h["pattern"] != (h["seq"] % 32)]
     print("label pattern != seq mod 32: %d of %d" % (len(mism), len(good)))
     offs = sorted(set(((h["tlp"] & 0x1F) - h["pattern"]) % 32 for h in good))

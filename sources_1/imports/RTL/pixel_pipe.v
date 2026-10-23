@@ -228,14 +228,22 @@ module pixel_pipe(
     // toggle from the camera's clock domain; it is applied here, at a frame edge, and
     // the frame it lands on carries ep_frame = 1 in pat_tag so the camera block can
     // take its own count's origin from that very frame.
-    wire       vs_edge = in_vsync && ~vsync_reg;
-    reg  [2:0] ep_s     = 3'b000;
-    reg        ep_pend  = 1'b0;
+    //
+    // THE ARM IS SEQCTL (0x09) BIT 2, A TOGGLE. seq_cfg already reaches this module
+    // through a 2FF and is latched into cfg on every vsync, so a change of bit 2
+    // between the value latched at the previous vsync (cfg) and the one arriving now
+    // (seq_cfg) marks exactly one frame edge -- no new clock-domain crossing.
+    //
+    // WHY NOT A WIRE FROM THE CAMERA. The first cut armed this from cam_frame_ft's
+    // opcode-8 toggle (epoch_tog). With that one wire connected, Vivado 2026.1
+    // synthesis silently dropped the IOBUFs on hdmi_tx_scl/sda -- the projector's
+    // DDC -- trimmed the EDID I2C master to its state register, and the Ft+ link
+    // went silent; with the wire tied off the same RTL built and ran correctly
+    // (bisected 2026-10-23). The port is kept, unused, so the top need not change.
+    wire       vs_edge  = in_vsync && ~vsync_reg;
+    wire       ep_pend  = (seq_cfg[2] != cfg[2]);
     reg        ep_frame = 1'b0;
     always@(posedge clk) begin
-        ep_s <= {ep_s[1:0], epoch_tog};
-        if (vs_edge && ep_pend)  ep_pend <= 1'b0;
-        else if (ep_s[2] ^ ep_s[1]) ep_pend <= 1'b1;
         if (vs_edge) ep_frame <= ep_pend;
     end
     always@(posedge clk) begin  //// examine rdy counter at rising edge of vsync
