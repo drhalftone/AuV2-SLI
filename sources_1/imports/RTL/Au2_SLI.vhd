@@ -52,7 +52,16 @@ entity Au2_SLI is
               -- GENLOCK_ON = 1 starts the camera locked to the projected vsync,
               -- zero delay, from power-up. See cam_frame_ft's GL_EN_DEFAULT for
               -- why this is a build option and not a register.
-              GENLOCK_ON : integer := 0 );
+              GENLOCK_ON : integer := 0;
+              -- CAMERA READOUT WINDOW (WITH_CAM = 1). The sensor reads out only
+              -- CAM_WIN_W x CAM_WIN_H pixels at (CAM_WIN_X, CAM_WIN_Y), and the
+              -- whole video path -- DDR slots, USB frames, the header's
+              -- {nrow, ncol} -- is that size. Default = the full 1280 x 1024.
+              -- Set from build_merged.tcl's CAM_WIN, which validates it.
+              CAM_WIN_X : integer := 0;
+              CAM_WIN_Y : integer := 0;
+              CAM_WIN_W : integer := 1280;
+              CAM_WIN_H : integer := 1024 );
     Port ( 
         clk100    : in STD_LOGIC;
         usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
@@ -819,7 +828,8 @@ architecture Behavioral of Au2_SLI is
     -- language -- Vivado binds it by name. See the instantiation for why it is taken
     -- wholesale rather than re-plumbed here.
     component cam_frame_ft is
-        generic ( LIVE : integer; CONCURRENT : integer;
+        generic ( NCOL : integer; NROW : integer; WIN_X : integer; WIN_Y : integer;
+                  LIVE : integer; CONCURRENT : integer;
                   TRIGGERED : integer; TRIG_CY : integer;
                   GL_EN_DEFAULT : integer;
                   EXT_CLK : integer );
@@ -1705,6 +1715,10 @@ usb_tx <= cam_usb_tx when CAM_DIAG /= 0 else sli_usb_tx;
 gen_cam: if WITH_CAM = 1 generate
 i_cam_frame_ft : cam_frame_ft
     generic map (
+        NCOL       => CAM_WIN_W,  -- the sensor readout window IS the frame
+        NROW       => CAM_WIN_H,
+        WIN_X      => CAM_WIN_X,
+        WIN_Y      => CAM_WIN_Y,
         LIVE       => 1,          -- continuous ring, not one burst
         CONCURRENT => 1,          -- reader runs while the writer captures
         TRIGGERED  => 1,          -- paced, not free-running

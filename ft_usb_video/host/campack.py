@@ -35,6 +35,35 @@ FBYTES_U16 = NPIX * 2        # 2,621,440
 FBYTES_PACK10 = NPIX * 10 // 8   # 1,638,400
 FBYTES = FBYTES_PACK10       # what the current bitstream emits
 
+# THE FRAME SIZE IS THE BITSTREAM'S, NOT THIS FILE'S. A merged build made with
+# CAM_WIN=x,y,w,h reads out only that window of the sensor, and every frame header
+# carries {nrow, ncol} (word 2) with the byte count (word 4) to match. The numbers
+# above are the full-sensor default; set_geometry() replaces them once a header has
+# said otherwise, and to_frame() / iter_frames() take the size from the header.
+SENSOR_COLS, SENSOR_ROWS = 1280, 1024
+
+
+def fbytes_for(ncol, nrow, fmt=FMT_PACK10):
+    """Payload bytes of an ncol x nrow frame in format `fmt`."""
+    return ncol * nrow * 2 if fmt == FMT_U16 else ncol * nrow * 10 // 8
+
+
+def geometry_ok(ncol, nrow):
+    """A size a header may plausibly claim: whole kernels, on the sensor, and a
+    whole number of 8-kernel DDR groups (build_merged.tcl enforces the same)."""
+    return (8 <= ncol <= SENSOR_COLS and ncol % 8 == 0 and 1 <= nrow <= SENSOR_ROWS
+            and (ncol * nrow) % 64 == 0)
+
+
+def set_geometry(ncol, nrow):
+    """Make ncol x nrow the default frame size for this module's helpers."""
+    global NCOL, NROW, NPIX, FBYTES_U16, FBYTES_PACK10, FBYTES
+    NCOL, NROW = ncol, nrow
+    NPIX = ncol * nrow
+    FBYTES_U16 = NPIX * 2
+    FBYTES_PACK10 = NPIX * 10 // 8
+    FBYTES = FBYTES_PACK10
+
 
 def parse_header(buf, off):
     """Return the 8 header words as a dict, or None if it is not a valid header."""
@@ -123,17 +152,18 @@ def unpack10_flat(raw):
     return out.reshape(-1)
 
 
-def unpack10(raw):
-    """Packed-10 bytes -> (NROW, NCOL) uint16."""
-    return unpack10_flat(raw).reshape(NROW, NCOL)
+def unpack10(raw, ncol=None, nrow=None):
+    """Packed-10 bytes -> (nrow, ncol) uint16, defaulting to (NROW, NCOL)."""
+    return unpack10_flat(raw).reshape(nrow or NROW, ncol or NCOL)
 
 
-def to_frame(raw, fmt):
-    """Decode a payload of either format into (NROW, NCOL) uint16."""
+def to_frame(raw, fmt, ncol=None, nrow=None):
+    """Decode a payload of either format into (nrow, ncol) uint16. Pass the size
+    from the frame's own header; it defaults to (NROW, NCOL)."""
     if fmt == FMT_PACK10:
-        return unpack10(raw)
+        return unpack10(raw, ncol, nrow)
     if fmt == FMT_U16:
-        return np.frombuffer(raw, dtype="<u2").reshape(NROW, NCOL)
+        return np.frombuffer(raw, dtype="<u2").reshape(nrow or NROW, ncol or NCOL)
     raise ValueError("unknown payload format %r -- refusing to guess" % (fmt,))
 
 
@@ -157,6 +187,6 @@ def iter_frames(data, want=None):
         if i + HDR + h["fbytes"] > len(data):
             return
         raw = bytes(data[i + HDR:i + HDR + h["fbytes"]])
-        yield h, to_frame(raw, h["fmt"])
+        yield h, to_frame(raw, h["fmt"], h["ncol"], h["nrow"])
         i += HDR + h["fbytes"]
         n += 1

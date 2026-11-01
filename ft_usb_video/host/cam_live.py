@@ -59,6 +59,11 @@ NPIX = NCOL * NROW
 # frame is 1.64 MB rather than 2.62 MB. That 37.5% was pure zero padding, and
 # removing it is what puts 120 Hz inside the link's budget.
 FBYTES = campack.FBYTES_PACK10
+# NCOL / NROW / NPIX / FBYTES above are the FULL-SENSOR defaults. A bitstream built
+# with a readout window (build_merged.tcl CAM_WIN) sends smaller frames, and says so
+# in every header; the reader accepts any self-consistent size and the GUI adopts it
+# from the first frame (App.set_geometry). The buffer bound stays at the largest.
+FBYTES_MAX = campack.fbytes_for(campack.SENSOR_COLS, campack.SENSOR_ROWS)
 HDR = 32
 CH = 1 << 22
 EXPO_UNIT_US = 0.375
@@ -224,7 +229,7 @@ class Reader(threading.Thread):
         self.cam = cam
         self.stop = threading.Event()
         self.lock = threading.Lock()
-        self.latest = None            # (slot, frame_idx, bytes, fmt, ldrop, roiw)
+        self.latest = None            # (slot, frame_idx, bytes, fmt, ldrop, roiw, ncol, nrow)
         self.rx = bytearray()         # control-reply byte stream (see take_rx)
         self.bytes_total = 0
         self.frames_seen = 0
@@ -265,11 +270,18 @@ class Reader(threading.Thread):
             # Keep only the LAST complete frame in the buffer. Scanning from the
             # end means a slow GUI cannot make us fall behind the camera.
             last = None
+            fb = 0
             pos = acc.rfind(magic)
             while pos >= 0:
-                if pos + HDR + FBYTES <= len(acc):
+                if pos + HDR <= len(acc):
                     h = struct.unpack_from("<8I", acc, pos)
-                    if h[7] == (~MAGIC & 0xFFFFFFFF) and h[4] == FBYTES:
+                    # THE SIZE COMES FROM THE HEADER: {nrow, ncol} in word 2, bytes
+                    # in word 4. Accepted only when the two agree, so payload that
+                    # happens to contain the magic cannot pass as a frame.
+                    ncol, nrow, fb = h[2] & 0xFFFF, h[2] >> 16, h[4]
+                    if (h[7] == (~MAGIC & 0xFFFFFFFF) and campack.geometry_ok(ncol, nrow)
+                            and fb == campack.fbytes_for(ncol, nrow, h[6])
+                            and pos + HDR + fb <= len(acc)):
                         # h[6] is the payload format; carry it rather than assume
                         # one, because reading packed bytes as u16 does not fail
                         # loudly -- it just paints a plausible wrong picture.
@@ -282,8 +294,8 @@ class Reader(threading.Thread):
                         # decoded in the GUI so the reader thread stays a pure
                         # byte pump.
                         last = (h[3] & 0x3F, h[1],
-                                bytes(acc[pos + HDR: pos + HDR + FBYTES]), h[6],
-                                (h[3] >> 14) & 0xFFFF, h[5])
+                                bytes(acc[pos + HDR: pos + HDR + fb]), h[6],
+                                (h[3] >> 14) & 0xFFFF, h[5], ncol, nrow)
                         break
                 pos = acc.rfind(magic, 0, pos)
 
@@ -295,9 +307,9 @@ class Reader(threading.Thread):
                 # follows: a control reply leaves right after a frame, and
                 # clearing the whole buffer here threw away any that had only
                 # partly arrived.
-                del acc[:pos + HDR + FBYTES]
-            elif len(acc) > 3 * (FBYTES + HDR):
-                del acc[:len(acc) - (FBYTES + HDR)]   # bound the buffer
+                del acc[:pos + HDR + fb]
+            elif len(acc) > 3 * (FBYTES_MAX + HDR):
+                del acc[:len(acc) - (FBYTES_MAX + HDR)]   # bound the buffer
 
     def take(self):
         with self.lock:
@@ -585,6 +597,18 @@ class App:
         self.zoom, self.vel = 1.0, (0.0, 0.0)
         self.cx, self.cy = NCOL / 2.0, NROW / 2.0
         self.view_dirty = True
+
+    def set_geometry(self, ncol, nrow):
+        """Adopt the frame size the bitstream reports in its headers -- the full
+        sensor, or a CAM_WIN readout window -- and re-fit the view to it. Called on
+        the first frame and whenever a header's size changes (a reflash)."""
+        global NCOL, NROW, NPIX, FBYTES
+        NCOL, NROW = ncol, nrow
+        NPIX = ncol * nrow
+        FBYTES = campack.fbytes_for(ncol, nrow)
+        campack.set_geometry(ncol, nrow)
+        print("frame size from the FPGA: %d x %d" % (ncol, nrow))
+        self.on_reset_view(None)
 
     def pan(self, dx, dy):
         """Move the picture by (dx, dy) SCREEN pixels, as if dragged."""
@@ -948,8 +972,10 @@ class App:
     def tick(self):
         f = self.reader.take()
         if f is not None:
-            slot, idx, raw, fmt, ldrop, roiw = f
-            a = campack.to_frame(raw, fmt)
+            slot, idx, raw, fmt, ldrop, roiw, ncol, nrow = f
+            if (ncol, nrow) != (NCOL, NROW):
+                self.set_geometry(ncol, nrow)
+            a = campack.to_frame(raw, fmt, ncol, nrow)
             # ---- the fabric's ROI mean, and OUR OWN mean of the same pixels ----
             # These come from one set of pixels by two independent routes, so the
             # DIFFERENCE is the measurement being validated, not the mean itself.

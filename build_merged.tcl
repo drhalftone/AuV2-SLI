@@ -149,6 +149,36 @@ set camdiag 0
 if {[info exists ::env(CAM_DIAG)]} { set camdiag $::env(CAM_DIAG) }
 puts "### CAM_DIAG = $camdiag"
 
+# ---- CAM_WIN: build-time sensor readout window ----
+# CAM_WIN=x,y,w,h reads out only that window of the sensor, and sizes the whole
+# video path to it -- the frame header carries {nrow, ncol}, so cam_live.py
+# follows automatically. Unset = the full 1280x1024. The outputs are named
+# after the window (Au2_SLI_merged_win64x64.bin) so two builds cannot be mixed up.
+#   CAM_WIN=608,480,64,64   the 64x64 at the centre of the sensor
+set win_x 0; set win_y 0; set win_w 1280; set win_h 1024
+set binname Au2_SLI_merged
+if {[info exists ::env(CAM_WIN)] && $::env(CAM_WIN) ne ""} {
+    set f [split $::env(CAM_WIN) ","]
+    if {[llength $f] != 4} { error "CAM_WIN must be x,y,w,h -- got '$::env(CAM_WIN)'" }
+    lassign $f win_x win_y win_w win_h
+    foreach {v why} [list \
+        [expr {$win_x % 8 == 0}]                     "x must be a multiple of 8 (one kernel)" \
+        [expr {$win_w % 8 == 0 && $win_w >= 8}]      "w must be a positive multiple of 8" \
+        [expr {$win_h >= 1}]                         "h must be at least 1" \
+        [expr {($win_w * $win_h) % 64 == 0}]         "w*h must be a multiple of 64 (8 kernels = 5 DDR words)" \
+        [expr {$win_y % 2 == 0}]                     "y must be even on the colour sensor" \
+        [expr {$win_x + $win_w <= 1280}]             "x+w must be <= 1280" \
+        [expr {$win_y + $win_h <= 1024}]             "y+h must be <= 1024" ] {
+        if {!$v} { error "CAM_WIN=$::env(CAM_WIN): $why" }
+    }
+    if {$win_x != 0 || $win_y != 0 || $win_w != 1280 || $win_h != 1024} {
+        set binname Au2_SLI_merged_win${win_w}x${win_h}
+    }
+}
+set wingen [list -generic CAM_WIN_X=$win_x -generic CAM_WIN_Y=$win_y \
+                 -generic CAM_WIN_W=$win_w -generic CAM_WIN_H=$win_h]
+puts "### CAM_WIN = ${win_w}x${win_h} at ($win_x, $win_y) -> $binname"
+
 # ---- synth + implement ----
 # The same transient .tcl-read race hits the TOP synth too (it loads unimacro_vhdl.tcl when it
 # starts on the VHDL top). synth_design re-elaborates from the already-read HDL/IP, so a retry
@@ -161,7 +191,7 @@ set logf $here/build_merged/vivado.log
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag {*}$wingen} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]
@@ -307,11 +337,11 @@ if {$wns_r < 0 || $whs_r < 0} {
 # is the expensive part and it has already succeeded by this point, so a crash at
 # bitstream time can be recovered with open_checkpoint + write_bitstream instead
 # of a full rebuild.
-write_checkpoint -force $out/Au2_SLI_merged_routed.dcp
+write_checkpoint -force $out/${binname}_routed.dcp
 
-write_bitstream -force $out/Au2_SLI_merged.bit
+write_bitstream -force $out/${binname}.bit
 write_cfgmem -force -format bin -interface spix4 -size 16 \
-    -loadbit "up 0x0 $out/Au2_SLI_merged.bit" $out/Au2_SLI_merged.bin
+    -loadbit "up 0x0 $out/${binname}.bit" $out/${binname}.bin
 report_utilization    -file $out/util.rpt
 report_timing_summary -file $out/timing.rpt
 
@@ -319,5 +349,5 @@ set wns [get_property SLACK [lindex [get_timing_paths -setup -max_paths 1] 0]]
 set whs [get_property SLACK [lindex [get_timing_paths -hold -max_paths 1] 0]]
 puts "=== TIMING: setup WNS = $wns ns   hold WHS = $whs ns ==="
 puts "==== AuV2-SLI MERGED (M1) BUILD DONE ===="
-puts "bit : $out/Au2_SLI_merged.bit"
-puts "bin : $out/Au2_SLI_merged.bin"
+puts "bit : $out/${binname}.bit"
+puts "bin : $out/${binname}.bin"

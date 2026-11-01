@@ -35,8 +35,16 @@
 //   [6] format = 1          [7] ~MAGIC
 //=============================================================================
 module cam_frame_ft #(
+    // THE FRAME IS THE SENSOR'S READOUT WINDOW. NCOL x NROW at (WIN_X, WIN_Y) is
+    // programmed into the sensor at boot (cam_boot_stage1) and every frame size
+    // below follows from it; the header carries {NROW, NCOL} so the host learns it.
+    // Default = the whole array. NCOL and WIN_X multiples of 8, NCOL*NROW a
+    // multiple of 64 (8 kernels = 5 DDR words), WIN_Y even on the colour sensor --
+    // build_merged.tcl checks all of this before synthesis.
     parameter integer NCOL = 1280,
     parameter integer NROW = 1024,
+    parameter integer WIN_X = 0,
+    parameter integer WIN_Y = 0,
     parameter [15:0]  EXPOSURE = 16'h0640,
     parameter integer NFRAMES  = 24,          // burst length; <=31 (fcnt is 5 bits)
     // TRIGGERED GLOBAL SHUTTER. 0 = free-running (the configuration that has
@@ -632,7 +640,9 @@ module cam_frame_ft #(
     assign cam_reset_n = boot_cam_reset_n & ~cam_idle;
 
     cam_boot_stage1 #(.CLK_HZ(100_000_000), .BAUD(1_000_000), .STOP_AT(45),
-                      .TRIGGERED(TRIGGERED), .EXPOSURE(EXPOSURE)) u_boot (
+                      .TRIGGERED(TRIGGERED), .EXPOSURE(EXPOSURE),
+                      .WIN_X0(WIN_X), .WIN_Y0(WIN_Y),
+                      .WIN_W(NCOL), .WIN_H(NROW)) u_boot (
         .clk(clk), .rst_n(rst_n & ~cam_idle),
         .stream_go(stream_go), .streaming(streaming), .boot_ready(boot_ready),
         .expo_req(expo_req), .expo_val(expo_val),

@@ -76,7 +76,17 @@ module cam_boot_stage1 #(
     // 360 Mbps and doubles the data eye -- the margin test. 36 MHz sits inside
     // the 30-45 MHz reference band Avnet's driver handles explicitly.
     parameter real    PLL_DIV  = 15.000,
-    parameter integer POLL_CY  = CLK_HZ / 2
+    parameter integer POLL_CY  = CLK_HZ / 2,
+    // BUILD-TIME READOUT WINDOW: sensor ROI 0, which is the whole 1280 x 1024 array
+    // by default. Anything else is written into ROI 0 (regs 256..258) once the boot
+    // ROM has run -- before the stream starts, and again after every re-boot, since
+    // a re-boot resets the sensor's registers. X0 and W in pixels, multiples of 8
+    // (one kernel); Y0 and H in rows, Y0 even on the colour sensor. The caller must
+    // size its frame to match: cam_frame_ft takes the same numbers as NCOL / NROW.
+    parameter integer WIN_X0 = 0,
+    parameter integer WIN_Y0 = 0,
+    parameter integer WIN_W  = 1280,
+    parameter integer WIN_H  = 1024
 )(
     input  wire       clk,
     input  wire       rst_n,
@@ -287,6 +297,15 @@ module cam_boot_stage1 #(
     reg [12:0] wy_l = 13'd0;
     reg        win_l = 1'b0;
 
+    // The build-time window, as ROI 0 register values (all bounds inclusive).
+    localparam        FIXWIN  = (WIN_X0 != 0) || (WIN_Y0 != 0) ||
+                                (WIN_W != 1280) || (WIN_H != 1024);
+    localparam [7:0]  FX_XS   = WIN_X0 / 8;
+    localparam [7:0]  FX_XE   = (WIN_X0 + WIN_W) / 8 - 1;
+    localparam [12:0] FX_YS   = WIN_Y0;
+    localparam [12:0] FX_YE   = WIN_Y0 + WIN_H - 1;
+    reg               fix_pend = FIXWIN;
+
     reg [3:0]  ps  = P_WAIT;
     reg [26:0] ptm = 27'd0;
     reg [15:0] r16 = 16'd0;
@@ -305,6 +324,7 @@ module cam_boot_stage1 #(
             p_wr <= 1'b0; p_wdata <= 16'd0; streaming <= 1'b0;
             expo_pend <= 1'b0; expo_hold <= 16'd0;
             app_win <= 1'b0; app_col <= wc; app_row <= wr8; wstep <= 3'd0;
+            fix_pend <= FIXWIN;
         end else begin
             case (ps)
             P_WAIT: if (!b_busy && started) ps <= P_R16;
@@ -317,6 +337,12 @@ module cam_boot_stage1 #(
             P_RPT:  begin msg_go <= 1'b1; ptm <= 27'd0; ps <= P_GAP; end
             P_GAP:  if (expo_pend) begin
                         ps <= P_EXPO;          // exposure writes preempt polling
+                    end else if (fix_pend) begin
+                        // The build-time window goes in first: P_GAP is reached
+                        // after the boot ROM and before the deferred stream start.
+                        fix_pend <= 1'b0;
+                        wstep    <= 3'd5;
+                        ps       <= P_WIN;
                     end else if (win_pend) begin
                         // Snapshot the request, so an input that moves mid-sequence
                         // cannot mix two geometries; it is picked up next time.
@@ -355,22 +381,27 @@ module cam_boot_stage1 #(
             //   2: 260 <- y_start
             //   3: 261 <- y_end
             //   4: 195 <- 0002 (window) or 0001 (full frame)
+            // and, separately, the build-time window into ROI 0:
+            //   5: 256 <- {x_end, x_start}   6: 257 <- y_start   7: 258 <- y_end
             P_WIN:   if (!spi_busy) begin
                         p_wr    <= 1'b1;
                         p_start <= 1'b1;
                         case (wstep)
-                        3'd0:    begin p_addr <= 9'd195; p_wdata <= 16'h0001; end
-                        3'd1:    begin p_addr <= 9'd259; p_wdata <= wx_l; end
-                        3'd2:    begin p_addr <= 9'd260; p_wdata <= {3'b000, wy_l}; end
-                        3'd3:    begin p_addr <= 9'd261; p_wdata <= {3'b000, wy_l + 13'd23}; end
-                        default: begin p_addr <= 9'd195;
-                                       p_wdata <= win_l ? 16'h0002 : 16'h0001; end
+                        3'd0: begin p_addr <= 9'd195; p_wdata <= 16'h0001; end
+                        3'd1: begin p_addr <= 9'd259; p_wdata <= wx_l; end
+                        3'd2: begin p_addr <= 9'd260; p_wdata <= {3'b000, wy_l}; end
+                        3'd3: begin p_addr <= 9'd261; p_wdata <= {3'b000, wy_l + 13'd23}; end
+                        3'd4: begin p_addr <= 9'd195;
+                                    p_wdata <= win_l ? 16'h0002 : 16'h0001; end
+                        3'd5: begin p_addr <= 9'd256; p_wdata <= {FX_XE, FX_XS}; end
+                        3'd6: begin p_addr <= 9'd257; p_wdata <= {3'b000, FX_YS}; end
+                        default: begin p_addr <= 9'd258; p_wdata <= {3'b000, FX_YE}; end
                         endcase
                         ps <= P_WINW;
                      end
             P_WINW:  if (spi_done) begin
                         p_wr <= 1'b0;
-                        if (wstep == 3'd4) ps <= P_GAP;
+                        if (wstep == 3'd4 || wstep == 3'd7) ps <= P_GAP;
                         else begin wstep <= wstep + 3'd1; ps <= P_WIN; end
                      end
             // rom[41] of cam_boot_seq, performed here instead: enable the
