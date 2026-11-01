@@ -840,6 +840,7 @@ architecture Behavioral of Au2_SLI is
                roi_blk_o      : out std_logic;
                roi_valid_o    : out std_logic;
                roi_phase_o    : out std_logic_vector(2 downto 0);
+               roi_sat_o      : out std_logic_vector(15 downto 0);
                roi_tlp_o      : out std_logic_vector(7 downto 0);
                imp_phase_i    : in  std_logic_vector(2 downto 0) := (others => '0');
                expo_uart_i    : in  std_logic_vector(15 downto 0) := (others => '0');
@@ -1723,6 +1724,7 @@ i_cam_frame_ft : cam_frame_ft
         roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
         -- cam_frame_ft samples RED only (8 bits); the TLP bus is RGB, red in 23:16.
         roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w(23 downto 16),
+        roi_sat_o   => roi_sat_w,
         imp_phase_i => imp_ph_s1,
         expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gl_div_i => gl_div_w,
@@ -1774,7 +1776,9 @@ i_cam_frame_ft : cam_frame_ft
     -- measurement and the host must not read it as one: the trigger-ordinal
     -- check is a WITH_CAM=2 feature.
     roi_tcnt_w <= (others => '0');
-    roi_sat_w  <= (others => '0');
+    -- roi_sat_w is driven by cam_frame_ft. It used to be tied to zero here, and
+    -- roi_line sent that zero as a real count: a fully clipped ROI read 1023 with
+    -- "00 saturated", so the iris check could pass a clipped image.
     roi_tlp_w(15 downto 0) <= (others => '0');   -- green/blue: not sampled here
 end generate gen_cam;
 

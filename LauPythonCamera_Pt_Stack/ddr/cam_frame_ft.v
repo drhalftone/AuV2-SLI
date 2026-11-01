@@ -153,6 +153,10 @@ module cam_frame_ft #(
     output reg         roi_blk_o,
     output reg         roi_valid_o,     // 1-cycle pulse in `clk`
     output reg  [2:0]  roi_phase_o,     // impulse phase THIS frame was triggered at
+    // {saturated px, clamped-low px} in the ROI, each capped at FF (a full 256
+    // reads FF) -- the same field cam_roi_min sends. Without it the UART line
+    // carried a hard 00 here, which reads as "nothing clipped" on a clipped ROI.
+    output reg  [15:0] roi_sat_o = 16'd0,
     // TOP-LEFT PIXEL AS TRANSMITTED, paired with this frame. Content, not a counter:
     // a projector whose latency exceeds the sequence length makes the phase alias,
     // and this says what was actually on the wire.
@@ -1080,6 +1084,7 @@ module cam_frame_ft #(
     // profiling experiment runs over the Pt's UART with no USB 3 link present.
     wire [9:0]  roi_mean_w;
     wire [8:0]  roi_npx_w;
+    wire [8:0]  roi_nhi_w, roi_nlo_w;
     wire [15:0] roi_fcnt_w;
     wire        roi_blk_w, roi_done_w;
 
@@ -1100,6 +1105,7 @@ module cam_frame_ft #(
         .line_start(line_start), .frame_start(frame_start),
         .frame_end(frame_end), .in_black(in_black),
         .mean(roi_mean_w), .npx(roi_npx_w), .fcnt(roi_fcnt_w),
+        .nhi(roi_nhi_w), .nlo(roi_nlo_w),
         .blk(roi_blk_w), .done(roi_done_w)
     );
 
@@ -1179,10 +1185,14 @@ module cam_frame_ft #(
         roi_tlp_w <= tlp_w;
     end
 
-    reg [46:0] roi_hold_w = 47'd0;
+    // [64:56] clamped-low px  [55:47] saturated px -- appended above the old fields
+    // so every existing offset (the frame header reads [46:39]) is unchanged, and
+    // riding in the same held word so the counts cannot pair with another frame.
+    reg [64:0] roi_hold_w = 65'd0;
     reg        roi_tog_w  = 1'b0;
     always @(posedge wordclk) if (roi_done_w) begin
-        roi_hold_w <= {roi_tlp_w, roi_ph_w, roi_blk_w, roi_npx_w, roi_fcnt_w, roi_mean_w};
+        roi_hold_w <= {roi_nlo_w, roi_nhi_w,
+                       roi_tlp_w, roi_ph_w, roi_blk_w, roi_npx_w, roi_fcnt_w, roi_mean_w};
         roi_tog_w  <= ~roi_tog_w;
     end
 
@@ -1241,6 +1251,8 @@ module cam_frame_ft #(
             // so that path is unchanged, but the UART/block label now comes from the
             // instant the exposure actually began.
             roi_tlp_o   <= tlp_trig;
+            roi_sat_o   <= {roi_hold_w[55] ? 8'hFF : roi_hold_w[54:47],
+                            roi_hold_w[64] ? 8'hFF : roi_hold_w[63:56]};
 
             // Same result, packed for the FRAME HEADER. See roim_* below.
             roim_hold_c <= { roi_hold_w[9:0],                          // mean

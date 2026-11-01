@@ -295,7 +295,9 @@ every reading live, so you can turn the lens iris until the peak stops clipping.
   **750–900 ADU**, and the red dashed line is 1023.
 - **Bottom chart**: **saturated pixels** in the ROI. This is the number that matters: the
   mean can sit below 1023 while the brightest pixels already clip. Older bitstreams don't
-  send this count; it then shows "-".
+  send this count; it then shows "-". **Merged builds from before 2026-11-01 send a
+  constant 0 here** (the count was tied off in `Au2_SLI.vhd`), so on those a reading of 0
+  means nothing; rebuild to get the real count.
 - **Hints**:
   - *SATURATED, close the iris*: any saturated pixel, or a mean of 1022 or more.
   - *below the target band*.
