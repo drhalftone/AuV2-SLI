@@ -121,6 +121,9 @@ module cam_roi_min #(
     //---- host registers ------------------------------------------------------
     input  wire [7:0]  roi_col8_i,
     input  wire [7:0]  roi_row8_i,
+    // 1 = the sensor reads out only a small window around the ROI (ROICTL bit 0).
+    // See cam_boot_stage1 for the geometry and THE ROI MEAN below for the pairing.
+    input  wire        win_i,
     input  wire [15:0] expo_uart_i,
     input  wire        expo_uart_we,
     input  wire [23:0] gldly_uart_i,
@@ -238,6 +241,7 @@ module cam_roi_min #(
     //--------------------------------------- sensor boot / SPI / reset
     wire [7:0] boot_led;
     wire       streaming;
+    wire       win_on;
     reg        stream_go = 1'b0;
 
     cam_boot_stage1 #(
@@ -247,6 +251,7 @@ module cam_roi_min #(
         .clk(clk), .rst_n(rst_n),
         .stream_go(stream_go), .streaming(streaming),
         .expo_req(expo_req), .expo_val(expo_cur),
+        .win(win_i), .win_col8(roi_col8_i), .win_row8(roi_row8_i), .win_on(win_on),
         .led(boot_led), .usb_tx(usb_tx), .usb_rx(usb_rx),
         .cam_sck(cam_sck), .cam_mosi(cam_mosi), .cam_ss_n(cam_ss_n),
         .cam_miso(cam_miso), .cam_reset_n(cam_reset_n),
@@ -339,11 +344,20 @@ module cam_roi_min #(
     //---------------------------------------------------- the ROI mean
     // Quasi-static placement, 2FF into wordclk. An ROI that moves mid-frame
     // only corrupts that frame, and npx says so when it does.
+    //
+    // IN THE WINDOW the same sensor pixels sit at a FIXED place: kernels 1-2 of
+    // each window line and rows 8..23 counted from frame_start (cam_boot_stage1
+    // builds the window around them). So the mean looks at (1, 1) there, while the
+    // host's (col8, row8) moves the window itself. Keyed on win_on -- the sensor's
+    // state, not the request -- so the switch lands within a frame of the readout
+    // changing; the host still discards a few frames after toggling.
     reg [7:0] col8_s1 = COL8_INIT, col8_s2 = COL8_INIT;
     reg [7:0] row8_s1 = ROW8_INIT, row8_s2 = ROW8_INIT;
+    reg       won_s1 = 1'b0, won_s2 = 1'b0;
     always @(posedge wordclk) begin
-        col8_s1 <= roi_col8_i; col8_s2 <= col8_s1;
-        row8_s1 <= roi_row8_i; row8_s2 <= row8_s1;
+        col8_s1 <= roi_col8_i; col8_s2 <= won_s2 ? 8'd1 : col8_s1;
+        row8_s1 <= roi_row8_i; row8_s2 <= won_s2 ? 8'd1 : row8_s1;
+        won_s1  <= win_on;     won_s2  <= won_s1;
     end
 
     wire [9:0]  roi_mean_w;
@@ -506,6 +520,40 @@ module cam_roi_min #(
     assign cam_trigger = {2'b00, (TRIGGERED != 0) ? trig0 : 1'b0};
 
     //=====================================================================
+    // READOUT TIMING, MEASURED -- the numbers that decide how many pictures
+    // fit in one projector frame, and that the public datasheet does not give.
+    //
+    //   lat_fs   trigger -> frame_start: exposure + the sensor's own overhead
+    //            (FOT) before its first line. Measured ~1.1 ms full-frame.
+    //   rd_len   frame_start -> frame_end: the readout itself, black rows
+    //            included. ~6 ms full-frame; the window should be tens of us.
+    //
+    // Both in clk ticks (10 ns), last frame's value. frame_start / frame_end are
+    // wordclk pulses tens of microseconds apart at the least, so a toggle per
+    // pulse and a 2FF sync carry them; the sync's few-cycle delay is the same on
+    // both edges and does not bias rd_len.
+    //=====================================================================
+    reg fs_tog_w = 1'b0, fe_tog_w = 1'b0;
+    always @(posedge wordclk) begin
+        if (frame_start) fs_tog_w <= ~fs_tog_w;
+        if (frame_end)   fe_tog_w <= ~fe_tog_w;
+    end
+    reg [2:0]  fs_cs = 3'b000, fe_cs = 3'b000;
+    reg [23:0] since_trig = 24'hFFFFFF, since_fs = 24'hFFFFFF;
+    reg [23:0] lat_fs = 24'd0, rd_len = 24'd0;
+    always @(posedge clk) begin
+        fs_cs <= {fs_cs[1:0], fs_tog_w};
+        fe_cs <= {fe_cs[1:0], fe_tog_w};
+        if (gl_fire)                       since_trig <= 24'd0;
+        else if (since_trig != 24'hFFFFFF) since_trig <= since_trig + 24'd1;
+        if (fs_cs[2] ^ fs_cs[1]) begin
+            lat_fs   <= since_trig;
+            since_fs <= 24'd0;
+        end else if (since_fs != 24'hFFFFFF) since_fs <= since_fs + 24'd1;
+        if (fe_cs[2] ^ fe_cs[1]) rd_len <= since_fs;
+    end
+
+    //=====================================================================
     // THE LABELS RIDE WITH THE FRAME
     //
     // trig_idx and trig_ph are stable from the trigger until the next one, so
@@ -594,9 +642,9 @@ module cam_roi_min #(
                           {6'd0, gl_live, gl_en},        // 0x5D
                           gl_dly,                        // 0x5A..0x5C
                           xs_cnt,                        // 0x58..0x59
-                          16'd0,                         // 0x48..0x49
-                          24'd0,                         // 0x45..0x47
-                          24'd0,                         // 0x42..0x44
+                          15'd0, win_on,                 // 0x48..0x49  bit 0: window
+                          rd_len,                        // 0x45..0x47  readout, 10 ns
+                          lat_fs,                        // 0x42..0x44  trig->fs, 10 ns
                           expo_cur,
                           16'd0,                         // no DDR write timing
                           gl_miss,                       // was ldrop

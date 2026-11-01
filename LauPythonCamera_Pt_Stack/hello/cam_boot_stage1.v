@@ -95,6 +95,25 @@ module cam_boot_stage1 #(
     input  wire        expo_req,
     input  wire [15:0] expo_val,
 
+    // RUNTIME READOUT WINDOW. win = 1 reads out only a 32 x 24 window around the
+    // 16x16 ROI at (win_col8*8, win_row8*8) instead of the whole 1280 x 1024 array,
+    // cutting a picture's readout from ~6 ms to tens of microseconds (datasheet
+    // fps table: ~171 us fixed + ~1.2 us/row). The window is sensor ROI 1 and the
+    // full frame stays in ROI 0, so switching is one write to roi_active (reg 195)
+    // -- the switch the datasheet recommends -- and ROI 1 is only ever rewritten
+    // while it is inactive. Left unconnected (tied 0) the window is never touched.
+    //
+    // WHY 32 x 24 AND NOT 16 x 16. Rows: the frame opens with black_lines (5, rom[11])
+    // black rows, so the ROI sits at window rows 8..23 -- a whole number of roi_row8
+    // steps, clear of the black rows for any black_lines <= 8. Columns: kernels
+    // col8-1 .. col8+2, so the ROI's two kernels are never the first or last of a
+    // line, the ones that carry the LS/LE framing words. Same sensor pixels as the
+    // full-frame ROI at the same (col8, row8); the margin costs ~10 us per picture.
+    input  wire        win,
+    input  wire [7:0]  win_col8,
+    input  wire [7:0]  win_row8,
+    output wire        win_on,      // the sensor is reading out the window now
+
     output reg  [7:0] led,
     output wire       usb_tx,
     input  wire       usb_rx,
@@ -237,7 +256,8 @@ module cam_boot_stage1 #(
                      P_R112 = 4'd5, P_W112 = 4'd6,
                      P_RPT  = 4'd7, P_GAP  = 4'd8,
                      P_STRM = 4'd9, P_STRMW = 4'd10,
-                     P_EXPO = 4'd11, P_EXPOW = 4'd12;
+                     P_EXPO = 4'd11, P_EXPOW = 4'd12,
+                     P_WIN  = 4'd13, P_WINW  = 4'd14;
 
     // Pending exposure write. This FSM already owns the SPI bus after boot (it
     // polls registers forever), so the write is injected into it rather than
@@ -247,12 +267,34 @@ module cam_boot_stage1 #(
     reg        expo_pend = 1'b0;
     reg [15:0] expo_hold = 16'd0;
 
+    // Window geometry, clamped so the 4 x 24 kernel/row window stays on the array:
+    // kernels 0..159, rows 0..1023, all bounds inclusive (reg 256's default x_end is
+    // 159 for 160 kernels, and y_end 1023).
+    wire [7:0]  wc  = (win_col8 < 8'd1) ? 8'd1 : (win_col8 > 8'd157) ? 8'd157 : win_col8;
+    wire [7:0]  wr8 = (win_row8 < 8'd1) ? 8'd1 : (win_row8 > 8'd126) ? 8'd126 : win_row8;
+    wire [12:0] w_ys = {2'b00, wr8, 3'b000} - 13'd8;
+    wire [15:0] w_x  = {wc + 8'd2, wc - 8'd1};          // reg 259: {x_end, x_start}
+
+    // What the sensor was last told. A difference from the inputs is a pending
+    // update. A boot (rst) resets the sensor's registers to their defaults -- ROI 1
+    // lost, ROI 0 active -- so rst records exactly that, and a window that is still
+    // requested gets written again once the FSM is back in P_GAP.
+    reg        app_win = 1'b0;
+    reg [7:0]  app_col = 8'd0, app_row = 8'd0;
+    wire       win_pend = (win != app_win) || (win && (wc != app_col || wr8 != app_row));
+    reg [2:0]  wstep = 3'd0;
+    reg [15:0] wx_l = 16'd0;
+    reg [12:0] wy_l = 13'd0;
+    reg        win_l = 1'b0;
+
     reg [3:0]  ps  = P_WAIT;
     reg [26:0] ptm = 27'd0;
     reg [15:0] r16 = 16'd0;
     reg [15:0] r24 = 16'd0;
     reg [15:0] r112 = 16'd0;   // 0x0007 once the LVDS drivers are powered up
     reg        msg_go;
+
+    assign win_on = app_win && !win_pend && (ps != P_WIN) && (ps != P_WINW);
 
     always @(posedge clk) begin
         p_start <= 1'b0;
@@ -262,6 +304,7 @@ module cam_boot_stage1 #(
             ps  <= P_WAIT; ptm <= 27'd0; r16 <= 16'd0; r24 <= 16'd0; r112 <= 16'd0;
             p_wr <= 1'b0; p_wdata <= 16'd0; streaming <= 1'b0;
             expo_pend <= 1'b0; expo_hold <= 16'd0;
+            app_win <= 1'b0; app_col <= wc; app_row <= wr8; wstep <= 3'd0;
         end else begin
             case (ps)
             P_WAIT: if (!b_busy && started) ps <= P_R16;
@@ -274,6 +317,15 @@ module cam_boot_stage1 #(
             P_RPT:  begin msg_go <= 1'b1; ptm <= 27'd0; ps <= P_GAP; end
             P_GAP:  if (expo_pend) begin
                         ps <= P_EXPO;          // exposure writes preempt polling
+                    end else if (win_pend) begin
+                        // Snapshot the request, so an input that moves mid-sequence
+                        // cannot mix two geometries; it is picked up next time.
+                        win_l   <= win;
+                        wx_l    <= w_x;
+                        wy_l    <= w_ys;
+                        app_win <= win; app_col <= wc; app_row <= wr8;
+                        wstep   <= win ? 3'd0 : 3'd4;   // off: just re-select ROI 0
+                        ps      <= P_WIN;
                     end else if (ptm == POLL_CY[26:0] - 27'd1) begin
                         ptm <= 27'd0;
                         ps  <= (stream_req && !streaming) ? P_STRM : P_R16;
@@ -295,6 +347,31 @@ module cam_boot_stage1 #(
                         p_wr <= 1'b0;
                         expo_pend <= 1'b0;
                         ps <= P_GAP;
+                     end
+            // The window sequence. ROI 1 is deactivated before it is rewritten and
+            // activated after, so the sensor never reads a half-written window:
+            //   0: 195 <- 0001   ROI 0 (full frame) only
+            //   1: 259 <- {x_end, x_start}
+            //   2: 260 <- y_start
+            //   3: 261 <- y_end
+            //   4: 195 <- 0002 (window) or 0001 (full frame)
+            P_WIN:   if (!spi_busy) begin
+                        p_wr    <= 1'b1;
+                        p_start <= 1'b1;
+                        case (wstep)
+                        3'd0:    begin p_addr <= 9'd195; p_wdata <= 16'h0001; end
+                        3'd1:    begin p_addr <= 9'd259; p_wdata <= wx_l; end
+                        3'd2:    begin p_addr <= 9'd260; p_wdata <= {3'b000, wy_l}; end
+                        3'd3:    begin p_addr <= 9'd261; p_wdata <= {3'b000, wy_l + 13'd23}; end
+                        default: begin p_addr <= 9'd195;
+                                       p_wdata <= win_l ? 16'h0002 : 16'h0001; end
+                        endcase
+                        ps <= P_WINW;
+                     end
+            P_WINW:  if (spi_done) begin
+                        p_wr <= 1'b0;
+                        if (wstep == 3'd4) ps <= P_GAP;
+                        else begin wstep <= wstep + 3'd1; ps <= P_WIN; end
                      end
             // rom[41] of cam_boot_seq, performed here instead: enable the
             // sequencer and the sensor starts exposing and reading out.

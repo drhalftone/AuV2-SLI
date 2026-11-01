@@ -899,6 +899,7 @@ architecture Behavioral of Au2_SLI is
                imp_phase_i    : in  std_logic_vector(2 downto 0);
                roi_col8_i     : in  std_logic_vector(7 downto 0);
                roi_row8_i     : in  std_logic_vector(7 downto 0);
+               win_i          : in  std_logic;
                expo_uart_i    : in  std_logic_vector(15 downto 0);
                expo_uart_we   : in  std_logic;
                gldly_uart_i   : in  std_logic_vector(23 downto 0);
@@ -1813,6 +1814,9 @@ i_cam_roi_min : cam_roi_min
         ext_tlp_tog => tlp_tog_to_cam,
         imp_phase_i => imp_ph_s1,
         roi_col8_i  => roi_col8_w, roi_row8_i => roi_row8_w,
+        -- ROICTL bit 0: read out only a window around the ROI (cam_boot_stage1).
+        -- Every existing host tool writes 0x00 / 0x40 / 0xC0 here, all window-off.
+        win_i       => roi_ctl_w(0),
         expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart_i => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,

@@ -677,7 +677,9 @@ stops any running measurement first, and waits up to 15 s for it to return.
 | 0x12 | IMPLVL | level of the other frames |
 | 0x13 | SLICTL | 0 = SLI patterns off (runway maps) |
 | 0x14 | MODEFORCE | `0x80 \| idx` pins the offline mode (sticky until the FPGA reloads) |
-| 0x17 | ROICTL | `0xC0` = impulse enable + per-frame stream; `0x00` = off |
+| 0x17 | ROICTL | `0xC0` = impulse enable + per-frame stream; `0x00` = off. Bit 0 (profiling build only) = read out only a 32×24 window around the ROI; the app does not use it yet (`window_check.py` does) |
+| 0x42–0x44 / 0x45–0x47 | trig→fs / readout | profiling build only: trigger to first line out, and readout length, last frame, 10 ns ticks |
+| 0x48 | window on | profiling build only: bit 0 = the sensor is reading the window |
 | 0x1A / 0x1B | EXPO lo / hi | exposure in 0.375 µs units (the hi write commits) |
 | 0x1C–0x1E | DLY | genlock delay, 24-bit, 0.01 µs ticks |
 | 0x1F | IMPRGB | LED mask of the other frames (0x07 = all) |
