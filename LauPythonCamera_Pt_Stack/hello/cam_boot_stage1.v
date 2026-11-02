@@ -78,8 +78,8 @@ module cam_boot_stage1 #(
     parameter real    PLL_DIV  = 15.000,
     parameter integer POLL_CY  = CLK_HZ / 2,
     // BUILD-TIME READOUT WINDOW: sensor ROI 0, which is the whole 1280 x 1024 array
-    // by default. Anything else is written into ROI 0 (regs 256..258) once the boot
-    // ROM has run -- before the stream starts, and again after every re-boot, since
+    // by default. Anything else is written into ROI 0 (regs 256..258) just after the
+    // stream starts (see P_GAP for why not before), and again after every re-boot, since
     // a re-boot resets the sensor's registers. X0 and W in pixels, multiples of 8
     // (one kernel); Y0 and H in rows, Y0 even on the colour sensor. The caller must
     // size its frame to match: cam_frame_ft takes the same numbers as NCOL / NROW.
@@ -337,9 +337,15 @@ module cam_boot_stage1 #(
             P_RPT:  begin msg_go <= 1'b1; ptm <= 27'd0; ps <= P_GAP; end
             P_GAP:  if (expo_pend) begin
                         ps <= P_EXPO;          // exposure writes preempt polling
-                    end else if (fix_pend) begin
-                        // The build-time window goes in first: P_GAP is reached
-                        // after the boot ROM and before the deferred stream start.
+                    end else if (fix_pend && streaming) begin
+                        // The build-time window goes in AFTER the deferred stream
+                        // start (reg 192 bit 0). Written before it -- sequencer off,
+                        // sensor idling on the training pattern -- ROI 0 read back as
+                        // its defaults (256 = 9F00, 257 = 0000) and every line came
+                        // out the full 1280 wide; the same writes once streaming
+                        // read back as written and the window took effect. Measured
+                        // with an SPI readback build, 2026-11-02. Until this lands,
+                        // the first frame or two are full-width lines.
                         fix_pend <= 1'b0;
                         wstep    <= 3'd5;
                         ps       <= P_WIN;
