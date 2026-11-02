@@ -517,12 +517,17 @@ module cam_frame_ft #(
     reg [23:0] xs_age  = XS_TIMEOUT;
     wire       gl_live = gl_en && (xs_age != XS_TIMEOUT);
 
-    reg [23:0] gl_now = 24'd0;                        // free-running 10 ns time base
-    reg [23:0] glq [0:(1<<GLQ_AW)-1];                 // absolute fire-times
+    // 25 BITS, ONE MORE THAN gl_dly. The deadline test below is modular: the top bit
+    // of (now - target) clear means the target has passed, which is only unambiguous
+    // for distances under half the wrap. At 24 bits that half-wrap was 83.9 ms while
+    // opcode 7 accepts delays up to 167.8 ms, so a delay in 83.9..167.8 ms fired at
+    // once. One extra bit makes the half-wrap 167.8 ms, covering every legal gl_dly.
+    reg [24:0] gl_now = 25'd0;                        // free-running 10 ns time base
+    reg [24:0] glq [0:(1<<GLQ_AW)-1];                 // absolute fire-times
     reg [GLQ_AW-1:0] glq_wr = 0, glq_rd = 0;
     reg [7:0]  gl_ovf = 8'd0;                         // FIFO overflow count (saturates)
     reg [7:0]  gl_out = 8'd0;                         // triggers currently outstanding
-    wire [23:0] gl_late = gl_now - glq[glq_rd];   // top bit clear = deadline passed
+    wire [24:0] gl_late = gl_now - glq[glq_rd];   // top bit clear = deadline passed
     wire [GLQ_AW-1:0] glq_nxt = glq_wr + 1'b1;
     wire glq_full  = (glq_nxt == glq_rd);
     wire glq_empty = (glq_wr  == glq_rd);
@@ -530,7 +535,7 @@ module cam_frame_ft #(
     // instant xs_rise asserts -- so testing it immediately would race the update.
     // gl_now is captured AT the edge, so the delay is still measured from the vsync
     // itself and not from the deferred push.
-    reg [23:0] gl_now_edge = 24'd0;
+    reg [24:0] gl_now_edge = 25'd0;
     // FRAME LABEL: one projected-frame count per queued trigger, popped with it.
     reg [31:0] raw_seq = 32'd0;                       // every ext_sync rise, never reset
     reg [31:0] glq_lab [0:(1<<GLQ_AW)-1];
@@ -538,18 +543,18 @@ module cam_frame_ft #(
     reg [7:0]  xs_dly = 8'd0;
     wire       xs_use  = gl_div_i ? xs_dly[7] : xs_rise;
     wire       xs_want = gl_div_i ? (imp_phase_i == 3'd0) : 1'b1;
-    wire [23:0] gl_base = gl_div_i ? gl_now_edge : gl_now;
+    wire [24:0] gl_base = gl_div_i ? gl_now_edge : gl_now;
     wire gl_push   = xs_use && xs_want && gl_live && !glq_full;
-    wire gl_pop    = !glq_empty && !gl_late[23];
+    wire gl_pop    = !glq_empty && !gl_late[24];
 
     always @(posedge clk) begin
         if (rst) begin
             gl_fire <= 1'b0; xs_age <= XS_TIMEOUT;
-            gl_now  <= 24'd0; glq_wr <= 0; glq_rd <= 0;
+            gl_now  <= 25'd0; glq_wr <= 0; glq_rd <= 0;
             gl_ovf  <= 8'd0;  gl_out <= 8'd0;
         end else begin
             gl_fire <= 1'b0;
-            gl_now  <= gl_now + 24'd1;
+            gl_now  <= gl_now + 25'd1;
 
             xs_dly <= {xs_dly[6:0], xs_rise};
             if (xs_rise) gl_now_edge <= gl_now;
@@ -562,7 +567,7 @@ module cam_frame_ft #(
                 if (glq_full) begin
                     if (gl_ovf != 8'hFF) gl_ovf <= gl_ovf + 8'd1;
                 end else begin
-                    glq[glq_wr] <= gl_base + gl_dly;
+                    glq[glq_wr] <= gl_base + {1'b0, gl_dly};
                     // FRAME LABEL: the projected-frame count of the vsync that
                     // scheduled this trigger. raw_seq increments ON xs_rise, so a push
                     // in that same cycle must use the incremented value.
@@ -584,7 +589,7 @@ module cam_frame_ft #(
             // Modular "deadline reached" instead: the difference is taken in 24-bit
             // arithmetic and the top bit clear means gl_now is at or past the target
             // (within half a wrap), which no cycle can step over.
-            if (!glq_empty && !gl_late[23]) begin
+            if (!glq_empty && !gl_late[24]) begin
                 gl_fire <= 1'b1;
                 glq_rd  <= glq_rd + 1'b1;
                 lab_pop <= glq_lab[glq_rd];   // FRAME LABEL of the entry being fired

@@ -267,6 +267,44 @@ if {[llength $roi_src] >= 8 && [llength $roi_dst] >= 4} {
     puts "### WARNING: ROI CDC constraint matched [llength $roi_src] src /          [llength $roi_dst] dst cells and was NOT applied. The wordclk->clk          crossing is being timed synchronously; check the register names."
 }
 
+# ---- clk -> ui_clk crossings that failed HOLD on 2026-10-23 (WHS -0.328 ns) -----
+# Both clocks are 100 MHz and unrelated, so a hold figure between them is placement
+# luck, exactly like the TLP path above.
+#   * cstat_r is a 10 Hz SNAPSHOT of clk-domain status taken in ui_clk and published
+#     with cstat_tog -- informational registers, never used to steer logic.
+#   * roim_{hold,tlp,lab}_c (clk) are written into roim_fifo / roim_lfifo (ui_clk)
+#     only after roim_tog_c has crossed a 3FF, so the payload is long stable.
+proc cdc_max {tag src dst {min_src 1} {min_dst 1}} {
+    if {[llength $src] >= $min_src && [llength $dst] >= $min_dst} {
+        set_max_delay -datapath_only -from $src -to $dst 10.000
+        puts "### $tag CDC max_delay applied ([llength $src] src -> [llength $dst] dst)"
+    } else {
+        error "$tag CDC constraint matched [llength $src] src / [llength $dst] dst cells. Refusing to build with the crossing timed synchronously -- check the register names."
+    }
+}
+cdc_max CSTAT [get_clocks -of_objects [get_pins -quiet -hier -regexp {.*i_cam_frame_ft/trig_per_reg\[0\]/C}]] \
+              [get_cells -quiet -hier -regexp {.*i_cam_frame_ft/cstat_r_reg\[[0-9]+\]}]
+cdc_max ROIM  [get_cells -quiet -hier -regexp {.*roim_(hold|tlp|lab)_c_reg\[[0-9]+\]}] \
+              [get_cells -quiet -hier -regexp {.*roim_l?fifo_reg.*}] 8 1
+cdc_max ROIMT [get_cells -quiet -hier -regexp {.*roim_tog_c_reg}] \
+              [get_cells -quiet -hier -regexp {.*roim_s_reg\[0\]}]
+
+# ---- FRAME LABEL crossings (toggle + sample, same shape as TLP) ----------------
+#   lab_done (clk) -> lab_w (wordclk), gated by lab_tog -> lab_ws[0]
+#   pat_tag  (pixel clock, pixel_pipe) -> pat_ring / epoch_base (clk), gated by
+#            pat_tog -> pat_cs[0]
+#   roi_labh_w (wordclk) -> roim_lab_c (clk) rides the ROI toggle above.
+cdc_max LABT  [get_cells -quiet -hier -regexp {.*lab_tog_reg}] \
+              [get_cells -quiet -hier -regexp {.*lab_ws_reg\[0\]}]
+cdc_max LAB   [get_cells -quiet -hier -regexp {.*lab_done_reg\[[0-9]+\]}] \
+              [get_cells -quiet -hier -regexp {.*lab_w_reg\[[0-9]+\]}] 8 8
+cdc_max PATT  [get_cells -quiet -hier -regexp {.*i_processing/pat_tog_reg}] \
+              [get_cells -quiet -hier -regexp {.*pat_cs_reg\[0\]}]
+cdc_max PAT   [get_cells -quiet -hier -regexp {.*i_processing/pat_tag_reg\[[0-9]+\]}] \
+              [get_cells -quiet -hier -regexp {.*(pat_ring_reg.*|pat_rtag_reg.*|epoch_base_reg\[[0-9]+\]|epoch_valid_reg)}] 4 1
+cdc_max LABH  [get_cells -quiet -hier -regexp {.*roi_labh_w_reg\[[0-9]+\]}] \
+              [get_cells -quiet -hier -regexp {.*roim_lab_c_reg\[[0-9]+\]}] 8 8
+
 # TIMING-FOCUSED DIRECTIVES. The merged design's remaining violation is clock
 # INSERTION DELAY -- ft_clk needs 6.1 ns of a 10 ns period to reach the FT601
 # registers, because HDMI + camera + DDR3 now compete for the die and the FT601
