@@ -14,9 +14,11 @@ What it proves, on the live board:
      label by a CONSTANT number of frames; the check reports that offset and
      fails only if it is not constant.
 
-Setup it applies (and leaves applied): free-running sequence (reg 0x09 bit 0),
-SLI patterns on all three channels (reg 0x13 = 0xEE), genlock on with the given
-delay (opcode 7), label on (opcode 8 bit 27), then one epoch reset (bit 26).
+Setup it applies: free-running sequence (reg 0x09 bit 0), SLI patterns on all
+three channels (reg 0x13 = 0xEE), genlock on with the given delay (opcode 7),
+label on (opcode 8 bit 27), then one epoch reset (toggle of reg 0x09 bit 2).
+On exit it restores 0x09 and 0x13, turns the label off and genlock off (the
+build's power-up state) -- unless --keep.
 
     python host/frame_label_check.py [--delay-us 8800.65] [--seconds 2]
 """
@@ -75,11 +77,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--delay-us", type=float, default=8800.65)
     ap.add_argument("--seconds", type=float, default=2.0)
+    ap.add_argument("--keep", action="store_true",
+                    help="leave SLI patterns, genlock and the label header on")
     a = ap.parse_args()
 
     link = FtLink()
+    saved = None
     try:
         link.drain()
+        link.flush_rx()
+        # SAVE what this test changes, so the projector is left as it was found
+        # rather than showing SLI fringes afterwards.
+        saved = {r: link.read_reg(r) for r in (0x09, 0x13)}
         link.write_reg(0x09, 0x01)                 # free-running fringe sequence (bit2 = epoch)
         link.write_reg(0x13, 0xEE)                 # USB switches, SLI on, RGB, rows
         dly = int(round(a.delay_us * 100))         # 10 ns ticks
@@ -90,7 +99,21 @@ def main():
         time.sleep(0.2)
         hs = read_frames(link, a.seconds)
     finally:
-        link.close()
+        try:
+            if not a.keep:
+                link.frame_label(enable=False)
+                # Genlock back to this build's power-up state (GENLOCK_ON = 0: off).
+                link.send_word(7 << 28)
+                for r, v in (saved or {}).items():
+                    if v is not None:
+                        # clear bit 2 of SEQCTL rather than restoring it: the epoch
+                        # toggle's absolute level carries no meaning
+                        link.write_reg(r, v & ~0x04 if r == 0x09 else v)
+                print("restored: label off, genlock off, %s" % ", ".join(
+                    "0x%02X=0x%02X" % (r, v) for r, v in (saved or {}).items()
+                    if v is not None))
+        finally:
+            link.close()
 
     lab = [h for h in hs if h.get("fmt") == campack.FMT_LABEL]
     print("frames read %d, format-5 %d" % (len(hs), len(lab)))

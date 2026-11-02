@@ -265,10 +265,15 @@ class Reader(threading.Thread):
             # Keep only the LAST complete frame in the buffer. Scanning from the
             # end means a slow GUI cannot make us fall behind the camera.
             last = None
+            hl = HDR
             pos = acc.rfind(magic)
             while pos >= 0:
-                if pos + HDR + FBYTES <= len(acc):
-                    h = struct.unpack_from("<8I", acc, pos)
+                # Format 5 frames carry a second 32-byte FRAME LABEL block, so the
+                # payload starts at the header length the format declares.
+                h = (struct.unpack_from("<8I", acc, pos)
+                     if pos + HDR <= len(acc) else None)
+                hl = campack.hdr_len(h[6]) if h is not None else HDR
+                if h is not None and pos + hl + FBYTES <= len(acc):
                     if h[7] == (~MAGIC & 0xFFFFFFFF) and h[4] == FBYTES:
                         # h[6] is the payload format; carry it rather than assume
                         # one, because reading packed bytes as u16 does not fail
@@ -282,7 +287,7 @@ class Reader(threading.Thread):
                         # decoded in the GUI so the reader thread stays a pure
                         # byte pump.
                         last = (h[3] & 0x3F, h[1],
-                                bytes(acc[pos + HDR: pos + HDR + FBYTES]), h[6],
+                                bytes(acc[pos + hl: pos + hl + FBYTES]), h[6],
                                 (h[3] >> 14) & 0xFFFF, h[5])
                         break
                 pos = acc.rfind(magic, 0, pos)
@@ -295,7 +300,7 @@ class Reader(threading.Thread):
                 # follows: a control reply leaves right after a frame, and
                 # clearing the whole buffer here threw away any that had only
                 # partly arrived.
-                del acc[:pos + HDR + FBYTES]
+                del acc[:pos + hl + FBYTES]
             elif len(acc) > 3 * (FBYTES + HDR):
                 del acc[:len(acc) - (FBYTES + HDR)]   # bound the buffer
 
