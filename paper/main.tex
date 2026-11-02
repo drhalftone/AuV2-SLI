@@ -62,8 +62,8 @@ map the light that leaks into an exposure from the neighbouring patterns. On an 
 at \SI{120}{\hertz} we find a one-frame latency and a train of separate red, green and blue LED pulses whose
 filtered decomposition explains white with $R^2=0.9988$, and an exposure window that captures
 \SI{95.6}{\percent} of a frame's light (\SI{99.2}{\percent} at the sensor's longest exposure);
-light before the window depends on the previous pattern in one part and on the next pattern in
-another. \pending{3D results: how much profiling and leakage correction improve phase and depth
+the reading before the window depends on light of the previous pattern in one part and, through
+the parasitic light sensitivity of the sensor's storage nodes, on the next pattern in another. \pending{3D results: how much profiling and leakage correction improve phase and depth
 error.}
 \end{abstract}
 
@@ -805,7 +805,7 @@ and host software but not yet verified on hardware.}
 The camera is synchronized to the projector by the vertical sync that the FPGA \emph{sends}, so
 the timing reference is exact by construction, whether the video comes from a host or from the
 FPGA itself. A trigger fires a programmable delay $D$ after that edge, counted in
-\SI{10}{\nano\second} ticks of a 24-bit time base, and the exposure $\tau$ is set in units of
+\SI{10}{\nano\second} ticks as a 24-bit value of up to \SI{167.8}{\milli\second}, and the exposure $\tau$ is set in units of
 \SI{0.375}{\micro\second}.
 
 The controller of Yu \emph{et~al.}~\cite{yu2020dualprojector} triggers an external Allied Vision
@@ -917,13 +917,13 @@ failure, but not the limit of~\eqref{eq:oneshot}.
 The BYOP camera drives the PYTHON~1300 sensor directly, and the FPGA sets both the exposure and
 the delay, so there is no ready signal to wait for. The sensor operates in pipelined global
 shutter mode, integrating the next frame while it reads out the current one, and the pattern
-generator advances on every vertical sync. The FPGA keeps a free-running 24-bit counter of
+generator advances on every vertical sync. The FPGA keeps a free-running 25-bit counter of
 \SI{10}{\nano\second} ticks. At each vertical sync it writes the absolute fire time, the counter
 value at that sync plus $D$, into a 32-entry first-in first-out (FIFO) queue, whether or not
 earlier fire times are still waiting.
 
 The FPGA fires the trigger at the head of the queue as soon as the counter reaches or passes its
-fire time, testing the difference of the two in modular 24-bit arithmetic, so a trigger cannot be
+fire time, testing the difference of the two in modular 25-bit arithmetic, so a trigger cannot be
 skipped by missing an exact match. The number of triggers outstanding is counted with each push
 and pop resolved in the same clock cycle, and it is reported to the host, which uses it to pair
 captured images with patterns: image $n$ holds pattern $n-\lfloor D/T\rfloor$. A full queue
@@ -937,9 +937,10 @@ the sensor's readout gap $g$ fit within one frame period,
 \end{equation}
 which the FPGA enforces by limiting the exposure to $T$ less \SI{90}{\micro\second}, an
 \SI{80}{\micro\second} gap and a \SI{10}{\micro\second} margin. The delay itself is free: $D$
-may exceed several frame periods. The modular comparison is valid for delays below $2^{23}$
-ticks (\SI{83.9}{\milli\second}), at which point the queue holds $\lceil D/T\rceil=11$ triggers
-at \SI{120}{\hertz}, within its 32 entries. For the ML750ST, $\lceil D/T\rceil=2$ triggers are
+may exceed several frame periods. Because the counter has one bit more than the delay, the
+modular comparison is valid for every delay the FPGA accepts, up to $2^{24}$ ticks
+(\SI{167.8}{\milli\second}), at which point the queue holds $\lceil D/T\rceil=21$ triggers at
+\SI{120}{\hertz}, within its 32 entries. For the ML750ST, $\lceil D/T\rceil=2$ triggers are
 outstanding at a time, and the scan runs at the full \SI{120}{\hertz}.
 
 Each of the four GPIO functions of the ready-gated design has an internal counterpart. The
@@ -1045,16 +1046,18 @@ frames~3 and~4 shifted back three frame periods. Because those frames are black 
 black frames, the dashed line is the reading that an all-black KKKKK sequence would give. Two things can be seen
 by eye. First, inside frame~0, before the pulses of the white frame begin, the WKKKK reading ramps
 up from the dark level, reaching 75~ADU by the vertical sync of frame~1 and 87~ADU at the leading
-edge. This is a runway into the white frame: light that is due to the white level displayed in
-frame~1 but arrives during frame~0.
+edge. We call this ramp the runway into the white frame. Section~\ref{sec:runway} attributes the
+ramp to the parasitic light sensitivity of the sensor, which adds light of the white frame that
+arrives after each exposure ends, and not to light that the projector emits during frame~0.
 
 Without the white frame, in the KKKKK line, the same interval
-stays at the dark level, 18.2~ADU on average against 47.2~ADU for WKKKK. The ramp therefore depends on the frame that is displayed next and appears before that
-frame begins, so it is a non-causal artifact with respect to the displayed frames. Second, the
+stays at the dark level, 18.2~ADU on average against 47.2~ADU for WKKKK. The ramp therefore
+depends on the frame that is displayed next, and it appears in readings whose exposures end
+before the first pulse of that frame. Second, the
 WWWWW profile shows that the runway also contains light of frame~0 itself: the last pulse of the
 frame displayed before the white one overlaps the start of the runway (hatched), and it is missing
 from WKKKK only because that frame is black there. The runway thus holds the late light of one
-frame and the early light of the next, and for this reason we split it into two regions,
+frame and a reading that depends on the next frame, and for this reason we split it into two regions,
 $\mathcal R_1$ inside the previous exposure and $\mathcal R_2$ between exposures
 (Section~\ref{sec:runway}). Figures~\ref{fig:runway_prev} and~\ref{fig:runway_between} map, for
 each region, how the reading depends on the level of the runway's own frame and on the level of
@@ -1132,11 +1135,47 @@ light. \pending{Decide which exposure the scanning experiments use.}
 \label{sec:runway}
 The WKKKK sweep was intended only to locate the white frame's light, but it showed something we
 had not expected: the difference between the white frame and the black frames extends beyond one
-frame period. Light from the white frame begins to arrive before the leading edge of the
+frame period. The WKKKK reading rises above the dark level before the leading edge of the
 exposure window, in an interval we call the \emph{runway}, $[\rho,\,s]$ with $\rho\ge s-T$. The
 tool places $\rho$ by walking back from $s$ while $x(t)$ remains above \SI{2}{\percent} of its
 peak, which for the ML750ST gives $\rho=\SI{5970.99}{\micro\second}$
 (Fig.~\ref{fig:zoom}).
+
+The PYTHON~1300 is a global shutter sensor with a storage node inside each pixel. At the end of
+an exposure, the sensor transfers the charge of every pixel to its storage node at the same
+time, and it then reads the pixel array out one row at a time~\cite{onsemi_python1300}. The
+charge of a row therefore waits on the storage node until that row is read. A storage node is
+shielded from light but not completely: it collects a small fraction of the light that reaches
+the pixel, through light that enters at an angle under the shield and through charge that
+diffuses from the photodiode~\cite{meynants2013global,yokoyama2018pls}. The ratio of the
+sensitivity of the storage node to that of the photodiode is the parasitic light sensitivity
+(PLS) of the pixel, and its inverse is the global shutter
+efficiency~\cite{yokoyama2018pls,meynants2013global}. The PYTHON~1300 datasheet gives a PLS below
+$1/8000$~\cite{onsemi_python1300}, and PLS varies with the wavelength and the angle of incidence
+of the light~\cite{theuwissen2022pls}.
+
+With a storage node that waits a time $W$ before its row is read, the model
+of~\eqref{eq:model} becomes
+\begin{equation}
+r(d) \;=\; g\!\int_{d}^{d+\tau}\! E(t)\,dt \;+\; g\,p\!\int_{d+\tau}^{d+\tau+W}\! E(t)\,dt
+\;+\; o \;+\; n,
+\label{eq:pls}
+\end{equation}
+where $p$ is the PLS. The second integral weights light that arrives after the exposure ends,
+and its share of the reading grows with $W/\tau$. For the sweeps, $\tau=\SI{4.875}{\micro\second}$,
+and with $W$ in the milliseconds the second integral spans hundreds of exposure lengths. In the
+WKKKK sweep, an exposure inside the runway collects no light of its own, and the second integral
+covers the first pulses of the white frame. The ramp begins at $\rho$, \SI{2920}{\micro\second}
+before the first pulse of the white frame reaches half of its peak at \SI{8890.81}{\micro\second},
+which is consistent with $W\approx\SI{2.9}{\milli\second}$. \pending{Measure $W$ and $p$ with an
+exposure-length test in the profiling tool, and confirm with a power meter that the projector
+emits no light during the runway.}
+
+For the exposure chosen in Section~\ref{sec:exposure}, $\tau=\SI{6256.83}{\micro\second}$, the
+same $W$ spans less than half of one exposure length. For light of equal brightness inside and
+after the exposure, the second integral of~\eqref{eq:pls} is then $pW/\tau$ of the first, which is
+below $6\times10^{-5}$ for $p<1/8000$. The runway is therefore large only for the short exposures
+used for profiling. \pending{Replace the datasheet bound with the measured $p$.}
 
 The runway overlaps the exposure of the previous pattern, which ended at
 $s+\tau-T=\SI{6731.67}{\micro\second}$, and within that overlap lies a pulse of light from the
@@ -1146,7 +1185,7 @@ prior frame. The runway therefore divides into two parts,
 \end{equation}
 the part inside the previous exposure, \SI{760.7}{\micro\second} long, and the part between
 exposures, \SI{2069.0}{\micro\second} long. They hold \SI{0.35}{\percent} and \SI{3.65}{\percent}
-of the white frame's light, respectively.
+of the integral of $x(t)$ over the cycle, respectively.
 
 \subsection{Crosstalk maps}
 \label{sec:crosstalk}
@@ -1166,8 +1205,9 @@ returns to the floor near $y=136$, and saturates from about $y=164$. In $\mathca
 reading is set instead by the runway frame's own level $x$, rising from 20.0 to 57.2~ADU across
 $x$ at $y=0$, with a step of about 8~ADU between $y=240$ and $y=248$. Read with the one-frame
 latency, $\mathcal R_1$ contains light of the previous pattern, which the previous exposure is
-meant to collect and the current one must not, while $\mathcal R_2$ contains early light of the
-pattern about to be captured. \pending{Interpret the non-monotonic dependence on $y$; test
+meant to collect and the current one must not. The reading in $\mathcal R_2$ depends instead on
+the pattern about to be captured. The exposure of $\mathcal R_2$ ends at $s$, and by~\eqref{eq:pls}
+its reading includes the light of that pattern's first pulses, which arrive within $W$ after $s$. \pending{Interpret the non-monotonic dependence on $y$; test
 whether the order of the prior frame's bit-planes explains it.}
 
 Over most of their range, each map therefore depends on one level only. The map of
@@ -1256,8 +1296,9 @@ previous and the next pattern. One projector has been measured.
 Putting the camera inside the HDMI path turns an unmodified projector into an instrument whose
 timing can be measured rather than assumed. The same genlocked exposure that captures
 structured light, stepped through an impulse sequence, recovers the projector's latency, its LED
-pulse train, an exposure window that collects nearly all of a frame's light, and the light that
-leaks into that window from neighbouring patterns. \pending{Summarize the 3D results.}
+pulse train, an exposure window that collects nearly all of a frame's light, the light of the
+previous pattern that falls before that window, and the reading that the parasitic light
+sensitivity of the sensor adds from the next pattern. \pending{Summarize the 3D results.}
 
 \section*{Acknowledgments}
 The HDMI datapath derives from M.~Field's Artix-7 HDMI processing design~\cite{hamsternz}; the
