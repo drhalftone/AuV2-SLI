@@ -97,6 +97,9 @@ EXPO_UNIT_US = 0.375                             # opcode 1's exposure unit
 TICK_US = 0.01                                   # genlock delay unit (100 MHz)
 ACTIVE_US = 432.5                                # 800x600@120: vsync -> first active pixel
 RESERVE_TICKS = 9000                             # usb_link.v: 80 us sensor gap + 10 us margin
+R_WINON = 0x48                                   # bit 0: the sensor is reading the window
+R_VSPER = 0x8E                                   # 0x8E..0x90: measured vsync period, 10 ns
+PICTURE_US = 115.0                               # window picture beyond the exposure
 
 # One line per camera frame: R=mmm,nnn,rrggbb,cc[,hh,ll]<CR><LF>
 #   mmm ROI mean (10-bit)   nnn pixels in the ROI (must be 0x100)   rrggbb the top-left
@@ -194,7 +197,32 @@ def spin(dt):
     so a requested 0.5 ms can return 15 ms later -- longer than a 120 Hz frame."""
     end = time.perf_counter() + dt
     while time.perf_counter() < end:
-        pass
+        pass
+
+# ---- the serial rate ---------------------------------------------------------------------
+# 115200 on every bitstream except a burst build (build_roimin.tcl UART_BAUD=921600), which
+# needs the room for up to 8 ROI lines per projected frame. The port is opened at whichever
+# rate the board answers at, remembered per port.
+BAUDS = (115200, 921600)
+PORT_BAUD = {}
+
+
+def open_port(dev):
+    """serial.Serial on `dev` at the rate the board answers at. If neither answers, the
+    port comes back at 115200 so the caller's own "no reply" handling still applies."""
+    first = PORT_BAUD.get(dev)
+    for b in ([first] if first else []) + [b for b in BAUDS if b != first]:
+        ser = serial.Serial(dev, b, timeout=0.05)
+        time.sleep(0.1)
+        if rd(ser, 0x20, window=0.3) is not None:    # MODE: every bitstream answers it
+            PORT_BAUD[dev] = b
+            return ser
+        ser.close()
+    return serial.Serial(dev, BAUDS[0], timeout=0.05)
+
+
+def port_baud(dev):
+    return PORT_BAUD.get(dev, BAUDS[0])
 
 
 # ---- the board's offline modes --------------------------------------------------------
@@ -347,7 +375,7 @@ def preflight(port):
     """Open the port and check the board is ready to measure: generating its own video
     (no PC on HDMI-IN), genlock on and live, a plausible frame period. Returns (open
     serial, frame period us, exposure limit in 0.375 us units)."""
-    ser = serial.Serial(port, 115200, timeout=0.05)
+    ser = open_port(port)
     time.sleep(0.3)
     try:
         st, md = reg(ser, 0x02), reg(ser, 0x20)      # STATUS bit 4: 1 = pass-through
@@ -369,8 +397,10 @@ def preflight(port):
 
 
 # ---- the 5-frame impulse sweep (Profile and RGB filters tabs) -------------------------
-def start_impulse(ser, level, bg, expo, mx):
-    """5-frame cycle: `level` at position 0, `bg` at 1-4, all LEDs. Returns the real exposure."""
+def start_impulse(ser, level, bg, expo, mx, per_frame=1):
+    """5-frame cycle: `level` at position 0, `bg` at 1-4, all LEDs. Returns the real exposure.
+    per_frame > 1 also turns on the sensor's readout window and that many triggers per
+    projected frame (ROICTL bits 0 and 3:1) -- see sweep_burst."""
     u = max(1, int(round(expo / EXPO_UNIT_US)))
     if u > mx:
         raise RuntimeError("%.2f us is over the exposure limit" % expo)
@@ -379,10 +409,18 @@ def start_impulse(ser, level, bg, expo, mx):
     wr(ser, R_IMPRGB, 0x07)
     wr(ser, R_IMPLVL2, level & 0xFF)
     wr(ser, R_IMPRGB2, 0x07)
-    wr(ser, R_ROICTL, 0xC0)                          # impulse_en | per-frame stream
+    burst = 0x01 | ((per_frame - 1) << 1) if per_frame > 1 else 0x00
+    wr(ser, R_ROICTL, 0xC0 | burst)                  # impulse_en | per-frame stream [| burst]
     wr(ser, R_EXPO_LO, u & 0xFF)
     wr(ser, R_EXPO_HI, (u >> 8) & 0xFF)
     time.sleep(0.4)
+    if per_frame > 1:
+        t0 = time.time()
+        while not (reg(ser, R_WINON) & 1):
+            if time.time() - t0 > 3:
+                raise RuntimeError("the sensor never reported its readout window on -- "
+                                   "this bitstream has no burst mode; use 1 picture per frame")
+            time.sleep(0.05)
     return u * EXPO_UNIT_US
 
 
@@ -467,6 +505,149 @@ def sweep(ser, T, e, delays, out, level=255, bg=0, frames=20, settle=4,
             if i % 10 == 0:
                 fh.flush()
             yield i, len(delays), d, means, ref, rows
+
+
+# ---- the burst sweep: several window pictures per projected frame ---------------------
+# On a burst bitstream (cam_roi_min, build_roimin.tcl) ROICTL bits 3:1 = N-1 fire N
+# triggers after each vsync, at d + k * delta for k = 0..N-1, delta = vsync period / N,
+# and only while the sensor reads its 32x24 window (bit 0) -- a full-frame picture takes
+# ~5.7 ms to read out. Each line ends ",k":  R=mmm,nnn,rrggbb,cc,hh,ll,k<CR><LF>
+#
+# Every picture becomes an ordinary SWEEP_CSV_HEAD row AT ITS OWN DELAY d + k * delta, so
+# the document, the plot and the CSVs cannot tell a burst row from a single-picture row
+# taken at that delay. What does differ is the readout: the WINDOW is read within ~30 us,
+# so there is no runway (the light a full-frame reading of row 512 also collects in the
+# ~2.9 ms before it is read out). The sweep's settings record which readout it used.
+LINE_K = re.compile(b"R=([0-9A-F]{3}),([0-9A-F]{3}),([0-9A-F]{6}),([0-9A-F]{2})"
+                    + b"(?:,([0-9A-F]{2}),([0-9A-F]{2}))?"
+                    + b"(?:,([0-7]))?"
+                    + bytes([13, 10]))
+BURST_RECIP = {1: 1048576, 2: 524288, 3: 349525, 4: 262144,          # round(2^20 / N),
+               5: 209715, 6: 174763, 7: 149797, 8: 131072}           # as cam_roi_min.v
+
+
+def burst_delta_us(ser, n):
+    """The FPGA's own burst spacing: (vsync period * round(2^20/n)) >> 20 ticks."""
+    last = None
+    for _ in range(8):
+        b = [rd(ser, R_VSPER + i) for i in range(3)]
+        if None in b:
+            continue
+        v = b[0] | (b[1] << 8) | (b[2] << 16)
+        if v == last:
+            return ((v * BURST_RECIP[n]) >> 20) * TICK_US
+        last = v
+    raise RuntimeError("could not read the vsync period (0x8E..0x90)")
+
+
+class BurstLines:
+    """Buffered line reader: every line read is returned once, in order. (collect() keeps
+    the first n lines of each serial read and drops the rest -- harmless at one line per
+    frame, but it loses most of a burst.)"""
+
+    def __init__(self, ser):
+        self.ser, self.buf = ser, b""
+
+    def flush(self):
+        self.ser.reset_input_buffer()
+        self.buf = b""
+
+    def take(self, n, timeout):
+        """At least n lines, or what arrived by `timeout`: (mean, npx, tlp, cc, k|None)."""
+        out, t0 = [], time.time()
+        while len(out) < n and time.time() - t0 < timeout:
+            self.buf += self.ser.read(4096)
+            ms = list(LINE_K.finditer(self.buf))
+            for m in ms:
+                out.append((int(m.group(1), 16), int(m.group(2), 16), int(m.group(3), 16),
+                            int(m.group(4), 16), int(m.group(7)) if m.group(7) else None))
+            if ms:
+                self.buf = self.buf[ms[-1].end():]
+            elif len(self.buf) > 16384:
+                self.buf = self.buf[-64:]
+        return out
+
+
+def positions_burst(lines, d, delta, n, lit_px, active_us=ACTIVE_US):
+    """Burst lines at one delay -> {(position, k): [ROI means]}.
+
+    PROJECTED FRAME NUMBER. cc counts TRIGGERS, n per frame, so trigger k of frame f is
+    cc = c0 + f*n + k: f = (cc_unwrapped - k - base) / n. A line for which that is not a
+    whole number means the stream lost its place, and is dropped.
+
+    POSITION, PER k. positions()'s rule is applied to each burst index on its own, because
+    the tag rule depends on the trigger's own time: a trigger before the first active
+    pixel (only k = 0, at d < active_us) carries the previous frame's tag."""
+    if not lines:
+        return {}
+    absn, a = [], 0
+    for i, ln in enumerate(lines):
+        if i:
+            a += (ln[3] - lines[i - 1][3]) & 0xFF
+        absn.append(a)
+    base = absn[0] - (lines[0][4] or 0)
+    per_k = collections.defaultdict(list)                 # k -> [(frame, tlp, mean)]
+    for a, ln in zip(absn, lines):
+        k = ln[4] or 0
+        q, r = divmod(a - k - base, n)
+        if r == 0 and ln[1] == 256:
+            per_k[k].append((q, ln[2], ln[0]))
+    by = collections.defaultdict(list)
+    for k, items in per_k.items():
+        shift = 1 if d + k * delta < active_us else 0
+        marks = [f for f, tlp, _ in items if tlp in (lit_px, lit_px & 0xFF0000)]
+        for f, _, mean in items:
+            prev = [m for m in marks if m <= f]
+            nxt = [m for m in marks if m > f]
+            if not prev or f - prev[-1] > 4:
+                continue
+            if nxt and nxt[0] - prev[-1] != 5:
+                continue
+            by[((f - prev[-1] + shift) % 5, k)].append(mean)
+    return by
+
+
+def sweep_burst(ser, T, e, delays, out, n, delta, level=255, bg=0, frames=20, settle=4,
+                active_us=ACTIVE_US, stop=None, log=print):
+    """sweep() with n window pictures per projected frame. `delays` run over [0, delta);
+    each yields up to 5*n rows, at delays d + k*delta. Same yield as sweep(), with
+    means and ref None (the rows carry them)."""
+    lit_px = (level << 16) | (level << 8) | level
+    rd_lines = BurstLines(ser)
+    with open(out or os.devnull, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(SWEEP_CSV_HEAD)
+        for i, d in enumerate(delays):
+            if stop is not None and stop.is_set():
+                return
+            want = int(round(d / TICK_US))
+            set_delay(ser, want)
+            if i % 25 == 0:
+                wait_delay(ser, want)
+            rd_lines.flush()
+            rd_lines.take(settle * n, timeout=4)            # frames already in flight
+            by = positions_burst(rd_lines.take(frames * n, timeout=6), d, delta, n,
+                                 lit_px, active_us)
+            rows = []
+            for k in range(n):
+                dk = d + k * delta
+                if dk > T - e - 1.0:                         # exposure would cross the vsync
+                    continue
+                if any(not by.get((p, k)) for p in range(5)):
+                    log("  delay %.1f k %d: positions seen %s -- skipped"
+                        % (d, k, [(p, len(by.get((p, k), []))) for p in range(5)]))
+                    continue
+                means = [float(np.mean(by[(p, k)])) for p in range(5)]
+                ref = 0.0 if bg else float(np.median(means))
+                rows += [[round(T, 2), round(e, 3), round(dk, 2), p, round(p * T + dk, 2),
+                          round(means[p], 3), round(float(np.std(by[(p, k)])), 3),
+                          len(by[(p, k)]), round(ref, 3), active_us] for p in range(5)]
+            if not rows:
+                continue
+            w.writerows(rows)
+            if i % 10 == 0:
+                fh.flush()
+            yield i, len(delays), d, None, None, rows
 
 
 # ---- grey pairs over the runway (Runway maps tab) -------------------------------------
@@ -617,7 +798,17 @@ OLD_FILTER_SWEEPS = {"wkkkk_r": ("WKKKK red filter", 255, 0),
                      "wkkkk_g": ("WKKKK green filter", 255, 0),
                      "wkkkk_b": ("WKKKK blue filter", 255, 0)}
 ALL_SWEEPS = dict(SWEEPS, **FILTER_SWEEPS, **OLD_FILTER_SWEEPS)
-SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=ACTIVE_US)
+SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=ACTIVE_US,
+                per_frame=0)
+
+
+def per_frame_for(port):
+    """Pictures per projected frame for a sweep on `port`: the Sweep menu's choice, or
+    automatically 8 on a board at 921600 baud (a burst build) and 1 otherwise."""
+    n = SETTINGS["per_frame"]
+    if n:
+        return n
+    return 8 if port_baud(port) == 921600 else 1
 
 
 # ======================================================================================
@@ -808,7 +999,7 @@ class SetupDialog(tk.Toplevel):
         if not dev:
             return
         try:
-            with serial.Serial(dev, 115200, timeout=0.05) as ser:
+            with open_port(dev) as ser:
                 time.sleep(0.3)
                 v = [rd(ser, a) for a in (0x4A, 0x4B, 0x4C, 0x5D)]
         except serial.SerialException as e:
@@ -820,8 +1011,8 @@ class SetupDialog(tk.Toplevel):
         T = (v[0] | (v[1] << 8) | (v[2] << 16)) * TICK_US
         gl = v[3]
         state = "live" if (gl & 3) == 3 else ("enabled, NOT live" if gl & 1 else "OFF")
-        self.port_msg["text"] = "%s: frame %.1f us (%.2f Hz), genlock %s (0x%02X)" % (
-            dev, T, 1e6 / T if T else 0, state, gl)
+        self.port_msg["text"] = "%s: frame %.1f us (%.2f Hz), genlock %s (0x%02X), %d baud" % (
+            dev, T, 1e6 / T if T else 0, state, gl, port_baud(dev))
 
     # ---- projector mode --------------------------------------------------------------
     def refresh_modes(self):
@@ -835,7 +1026,7 @@ class SetupDialog(tk.Toplevel):
             self.mode_msg["text"] = "choose a COM port first"
             return
         try:
-            with serial.Serial(dev, 115200, timeout=0.05) as ser:
+            with open_port(dev) as ser:
                 time.sleep(0.3)
                 self.modes, self.cur_idx = board_modes(ser)
                 passthru = reg(ser, 0x02) & 0x10
@@ -903,7 +1094,7 @@ def connect_board(port, idx, cur_idx):
     """Put the board in mode `idx` (if it is not there already), then the offline
     preflight. Returns (ser, T, mx); raises on any failure."""
     if idx != cur_idx:
-        with serial.Serial(port, 115200, timeout=0.05) as ser:
+        with open_port(port) as ser:
             time.sleep(0.3)
             set_board_mode(ser, idx)
     ser, T, mx = preflight(port)
@@ -920,7 +1111,7 @@ def reconnect(doc):
     if not doc.port or not proj or proj.get("idx") is None:
         return None
     try:
-        with serial.Serial(doc.port, 115200, timeout=0.05) as ser:
+        with open_port(doc.port) as ser:
             time.sleep(0.3)
             modes, cur = board_modes(ser)
             name = projector_name(ser)
@@ -1007,6 +1198,7 @@ class SweepRunner:
         self.q = queue.Queue()
         self.log_csv = None
         self.t0 = 0.0
+        self.per_frame, self.delta = 1, None
 
     @property
     def running(self):
@@ -1014,13 +1206,27 @@ class SweepRunner:
 
     def start(self, doc):
         """Program the impulse cycle and start the worker. Raises on a bad setup."""
-        e = start_impulse(doc.ser, self.level, self.bg, SETTINGS["expo_us"], doc.mx)
-        delays = delays_for(doc.T, e, SETTINGS["step_us"])
+        n = per_frame_for(doc.port)
+        e = start_impulse(doc.ser, self.level, self.bg, SETTINGS["expo_us"], doc.mx, n)
+        if n > 1:
+            delta = burst_delta_us(doc.ser, n)
+            if e + PICTURE_US > delta:
+                stop_impulse(doc.ser)
+                raise RuntimeError("%d pictures per frame are %.0f us apart, too close for "
+                                   "a %.1f us exposure" % (n, delta, e))
+            delays = list(np.arange(0.0, delta, SETTINGS["step_us"]))
+        else:
+            delta = None
+            delays = delays_for(doc.T, e, SETTINGS["step_us"])
+        self.per_frame, self.delta = n, delta
         self.log_csv = os.path.join(tempfile.gettempdir(), "auv2sli_%s_%s.csv"
                                     % (self.key, time.strftime("%Y-%m-%d_%H%M%S")))
         doc.sweeps[self.key] = {"settings": dict(SETTINGS, level=self.level, bg=self.bg,
                                                  expo_real_us=e, port=doc.port,
-                                                 display=doc.display),
+                                                 display=doc.display,
+                                                 per_frame=n, burst_delta_us=delta,
+                                                 readout=("window" if n > 1
+                                                          else "full frame")),
                                 "rows": [], "when": time.strftime("%Y-%m-%d %H:%M:%S"),
                                 "complete": False}
         self.stop_ev.clear()
@@ -1031,10 +1237,17 @@ class SweepRunner:
 
     def work(self, ser, T, e, delays):
         try:
-            for i, n, d, means, ref, rows in sweep(
-                    ser, T, e, delays, self.log_csv, self.level, self.bg,
-                    SETTINGS["frames"], SETTINGS["settle"], SETTINGS["active_us"],
-                    stop=self.stop_ev, log=lambda s: self.q.put(("log", s))):
+            log = lambda s: self.q.put(("log", s))
+            if self.per_frame > 1:
+                gen = sweep_burst(ser, T, e, delays, self.log_csv, self.per_frame,
+                                  self.delta, self.level, self.bg, SETTINGS["frames"],
+                                  SETTINGS["settle"], SETTINGS["active_us"],
+                                  stop=self.stop_ev, log=log)
+            else:
+                gen = sweep(ser, T, e, delays, self.log_csv, self.level, self.bg,
+                            SETTINGS["frames"], SETTINGS["settle"], SETTINGS["active_us"],
+                            stop=self.stop_ev, log=log)
+            for i, n, d, means, ref, rows in gen:
                 self.q.put(("rows", (i, n, rows)))
             self.q.put(("end", None))
         except Exception as ex:
@@ -2669,6 +2882,17 @@ class App(tk.Tk):
                           command=lambda k=k: self.view and self.view.export_csv(k))
         s.add_command(label="Export exposure window JSON...",
                       command=lambda: self.view and self.view.export_json())
+        s.add_separator()
+        pf = tk.Menu(s, tearoff=False)
+        self.per_frame_var = tk.IntVar(value=SETTINGS["per_frame"])
+        for v, lab in ((0, "Automatic (8 on a burst board, else 1)"),
+                       (1, "1 -- full-frame readout"),
+                       (3, "3 -- window readout"), (6, "6 -- window readout"),
+                       (8, "8 -- window readout")):
+            pf.add_radiobutton(label=lab, value=v, variable=self.per_frame_var,
+                               command=lambda: SETTINGS.update(
+                                   per_frame=self.per_frame_var.get()))
+        s.add_cascade(label="Pictures per frame", menu=pf)
         m.add_cascade(label="Sweep", menu=s)
         h = tk.Menu(m, tearoff=False)
         h.add_command(label="Instructions", accelerator="F1", command=self.instructions)
