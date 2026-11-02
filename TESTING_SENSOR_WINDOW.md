@@ -1,7 +1,8 @@
 # Sensor readout window: what to build and how to test it
 
-Branch `feat/sensor-window-and-sat-fix`. Written 2026-11-01. **None of this has been compiled or
-run on hardware yet**; this file is the hand-off for doing that, on any machine.
+Branch `feat/sensor-window-and-sat-fix`. Written 2026-11-01 as the hand-off for building and
+testing on any machine. **Built and run on the Pt V2 on 2026-11-02**: results in section 6, the
+burst stages in section 7, and the next work (two-stage linearization) in section 8.
 
 ```
 git fetch
@@ -85,7 +86,7 @@ Output: `build_merged/Au2_SLI_merged.bin`. Flash it, then:
 
 | Check | Pass |
 |---|---|
-| `ft_usb_video/host/cam_live.py` | normal video; the console prints `frame size from the FPGA: 1280 x 1024` |
+| `ft_usb_video/host/cam_live.py` | normal video. (It prints `frame size from the FPGA: ...` only when the size differs from 1280 x 1024, so a full-frame build prints nothing.) |
 | Iris dialog in `host/sli_ui.py`, camera aimed at something bright enough to clip | "saturated px" goes **above 0** (it was always 0 before) |
 
 Then aim the camera at a real scene, for example out of an office window, and **Save TIFF** in
@@ -174,11 +175,54 @@ python host/window_check.py COM5
 
 ---
 
-## 6. What comes next (not written yet)
+## 6. Results, 2026-11-02
 
-- **Stage 2: burst triggers.** The FPGA fires N triggers per vsync at delay d + k·Δ (N up to 6,
-  Δ = T/6), with a burst index in each camera line. The COM port moves from 115200 to 921600
-  baud: 720 lines/s × 27 bytes needs about 195 kbaud. Exposures in burst mode are limited to
-  about 250 µs; runway maps stay at 1 per frame.
-- **Stage 3: the app.** `sli_ui.py` sweeps the delay from 0 to T/6 instead of 0 to T, so 278 steps
-  instead of 1666, and a sweep drops from about 8 minutes to under 2.
+Steps 1–3 were run on the Pt V2. Measurements and figures:
+`paper/sensor_window_2026-11-02.md` on `feat/frame-label`.
+
+- **Two firmware defects found and fixed.** The build-time window was written before the
+  sequencer was enabled and not retained (SPI readback: 256 = 9F00, 257 = 0000); it is now
+  written after `streaming`. Windows starting on an odd kernel came out mirrored in 8-pixel
+  groups; `cam_sync_decode` now takes the line's first-kernel parity (`KPAR0`).
+- **The window reads the full-frame ROI's pixels** (offset 0 rows / 0 columns, corr 0.9997,
+  ROI means 178.01 vs 177.49), checked with the `CAM_ALT=1` build.
+- **Answers to section 5.** (1) The 1.1 ms was the full frame at a longer exposure: trig→fs is
+  78.2 µs at 4.875 µs and 323.4 µs at 250 µs, the same with the window; the window's readout
+  is 27.6 µs against 5659.4 µs. (2) The window picture has 24 rows, with the same row count
+  before the ROI as a full frame. (3) Yes.
+- **The full frame and the window disagree because of the runway.** A full-frame reading of row
+  512 also collects light for ~2.9 ms after the exposure, until that row is read out (WKKKK fit:
+  T = 2962 µs against 2908 µs predicted, ~1/2100 of in-exposure sensitivity). The window has
+  no runway.
+
+## 7. Stages 2 and 3: done
+
+- **Burst triggers** (`cam_roi_min`, ROICTL bits 3:1 = N − 1): up to **8** pictures per projected
+  frame, window only. Lines end in `,k`; non-burst lines are unchanged. `build_roimin.tcl
+  UART_BAUD=921600` carries N = 8 (N ≤ 3 at 115200). Measured: N = 8, 5 µs steps, 209 delays in
+  84 s, 0 of ~25 000 lines lost.
+- **The app.** `sli_ui.py` detects the board's serial rate and runs burst sweeps (Sweep >
+  Pictures per frame); `host/burst_sweep.py` does the same from the command line.
+- **Known issue: placement-sensitive camera bring-up.** One 921600 build never aligned; the same
+  logic plus status wires came up normally. After every build, check status 0x3A: bit 2
+  (aligned) and bit 1 (streaming) must both be 1. Bits 7..4 show where bring-up stopped
+  (MMCM, IDELAYCTRL, eye scan, boot ROM).
+
+## 8. Next: two-stage linearization
+
+The runway changes how linearization has to be done.
+
+**Stage 1: linearize the projector with the window ROI.** The window reading is the light
+during the exposure only, so it measures the projector's output without the runway. Measure
+each colour's response (R, G, B independently) and build one correction table per colour.
+Needs three `corr` tables in the FPGA; today there is one 256-entry table (upload target
+0x02) applied to all three channels. Decisions still open: drive one channel at a time or use
+the lens colour filters; integrate with a burst sweep (~20 s per level) or one long window
+exposure (needs an ND filter); how many levels (256, or ~33 with interpolation).
+
+**Stage 2: linearize the full-sensor image, with the runway.** A full-frame pixel in row r
+reads E + k · (light over the T_r after the exposure), with T_r ≈ 78 µs + r × 5.53 µs
+(predicted; measured only at row 512). In an SLI capture that light is mostly the next
+pattern, so each row is a row-dependent linear mix of two consecutive patterns. With the
+projector made linear by Stage 1, the mix can be undone per row. Needs T_r and k measured at
+several rows and columns: WKKKK on the `CAM_ALT=1` build with the ROI moved, without clipping.
