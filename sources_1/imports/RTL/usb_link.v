@@ -17,7 +17,10 @@
 //==============================================================================
 module usb_link #(
     parameter integer CLK_HZ = 100_000_000,
-    parameter integer WIN    = 50_000_000      // ~0.5 s status window
+    parameter integer WIN    = 50_000_000,     // ~0.5 s status window
+    // Serial rate of the host link. 115200 everywhere by default; a burst build
+    // (several ROI lines per projected frame) needs more -- see roi_line.v.
+    parameter integer UART_BAUD = 115200
 )(
     input  wire        clk100,
     input  wire [7:0]  led,
@@ -116,6 +119,9 @@ module usb_link #(
     // what the sensor delivered. Both travel to the host so a gap can be
     // attributed instead of guessed at.
     input  wire [7:0]  roi_tcnt_i,
+    // {burst on, k}: this frame was trigger k of a burst (cam_roi_min, ROICTL
+    // bits 3:1 > 0). All zero outside a burst, and the line keeps its old format.
+    input  wire [3:0]  roi_burst_i,
     output wire [15:0] expo_uart,      // 0x1A/0x1B
     output wire        expo_uart_we,
     output wire [23:0] gldly_uart,
@@ -428,7 +434,7 @@ module usb_link #(
         .clk(clk100),
         .go(roi_valid_i & roi_en & ~c_active & ~owner),
         .mean(roi_mean_i), .npx(roi_npx_i),
-        .tlp(roi_tlp_i), .tcnt(roi_tcnt_i), .sat(roi_sat_i),
+        .tlp(roi_tlp_i), .tcnt(roi_tcnt_i), .sat(roi_sat_i), .burst(roi_burst_i),
         .tx_data(rl_data), .tx_send(rl_send), .tx_busy(s_tx_busy), .busy(rl_busy)
     );
 
@@ -441,7 +447,7 @@ module usb_link #(
     // ---- receive + command engine ----
     // rx_uart / rx_uvalid / rx_data / rx_valid are declared above, with the
     // reply routing that depends on them.
-    uart_rx #(.CLK_HZ(CLK_HZ), .BAUD(115200)) i_urx (
+    uart_rx #(.CLK_HZ(CLK_HZ), .BAUD(UART_BAUD)) i_urx (
         .clk(clk100), .rst(rst), .rx(usb_rx), .data(rx_uart), .valid(rx_uvalid)
     );
     //---------------------------------------------------------------- PYTHON 1300
@@ -560,7 +566,7 @@ module usb_link #(
     );
 
     // ---- shared transmitter ----
-    uart_tx #(.CLK_HZ(CLK_HZ), .BAUD(115200)) i_utx (
+    uart_tx #(.CLK_HZ(CLK_HZ), .BAUD(UART_BAUD)) i_utx (
         .clk(clk100), .rst(rst), .data(tx_data), .send(tx_send),
         .tx(usb_tx), .busy(u_busy)
     );

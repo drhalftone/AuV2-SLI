@@ -101,13 +101,23 @@ module roi_line (
     input  wire [23:0] tlp,           // top-left pixel AS TRANSMITTED, {R,G,B}
     input  wire [7:0]  tcnt,          // trigger ordinal
     input  wire [15:0] sat,           // {saturated px, clamped-low px}, capped at FF
+    // {burst on, k}. With burst on the line gains ",k" before CRLF -- 29 bytes:
+    //    R=mmm,nnn,rrggbb,cc,hh,ll,k<CR><LF>
+    // k = which of the N triggers after this projected frame's vsync took the
+    // picture (0 = the one at the genlock delay). Without a burst the line is the
+    // 27-byte format above, byte for byte, so no existing parser sees a change.
+    // At 115200 baud a 29-byte line takes 2.5 ms and a line that is still being
+    // sent swallows the next result: N <= 3 per 8.33 ms frame. More needs a
+    // faster link (usb_link UART_BAUD).
+    input  wire [3:0]  burst,
     output reg  [7:0]  tx_data,
     output reg         tx_send,
     input  wire        tx_busy,
     output reg         busy
 );
-    localparam integer LEN = 27;
+    localparam integer LEN = 29;
     reg [7:0] msg [0:LEN-1];
+    reg [5:0] last;                   // index of the LF actually sent: 26 or 28
     integer k;
     initial begin
         for (k = 0; k < LEN; k = k + 1) msg[k] = 8'h20;
@@ -115,6 +125,7 @@ module roi_line (
         msg[5]  = ",";  msg[9] = ",";  msg[16] = ",";
         msg[19] = ",";  msg[22] = ",";
         msg[25] = 8'h0D; msg[26] = 8'h0A;
+        last = 6'd26;
         busy = 1'b0; tx_send = 1'b0;
     end
 
@@ -148,6 +159,15 @@ module roi_line (
                 msg[21] <= h2a(sat[11:8]);
                 msg[23] <= h2a(sat[7:4]);     // clamped low
                 msg[24] <= h2a(sat[3:0]);
+                if (burst[3]) begin
+                    msg[25] <= ",";
+                    msg[26] <= h2a({1'b0, burst[2:0]});
+                    msg[27] <= 8'h0D; msg[28] <= 8'h0A;
+                    last    <= 6'd28;
+                end else begin
+                    msg[25] <= 8'h0D; msg[26] <= 8'h0A;
+                    last    <= 6'd26;
+                end
                 idx <= 6'd0; st <= 1'b0; busy <= 1'b1;
             end
         end else begin
@@ -155,7 +175,7 @@ module roi_line (
                 1'b0: if (!tx_busy) begin
                           tx_data <= msg[idx]; tx_send <= 1'b1; st <= 1'b1;
                       end
-                1'b1: if (idx == LEN-1) busy <= 1'b0;
+                1'b1: if (idx == last) busy <= 1'b0;
                       else begin idx <= idx + 6'd1; st <= 1'b0; end
             endcase
         end

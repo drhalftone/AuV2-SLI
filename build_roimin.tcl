@@ -281,10 +281,18 @@ set_msg_config -id {Synth 8-11152} -new_severity ERROR
 set_msg_config -id {Synth 8-9339}  -new_severity ERROR
 
 set logf $here/build_roimin/vivado.log
+# ---- UART_BAUD: host serial rate (default 115200, as every host tool expects) ----
+# A burst build (several ROI lines per projected frame, ROICTL bits 3:1) needs more:
+# a 29-byte line at 115200 takes 2.5 ms, so N <= 3 per 8.33 ms frame. UART_BAUD=921600
+# carries N up to 8. Host tools must then open the port at the same rate.
+set uart_baud 115200
+if {[info exists ::env(UART_BAUD)] && $::env(UART_BAUD) ne ""} { set uart_baud $::env(UART_BAUD) }
+puts "### UART_BAUD = $uart_baud"
+
 for {set try 1} {$try <= 6} {incr try} {
     set mark 0
     if {[file exists $logf]} { set mark [file size $logf] }
-    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag -generic WITH_TLP=0 -generic GENLOCK_ON=1 -generic WITH_CAM=2} err]} {
+    if {[catch {synth_design -top $top -include_dirs $rtl -generic CAM_DIAG=$camdiag -generic WITH_TLP=0 -generic GENLOCK_ON=1 -generic WITH_CAM=2 -generic UART_BAUD=$uart_baud} err]} {
         set transient 1
         if {![catch {set fp [open $logf r]; seek $fp $mark; set tail [read $fp]; close $fp}]} {
             set transient [string match {*couldn't read file*No error*} $tail]
@@ -363,7 +371,7 @@ if {[llength $tlp_src] >= 8 && [llength $tlp_dst] >= 8} {
 # shape and would fail the same way the first time placement moves, in some build
 # that has nothing to do with it -- which is precisely how the TLP path was found.
 set roi_src [get_cells -quiet -hier -regexp {.*roi_hold_w_reg\[[0-9]+\]}]
-set roi_dst [get_cells -quiet -hier -regexp {.*roi_(mean|npx|fcnt|blk|sat)_o_reg(\[[0-9]+\])?}]
+set roi_dst [get_cells -quiet -hier -regexp {.*roi_(mean|npx|fcnt|blk|sat|burst)_o_reg(\[[0-9]+\])?}]
 if {[llength $roi_src] >= 8 && [llength $roi_dst] >= 4} {
     set_max_delay -datapath_only -from $roi_src -to $roi_dst 10.000
     puts "### ROI CDC max_delay applied ([llength $roi_src] src -> [llength $roi_dst] dst)"

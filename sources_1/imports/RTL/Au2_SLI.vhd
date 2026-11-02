@@ -61,7 +61,10 @@ entity Au2_SLI is
               CAM_WIN_X : integer := 0;
               CAM_WIN_Y : integer := 0;
               CAM_WIN_W : integer := 1280;
-              CAM_WIN_H : integer := 1024 );
+              CAM_WIN_H : integer := 1024;
+              -- Host serial rate (usb_link). 115200 everywhere unless a build asks;
+              -- build_roimin.tcl UART_BAUD=921600 for bursts of N > 3 ROI lines per frame.
+              UART_BAUD : integer := 115200 );
     Port ( 
         clk100    : in STD_LOGIC;
         usb_tx    : out   STD_LOGIC;  -- FT2232H ch.B (COM port) TX: status telemetry + cmd replies
@@ -302,6 +305,8 @@ architecture Behavioral of Au2_SLI is
     signal roi_phase_w : std_logic_vector(2 downto 0) := (others => '0');
     signal roi_tlp_w   : std_logic_vector(23 downto 0) := (others => '0');
     signal roi_tcnt_w  : std_logic_vector(7 downto 0) := (others => '0');
+    -- {burst on, k} from cam_roi_min; stays 0 in every other build.
+    signal roi_burst_w : std_logic_vector(3 downto 0) := (others => '0');
     -- {saturated px, clamped-low px} in the ROI, per frame. WITH_CAM=2 only.
     signal roi_sat_w   : std_logic_vector(15 downto 0) := (others => '0');
     signal expo_uart_w    : std_logic_vector(15 downto 0) := (others => '0');
@@ -558,6 +563,7 @@ architecture Behavioral of Au2_SLI is
     -- 0xA5 host control protocol on usb_rx. Stage-2 taps (sli_ctrl / table read ports)
     -- are defaulted so they may be left open until the pixel datapath is wired up.
     component usb_link is
+        Generic ( UART_BAUD : integer := 115200 );
         Port ( clk100 : in  STD_LOGIC;
                led    : in  STD_LOGIC_VECTOR(7 downto 0);
                dbg    : in  STD_LOGIC_VECTOR(7 downto 0);
@@ -615,6 +621,7 @@ architecture Behavioral of Au2_SLI is
                roi_phase_i    : in  STD_LOGIC_VECTOR(2 downto 0);
                roi_tlp_i      : in  STD_LOGIC_VECTOR(23 downto 0);
                roi_tcnt_i     : in  STD_LOGIC_VECTOR(7 downto 0);
+               roi_burst_i    : in  STD_LOGIC_VECTOR(3 downto 0) := (others => '0');
                roi_sat_i      : in  STD_LOGIC_VECTOR(15 downto 0);
                expo_uart      : out STD_LOGIC_VECTOR(15 downto 0);
                expo_uart_we   : out STD_LOGIC;
@@ -910,6 +917,7 @@ architecture Behavioral of Au2_SLI is
                roi_col8_i     : in  std_logic_vector(7 downto 0);
                roi_row8_i     : in  std_logic_vector(7 downto 0);
                win_i          : in  std_logic;
+               burst_i        : in  std_logic_vector(2 downto 0);
                expo_uart_i    : in  std_logic_vector(15 downto 0);
                expo_uart_we   : in  std_logic;
                gldly_uart_i   : in  std_logic_vector(23 downto 0);
@@ -922,6 +930,7 @@ architecture Behavioral of Au2_SLI is
                roi_phase_o    : out std_logic_vector(2 downto 0);
                roi_tlp_o      : out std_logic_vector(23 downto 0);
                roi_tcnt_o     : out std_logic_vector(7 downto 0);
+               roi_burst_o    : out std_logic_vector(3 downto 0);
                roi_sat_o      : out std_logic_vector(15 downto 0);
                cam_stat_o     : out std_logic_vector(223 downto 0);
                cam_stat_tog_o : out std_logic;
@@ -1066,7 +1075,7 @@ begin
 
     -- usb_link replaces edid_reader: identical status telemetry on usb_tx, plus the
     -- 0xA5 host control protocol on usb_rx. Stage-2 control/table taps left open for now.
-    i_usb_link: usb_link port map (
+    i_usb_link: usb_link generic map ( UART_BAUD => UART_BAUD ) port map (
         clk100 => clk100_g, led => led_i, dbg => debug, mrg => merge_dbg,
         tlp => tlp_val, tcnt => trig_cnt, olp => olp_val,
         usb_rx => usb_rx, usb_tx => sli_usb_tx,
@@ -1128,7 +1137,7 @@ begin
         roi_mean_i  => roi_mean_w, roi_npx_i => roi_npx_w, roi_fcnt_i => roi_fcnt_w,
         roi_blk_i   => roi_blk_w,  roi_valid_i => roi_valid_w,
         roi_phase_i => roi_phase_w, roi_tlp_i => roi_tlp_w,
-        roi_tcnt_i => roi_tcnt_w, roi_sat_i => roi_sat_w,
+        roi_tcnt_i => roi_tcnt_w, roi_sat_i => roi_sat_w, roi_burst_i => roi_burst_w,
         expo_uart   => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart  => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
@@ -1831,12 +1840,13 @@ i_cam_roi_min : cam_roi_min
         -- ROICTL bit 0: read out only a window around the ROI (cam_boot_stage1).
         -- Every existing host tool writes 0x00 / 0x40 / 0xC0 here, all window-off.
         win_i       => roi_ctl_w(0),
+        burst_i     => roi_ctl_w(3 downto 1),   -- N-1 triggers per vsync beyond the first
         expo_uart_i => expo_uart_w, expo_uart_we => expo_uart_we_w,
         gldly_uart_i => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         roi_mean_o => roi_mean_w, roi_npx_o => roi_npx_w, roi_fcnt_o => roi_fcnt_w,
         roi_blk_o  => roi_blk_w,  roi_valid_o => roi_valid_w,
         roi_phase_o => roi_phase_w, roi_tlp_o => roi_tlp_w,
-        roi_tcnt_o => roi_tcnt_w, roi_sat_o => roi_sat_w,
+        roi_tcnt_o => roi_tcnt_w, roi_sat_o => roi_sat_w, roi_burst_o => roi_burst_w,
         cam_stat_o => cam_stat_raw, cam_stat_tog_o => cam_stat_tog,
         cam_clkout_p => cam_clkout_p, cam_clkout_n => cam_clkout_n,
         cam_d_p      => cam_d_p,      cam_d_n      => cam_d_n,

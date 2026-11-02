@@ -124,6 +124,9 @@ module cam_roi_min #(
     // 1 = the sensor reads out only a small window around the ROI (ROICTL bit 0).
     // See cam_boot_stage1 for the geometry and THE ROI MEAN below for the pairing.
     input  wire        win_i,
+    // BURST: N-1 extra triggers per projected frame (ROICTL bits 3:1). 0 = one
+    // trigger per vsync, as before. See THE TRIGGER below.
+    input  wire [2:0]  burst_i,
     input  wire [15:0] expo_uart_i,
     input  wire        expo_uart_we,
     input  wire [23:0] gldly_uart_i,
@@ -144,6 +147,8 @@ module cam_roi_min #(
     // counts what the sensor DELIVERED. Consecutive lines must differ by
     // exactly one; the two counters disagreeing says which end lost the frame.
     output reg  [7:0]  roi_tcnt_o  = 8'd0,
+    // {burst on, k}: this frame came from trigger k of a burst. 0 outside one.
+    output reg  [3:0]  roi_burst_o = 4'd0,
 
     output wire [223:0] cam_stat_o,
     output reg          cam_stat_tog_o = 1'b0,
@@ -240,6 +245,7 @@ module cam_roi_min #(
 
     //--------------------------------------- sensor boot / SPI / reset
     wire [7:0] boot_led;
+    wire       boot_rdy;          // boot ROM (CDS included) done -- status 0x3A bit 4
     wire       streaming;
     wire       win_on;
     reg        stream_go = 1'b0;
@@ -249,7 +255,7 @@ module cam_roi_min #(
         .TRIGGERED(TRIGGERED), .TESTPAT(0), .EXPOSURE(EXPO_INIT)
     ) u_boot (
         .clk(clk), .rst_n(rst_n),
-        .stream_go(stream_go), .streaming(streaming),
+        .stream_go(stream_go), .streaming(streaming), .boot_ready(boot_rdy),
         .expo_req(expo_req), .expo_val(expo_cur),
         .win(win_i), .win_col8(roi_col8_i), .win_row8(roi_row8_i), .win_on(win_on),
         .led(boot_led), .usb_tx(usb_tx), .usb_rx(usb_rx),
@@ -476,6 +482,40 @@ module cam_roi_min #(
     reg [7:0]  trig_n   = 8'd0;
     reg [15:0] gl_miss  = 16'd0;      // vsyncs that armed and never fired
 
+    // BURST. N = burst_i + 1 triggers per vsync, at gl_dly + k*bdelta for
+    // k = 0..N-1, with bdelta = (measured vsync period) / N. Sweeping gl_dly over
+    // 0..bdelta then covers the whole frame in 1/N of the steps.
+    //
+    // ONLY WITH THE WINDOW ON. A full-frame picture takes ~5.7 ms to read out,
+    // so a second trigger inside the same frame would land mid-readout; with
+    // the window a picture is ~110 us plus the exposure. The host must keep
+    // exposure + ~110 us under bdelta -- a trigger that arrives while the
+    // previous picture is still in flight is lost and shows as a gap in cc.
+    //
+    // ONE PICTURE IN FLIGHT AT A TIME, so the existing pairing holds: every
+    // trigger's labels are captured when it fires and sampled again at its own
+    // frame_start, which comes before the next trigger.
+    reg  [2:0]  bn_l    = 3'd0;       // N-1, latched per vsync so a frame is all one N
+    reg  [2:0]  bk      = 3'd0;       // index of the NEXT trigger in this frame
+    reg  [23:0] gl_tgt  = 24'd0;      // vs_cnt at which the next trigger fires
+    reg  [2:0]  trig_k  = 3'd0;       // index OF the trigger just fired
+    reg         trig_b  = 1'b0;       // it was part of a burst
+    // bdelta = vs_per * round(2^20 / N) >> 20. One DSP, settled long before use:
+    // vs_per changes once per vsync and the first burst step is gl_dly later.
+    reg  [20:0] brecip  = 21'd1048576;
+    always @(*) case (bn_l)
+        3'd0: brecip = 21'd1048576;  3'd1: brecip = 21'd524288;
+        3'd2: brecip = 21'd349525;   3'd3: brecip = 21'd262144;
+        3'd4: brecip = 21'd209715;   3'd5: brecip = 21'd174763;
+        3'd6: brecip = 21'd149797;   default: brecip = 21'd131072;
+    endcase
+    reg  [44:0] bprod   = 45'd0;
+    reg  [23:0] bdelta  = 24'd0;
+    always @(posedge clk) begin
+        bprod  <= vs_per * brecip;
+        bdelta <= bprod[43:20];
+    end
+
     always @(posedge clk) begin
         if (gldly_uart_we) gl_dly <= gldly_uart_i;
 
@@ -483,15 +523,25 @@ module cam_roi_min #(
         if (xs_rise) begin
             // A vsync that arrives while still armed means the previous frame's
             // delay was never reached -- gl_dly is longer than the period.
-            // Counted, not silently absorbed.
+            // Counted, not silently absorbed. In a burst this also counts a
+            // frame whose last trigger (gl_dly + (N-1)*bdelta) fell past it.
             if (armed && gl_miss != 16'hFFFF) gl_miss <= gl_miss + 16'd1;
             vs_cnt <= 24'd0;
             armed  <= gl_live;
+            bn_l   <= win_on ? burst_i : 3'd0;
+            bk     <= 3'd0;
+            gl_tgt <= gl_dly;
         end else begin
             if (vs_cnt != 24'hFFFFFF) vs_cnt <= vs_cnt + 24'd1;
-            if (armed && (vs_cnt >= gl_dly)) begin
+            if (armed && (vs_cnt >= gl_tgt)) begin
                 gl_fire  <= 1'b1;
-                armed    <= 1'b0;
+                trig_k   <= bk;
+                trig_b   <= (bn_l != 3'd0);
+                if (bk == bn_l) armed <= 1'b0;      // the frame's last trigger
+                else begin
+                    bk     <= bk + 3'd1;
+                    gl_tgt <= gl_tgt + bdelta;
+                end
                 // Both labels captured at the SAME instant, from different
                 // sources. The index resolves to the transmitted pixel later;
                 // the phase is already valid because impulse_gen advances it
@@ -565,17 +615,21 @@ module cam_roi_min #(
     reg [1:0] tix_s1 = 2'd0, tix_s2 = 2'd0;
     reg [2:0] tph_s1 = 3'd0, tph_s2 = 3'd0;
     reg [7:0] tcn_s1 = 8'd0, tcn_s2 = 8'd0;
+    reg [3:0] tbk_s1 = 4'd0, tbk_s2 = 4'd0;
     reg [1:0] roi_ix_w = 2'd0;
     reg [2:0] roi_ph_w = 3'd0;
     reg [7:0] roi_tcn_w = 8'd0;
+    reg [3:0] roi_bk_w = 4'd0;
     always @(posedge wordclk) begin
         tix_s1 <= trig_idx; tix_s2 <= tix_s1;
         tph_s1 <= trig_ph;  tph_s2 <= tph_s1;
         tcn_s1 <= trig_n;   tcn_s2 <= tcn_s1;
+        tbk_s1 <= {trig_b, trig_k}; tbk_s2 <= tbk_s1;
         if (frame_start) begin
             roi_ix_w  <= tix_s2;
             roi_ph_w  <= tph_s2;
             roi_tcn_w <= tcn_s2;
+            roi_bk_w  <= tbk_s2;
         end
     end
 
@@ -584,12 +638,13 @@ module cam_roi_min #(
     //   [9:0] mean  [25:10] fcnt  [34:26] npx  [35] blk  [38:36] phase
     //   [40:39] tlp ring index  [48:41] trigger ordinal
     //   [57:49] saturated pixels  [66:58] clamped-low pixels
+    //   [70:67] {burst on, k}
     // The counts ride in the SAME held word as the mean, so they cannot be paired
     // with a neighbouring frame's mean on the far side of the crossing.
-    reg [66:0] roi_hold_w = 67'd0;
+    reg [70:0] roi_hold_w = 71'd0;
     reg        roi_tog_w  = 1'b0;
     always @(posedge wordclk) if (roi_done_w) begin
-        roi_hold_w <= {roi_nlo_w, roi_nhi_w,
+        roi_hold_w <= {roi_bk_w, roi_nlo_w, roi_nhi_w,
                        roi_tcn_w, roi_ix_w, roi_ph_w, roi_blk_w,
                        roi_npx_w, roi_fcnt_w, roi_mean_w};
         roi_tog_w  <= ~roi_tog_w;
@@ -616,6 +671,7 @@ module cam_roi_min #(
             roi_tcnt_o  <= roi_hold_w[48:41];
             roi_sat_o   <= {roi_hold_w[57] ? 8'hFF : roi_hold_w[56:49],
                             roi_hold_w[66] ? 8'hFF : roi_hold_w[65:58]};
+            roi_burst_o <= roi_hold_w[70:67];
         end
     end
 
@@ -637,8 +693,8 @@ module cam_roi_min #(
             stat_div <= 24'd0;
             cstat_r  <= { 8'd0,                          // spare
                           vs_per,                        // 0x8E..0x90
-                          8'd0,                          // 0x5F  (no queue)
-                          {7'd0, armed},                 // 0x5E  outstanding
+                          boot_led,                      // 0x5F  cam_boot_stage1 LEDs (bring-up)
+                          {2'd0, lane_failed, armed},    // 0x5E  [5:1] lanes failed, [0] outstanding
                           {6'd0, gl_live, gl_en},        // 0x5D
                           gl_dly,                        // 0x5A..0x5C
                           xs_cnt,                        // 0x58..0x59
@@ -648,8 +704,11 @@ module cam_roi_min #(
                           expo_cur,
                           16'd0,                         // no DDR write timing
                           gl_miss,                       // was ldrop
-                          8'd0,
-                          3'd0, 1'b0, 1'b0, aligned, streaming, 1'b0 };
+                          {3'd0, lane_locked},           // 0x3B  lanes locked
+                          // 0x3A: BRING-UP, in order. A camera that never streams stops at
+                          // the first 0 from the left.
+                          mmcm_locked, idc_rdy, scan_done, boot_rdy,
+                          1'b0, aligned, streaming, 1'b0 };
             cam_stat_tog_o <= ~cam_stat_tog_o;
         end else begin
             stat_div <= stat_div + 24'd1;
@@ -677,7 +736,7 @@ module cam_roi_min #(
 
     // Deliberately unused: the eye-scan reports are useful on the bench build
     // but nothing here consumes them.
-    wire _unused = |{boot_led, lane_locked, lane_failed, line_start,
+    wire _unused = |{line_start,
                      bt0, bt1, bt2, bt3, bts, bl0, bl1, bl2, bl3, bls,
                      clk100, 1'b0};
 
