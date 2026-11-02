@@ -119,6 +119,17 @@ for _i, _a in enumerate(sys.argv):
     elif _a == "--roi-row8" and _i + 1 < len(sys.argv):
         ROI_ROW8 = int(sys.argv[_i + 1])
 
+# STARTING EXPOSURE AND GENLOCK, to open the viewer on a point of a delay sweep.
+# --expo-us may go below the slider's usual 40 us floor (the sweeps use 4.875 us);
+# --sync-delay-ms turns "sync to projector" on at that trigger delay.
+START_EXPO_US = 600.0
+START_SYNC_MS = None
+for _i, _a in enumerate(sys.argv):
+    if _a == "--expo-us" and _i + 1 < len(sys.argv):
+        START_EXPO_US = float(sys.argv[_i + 1])
+    elif _a == "--sync-delay-ms" and _i + 1 < len(sys.argv):
+        START_SYNC_MS = float(sys.argv[_i + 1])
+
 # COLOUR SENSOR (NOIP1SE1300A). The pixels arrive as a raw Bayer mosaic; the
 # viewer demosaics for DISPLAY only -- Save TIFF still writes the raw mosaic.
 # --color starts in colour mode; --bayer picks the 2x2 phase (which colour sits
@@ -170,11 +181,28 @@ class Cam:
                 pass
         self.lock = threading.Lock()
         self.buf = ctypes.create_string_buffer(CH)
+        self.ch = CH
+
+    def set_read_size(self, fbytes):
+        """Size each read to the frame, not to the full sensor. A read returns only
+        when it is full or the 1 s pipe timeout expires, and it holds self.lock --
+        which every control command also needs. A 64x64 window is ~5 KB a frame,
+        so a 4 MiB read waited out the timeout every time: the picture updated
+        once a second and every button stalled for up to a second."""
+        n = min(CH, max(1 << 14, -(-3 * (fbytes + HDR) // 4096) * 4096))
+        with self.lock:
+            if self.streamed:
+                try:
+                    self.dev.clearStreamPipe(IN_PIPE)
+                    self.dev.setStreamPipe(IN_PIPE, n)
+                except Exception:
+                    return                   # keep the old size rather than half-switch
+            self.ch = n
 
     def read(self):
         with self.lock:
             try:
-                n = self.dev.readPipe(IN_PIPE, self.buf, CH)
+                n = self.dev.readPipe(IN_PIPE, self.buf, self.ch)
             except Exception:
                 return b""
             # memoryview slice, NOT .raw[:n] -- .raw materialises the whole 4 MiB
@@ -452,8 +480,9 @@ class App:
         self.save_lbl.pack(side=tk.LEFT)
 
         ttk.Label(bar, text="exposure us").pack(side=tk.LEFT, padx=(12, 2))
-        self.expo = tk.IntVar(value=600)
-        sc = ttk.Scale(bar, from_=40, to=EXPO_MAX_US, variable=self.expo, length=200,
+        self.expo = tk.DoubleVar(value=START_EXPO_US)
+        sc = ttk.Scale(bar, from_=min(40.0, START_EXPO_US), to=EXPO_MAX_US,
+                       variable=self.expo, length=200,
                        command=self.on_expo_move)
         sc.pack(side=tk.LEFT)
         self.expo_scale = sc          # retune_expo_ceiling moves its upper bound
@@ -476,7 +505,7 @@ class App:
         # ext_sync is the OUTPUT vsync, so this locks to whatever the board is
         # PROJECTING -- identical whether that video came from a PC over HDMI or
         # from the board's own offline generator.
-        self.sync = tk.BooleanVar(value=False)
+        self.sync = tk.BooleanVar(value=START_SYNC_MS is not None)
         self.sync_cb = ttk.Checkbutton(bar2, text="sync to projector", variable=self.sync,
                                        command=self.set_genlock)
         self.sync_cb.pack(side=tk.LEFT)
@@ -485,7 +514,7 @@ class App:
         self.projector = None                 # None until the board has answered
 
         ttk.Label(bar2, text="trig delay ms").pack(side=tk.LEFT, padx=(12, 2))
-        self.dly = tk.DoubleVar(value=0.0)
+        self.dly = tk.DoubleVar(value=START_SYNC_MS or 0.0)
         sd = ttk.Scale(bar2, from_=0.0, to=DLY_MAX_MS, variable=self.dly, length=200,
                        command=self.on_dly_move)
         sd.pack(side=tk.LEFT)
@@ -607,7 +636,9 @@ class App:
         NPIX = ncol * nrow
         FBYTES = campack.fbytes_for(ncol, nrow)
         campack.set_geometry(ncol, nrow)
-        print("frame size from the FPGA: %d x %d" % (ncol, nrow))
+        self.cam.set_read_size(FBYTES)
+        print("frame size from the FPGA: %d x %d (read size %d bytes)"
+              % (ncol, nrow, self.cam.ch))
         self.on_reset_view(None)
 
     def pan(self, dx, dy):
@@ -731,12 +762,13 @@ class App:
     def on_expo_move(self, _ev):
         """Live feedback while dragging -- no command sent until release."""
         self.expo_lbl.configure(
-            text="%d / %d us%s" % (int(self.expo.get()), self.expo_ceiling_us(),
+            text="%.3g / %d us%s" % (float(self.expo.get()), self.expo_ceiling_us(),
                                    "" if self.fpga_max_units is not None else " (est)"))
 
     def set_expo(self):
-        us = min(int(self.expo.get()), self.expo_ceiling_us())
-        units = int(us / EXPO_UNIT_US)           # floor: never round UP past the limit
+        us = min(float(self.expo.get()), self.expo_ceiling_us())
+        # floor: never round UP past the limit (the epsilon keeps 4.875 us at 13 units)
+        units = int(us / EXPO_UNIT_US + 1e-6)
         if self.fpga_max_units is not None:
             units = min(units, self.fpga_max_units)
         self.expo_sent_t = time.time()
