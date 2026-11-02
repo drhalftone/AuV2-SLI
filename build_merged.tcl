@@ -179,6 +179,16 @@ set wingen [list -generic CAM_WIN_X=$win_x -generic CAM_WIN_Y=$win_y \
                  -generic CAM_WIN_W=$win_w -generic CAM_WIN_H=$win_h]
 puts "### CAM_WIN = ${win_w}x${win_h} at ($win_x, $win_y) -> $binname"
 
+# ---- CAM_ALT: alternate full-frame and 32x24-window readouts (debug) ----
+# CAM_ALT=1 makes cam_frame_ft flip the sensor between the full array and the
+# runtime window around the ROI at every frame, for a side-by-side viewer.
+# Full-frame builds only. Output gets an _altwin suffix.
+if {[info exists ::env(CAM_ALT)] && $::env(CAM_ALT) eq "1"} {
+    lappend wingen -verilog_define CAM_ALT_WIN
+    append binname _altwin
+    puts "### CAM_ALT = 1 -> alternating full / window readout, $binname"
+}
+
 # ---- synth + implement ----
 # The same transient .tcl-read race hits the TOP synth too (it loads unimacro_vhdl.tcl when it
 # starts on the VHDL top). synth_design re-elaborates from the already-read HDL/IP, so a retry

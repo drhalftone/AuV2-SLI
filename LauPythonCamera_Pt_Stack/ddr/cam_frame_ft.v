@@ -639,10 +639,25 @@ module cam_frame_ft #(
     // release re-runs the full configuration rather than freeing a blank sensor.
     assign cam_reset_n = boot_cam_reset_n & ~cam_idle;
 
+    // ALTERNATING FULL / WINDOW READOUT (debug build, build_merged.tcl CAM_ALT=1).
+    // The sensor alternates between the full array and cam_boot_stage1's runtime
+    // 32 x 24 window around the ROI, one picture each, so a viewer can show both
+    // side by side and check that the window's ROI is the green box's pixels. A
+    // window picture arrives as a SHORT frame; the writer publishes its slot as is
+    // (see w_short) and bumps ldrop, which is how the host tells the two apart.
+`ifdef CAM_ALT_WIN
+    localparam integer ALT_WIN = 1;
+`else
+    localparam integer ALT_WIN = 0;
+`endif
+    reg alt_win = 1'b0;               // toggled at every frame_end, below
+
     cam_boot_stage1 #(.CLK_HZ(100_000_000), .BAUD(1_000_000), .STOP_AT(45),
                       .TRIGGERED(TRIGGERED), .EXPOSURE(EXPOSURE),
                       .WIN_X0(WIN_X), .WIN_Y0(WIN_Y),
                       .WIN_W(NCOL), .WIN_H(NROW)) u_boot (
+        .win((ALT_WIN != 0) && alt_win),
+        .win_col8(roi_col8_i), .win_row8(roi_row8_i), .win_on(),
         .clk(clk), .rst_n(rst_n & ~cam_idle),
         .stream_go(stream_go), .streaming(streaming), .boot_ready(boot_ready),
         .expo_req(expo_req), .expo_val(expo_val),
@@ -970,6 +985,12 @@ module cam_frame_ft #(
     reg [2:0] fe_s = 3'b000;
     always @(posedge clk) fe_s <= {fe_s[1:0], fe_tog};
     wire fe_pulse = fe_s[2] ^ fe_s[1];
+
+    // Flip the readout mode at every frame end, once streaming. A re-boot resets
+    // the sensor to the full array, so it resets the toggle too.
+    always @(posedge clk)
+        if (!rst_n || cam_idle || !streaming) alt_win <= 1'b0;
+        else if (fe_pulse)                    alt_win <= ~alt_win;
 
     reg  [2:0]  eidx     = 3'd0;
     reg  [15:0] expo_val = 16'd0;
@@ -1388,6 +1409,9 @@ module cam_frame_ft #(
     reg [31:0] roi_meta [0:7];
     integer rmi;
     initial for (rmi = 0; rmi < 8; rmi = rmi + 1) roi_meta[rmi] = 32'd0;
+    // ALT_WIN: 1 = this slot holds a SHORT (window) picture, published as is.
+    // Sent in header word 3 bit 31 so the host need not see every frame to tell.
+    reg [7:0] slot_win = 8'd0;
 
     // ONE KERNEL, PACKED: 8 pixels x 10 bits = 80 bits = 10 bytes.
     //
@@ -2089,8 +2113,21 @@ module cam_frame_ft #(
                     // kernels. Never emit a short frame.
                     if (ldrop != 16'hFFFF) ldrop <= ldrop + 16'd1;
                     cmd_done <= 1'b0; dat_done <= 1'b0;
-                    if (w_ddr) stw <= W_PAD;    // finish the slot with zeros
-                    else       stw <= W_NEXT;   // nothing was written; move on
+                    if (ALT_WIN != 0) begin
+                        // A window picture: publish the slot as it stands. Zero-
+                        // filling ~80k words here would stall the full frame
+                        // that is arriving right now; the host reads only the
+                        // window's words at the front and ignores the rest.
+                        if (w_ddr) begin
+                            wf_done <= wf_done + 6'd1;
+                            slot_win[w_slot] <= 1'b1;
+                        end
+                        wfw   <= 18'd0;
+                        waddr <= 28'd0;
+                        stw   <= W_NEXT;
+                    end
+                    else if (w_ddr) stw <= W_PAD;    // finish the slot with zeros
+                    else            stw <= W_NEXT;   // nothing was written; move on
                 end else if (w_fire) begin
                     cmd_done <= 1'b0; dat_done <= 1'b0;
                     // FIRST WORD OF A FRAME: DROP ANY ROI RESULT STILL QUEUED.
@@ -2108,7 +2145,10 @@ module cam_frame_ft #(
                     if (wfw == NWORDS[17:0] - 18'd1) begin
                         wfw <= 18'd0;
                         // Only a frame that actually reached DDR is readable.
-                        if (w_ddr) wf_done <= wf_done + 6'd1;
+                        if (w_ddr) begin
+                            wf_done <= wf_done + 6'd1;
+                            slot_win[w_slot] <= 1'b0;
+                        end
                         if (LIVE != 0) stw <= W_NEXT;
                         else if (wf == nf_run - 6'd1) stw <= W_DONE;
                         else wf <= wf + 6'd1;
@@ -2363,7 +2403,7 @@ module cam_frame_ft #(
                 // continuously", which is exactly the ambiguity that made this
                 // fault hard to pin down.
                 if (hw == 3'd0)
-                    ufifo_din <= { {2'd0, ldrop, (LIVE != 0) ? 6'd1 : nf_run,
+                    ufifo_din <= { {slot_win[r_slot], 1'b0, ldrop, (LIVE != 0) ? 6'd1 : nf_run,
                                    2'd0, (LIVE != 0) ? {3'd0, r_slot} : rf},
                                    {NROW[15:0], NCOL[15:0]},
                                    frame_idx, MAGIC };
