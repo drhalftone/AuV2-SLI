@@ -1,4 +1,4 @@
-# Sensor readout window and the runway: measurements of 2026-11-02
+# Sensor readout window, the runway and burst sampling: measurements of 2026-11-02
 
 Notes for the TPAMI manuscript. All measurements were taken on 2026-11-02 with the
 PYTHON 1300 camera on the Alchitry Pt V2 and the Optoma ML750ST projector, running
@@ -6,10 +6,11 @@ firmware from branch `feat/sensor-window-and-sat-fix` (worktree
 `C:\Users\dllau\Developer\AuV2-SLI-sensorwin`, bitstreams loaded to FPGA RAM).
 Data, figures and analysis scripts are in `sensor_window_2026-11-02/`.
 
-**Data provenance.** Every measurement below was taken with scripts in
-`sensor_window_2026-11-02/scripts/`, not with `host/sli_ui.py`. Under the
-manuscript's rule that reported data come from the UI, each result has to be
-reproduced in `sli_ui.py` before it is cited as data.
+**Data provenance.** Sections 1–5 and the burst sweeps in section 6.2 were taken with
+scripts (`sensor_window_2026-11-02/scripts/` and `host/burst_sweep.py`), not with
+`host/sli_ui.py`. Under the manuscript's rule that reported data come from the UI,
+each of those results has to be reproduced in `sli_ui.py` before it is cited as data.
+The three RGB-filter sweeps in section 6.3 were taken with `sli_ui.py`.
 
 Conventions used throughout:
 - ROI = the 16 × 16 pixel patch at columns 640–655 and rows 512–527, counted from
@@ -245,16 +246,110 @@ Consequence: at level 255 the flash tops clip at any programmed exposure. Removi
 the clipping requires less light (a lower projected level, a single colour, or an
 ND filter), not a shorter exposure.
 
-## 6. Open items
+## 6. Several window pictures per projector frame (burst sampling)
+
+### 6.1 Method
+
+The profiling bitstream fires N triggers after each projector vsync instead of one, at
+
+  t_k = d + k·Δ,  k = 0 … N − 1,  Δ = T_v / N,
+
+where d is the genlock delay and T_v is the vsync period measured by the FPGA
+(Δ = (T_v × round(2²⁰/N)) >> 20 in 10 ns ticks). N is set by ROICTL bits 3:1 (N − 1, up
+to N = 8). Bursts run only with the sensor in window readout: a window picture takes the
+exposure plus ≈ 110 µs from trigger to frame end, against ≈ 5.98 ms for a full-frame
+picture at a 250 µs exposure (section 1). One picture is in flight at a time, so each
+trigger's labels (trigger ordinal, transmitted top-left pixel, cycle phase) are paired with
+its own ROI result as in the single-trigger design, and the burst index k is carried with
+them.
+
+A delay sweep over d ∈ [0, Δ) then places a picture at every delay in [0, T_v): the
+result for (d, k) is the reading at delay d + k·Δ. A sweep needs 1/N of the delay steps.
+
+Each ROI result is sent as one ASCII line over the board's serial link. Burst lines are
+29 bytes (`R=mmm,nnn,rrggbb,cc,hh,ll,k` plus CR LF); single-trigger lines keep the
+27-byte format. At 115200 baud a line takes 2.5 ms, which limits N to 3 at 120 Hz;
+a bitstream built with `UART_BAUD=921600` carries N = 8.
+
+### 6.2 Measurements
+
+All with a projected white frame every frame (WWWWW), 4.875 µs programmed exposure,
+the window ROI, and T_v = 8325.8 µs.
+
+| N | Δ (µs) | Level | Step (µs) | Delay steps | Sweep time | Lines received | Lines lost |
+|---|---|---|---|---|---|---|---|
+| 3 | 2775.3 | 64 | 50 | 56 | 22 s | 2483 | 0 |
+| 6 | 1387.6 | 64 | 50 | 28 | 11 s | 2511 | 0 |
+| 6 | 1387.6 | 255 | 50 | 28 | 11 s | 2501 | 0 |
+| 6 | 1387.6 | 255 | 5 | 278 | 109 s | 25 091 | 0 |
+| 8 | 1040.7 | 255 | 5 | 209 | 84 s | 25 035 | 0 |
+
+Every line had npx = 256. Lines with clipped ROI pixels: 1008 (N = 6, level 255, 50 µs),
+10 124 (N = 6, 5 µs) and 10 065 (N = 8, 5 µs), at the flash peaks; the projected spot in
+the ROI is bright enough to clip at level 255.
+
+Consistency checks:
+
+| Comparison | Correlation | Median \|difference\| |
+|---|---|---|
+| N = 8 vs N = 6, both level 255, 5 µs steps | 0.9999 | 0.28 ADU |
+| N = 6 vs N = 3, level 64 (at the N = 3 delays) | 0.9311 | 0.28 ADU |
+| N = 6, level 255, 50 µs vs the `CAM_ALT` window sweep of section 4.1 (one picture per frame, 167 delays) | 0.9910 | 2.4 ADU |
+
+At level 64 the three short flashes appear at the same delays in the N = 3 burst sweep
+(1950/2000, 3375, 3975 µs) as in the single-picture window sweep (1950, 3350, 3950 µs),
+and the burst segments k join without a step in the baseline.
+
+The time per delay step is ≈ 0.3–0.4 s at every N (writing and confirming the delay,
+discarding the frames in flight, collecting the lines). That fixed cost, not the
+number of pictures per frame, now sets the sweep time.
+
+Figures: `figures/burst_vs_single.png`, `figures/burst_N6_vs_N3.png`,
+`figures/burst_N6_L255_5us.png`, `figures/burst_N8_lines.png`.
+
+### 6.3 In the UI
+
+`sli_ui.py` detects the board's serial rate (115200 or 921600) and runs burst sweeps
+(Sweep > Pictures per frame: 1 full-frame readout, or 3, 6, 8 window readout; automatic
+= 8 on a 921600 board). Each picture is stored as an ordinary sweep row at its own delay
+d + k·Δ, and the sweep's settings record N, Δ and the readout.
+
+Three WWWWW sweeps through the red, green and blue lens filters were run in the UI at
+N = 8: 1670 delays each (0–8315 µs in 5 µs steps), all five cycle positions (8350 rows),
+none at or above 1000 ADU. Each took 66 s from its log's first write to its last
+(`data/ui_wwwww_{r,g,b}_N8.csv`). A single-picture sweep over the same 1666 delays at
+≈ 0.3 s per step takes ≈ 8 min.
+
+These sweeps use window readout, so they contain no runway (section 4).
+
+### 6.4 Limitation: placement-sensitive camera bring-up
+
+One build of the burst bitstream at `UART_BAUD=921600` never brought the camera up:
+status 0x3A read 0 (not aligned, not streaming) after repeated loads. The same source at
+115200 baud came up normally, and a second 921600 build with only status wires added came
+up normally. The UART has no logical connection to the camera's bring-up, so the failure
+is attributed to placement; the marginal path has not been identified. Status 0x3A bits
+7..1 now report the bring-up stages in order (MMCM locked, IDELAYCTRL ready, eye scan
+done, boot ROM done, aligned, streaming), so a failing build is identified on loading.
+
+## 7. Open items
 
 1. Repeat the WKKKK kernel measurement without clipping, using less light, to obtain
    g0, k and T cleanly.
 2. Move the ROI to other rows (for example 100 and 900) to test T ≈ r × 5.53 µs + 78 µs.
    The runway maps need this to deconvolve each pixel with its own T.
 3. Measure the exposure overhead (section 5) with an exposure series in window mode.
-4. Reproduce the results above in `sli_ui.py` before citing them as data.
-5. Commit the fixes in section 2 to the branch; add the `cdc_max` constraint; fix
-   `KPAR0` for the profiling build's runtime window.
+4. Reproduce the script-based results above in `sli_ui.py` before citing them as data.
+5. Add the `cdc_max` constraint to the branch's `build_merged.tcl`; fix `KPAR0` for the
+   profiling build's runtime window. (The fixes of sections 2.1–2.3 are committed:
+   `33b277f`, `6bb5e0a`, `3c1f84b` on `feat/sensor-window-and-sat-fix`.)
+6. Find the placement-sensitive path in camera bring-up (section 6.4).
+7. **Two-stage linearization.** (a) Linearize the projector per colour using the window
+   ROI, which has no runway; this needs one correction table per colour in the FPGA
+   (today one 256-entry table is applied to all three channels). (b) Linearize the
+   full-sensor image with a per-row runway model, F_r = E + k · (light over the T_r after
+   the exposure), which in an SLI capture is a row-dependent linear mix of two consecutive
+   patterns; this needs T_r and k measured at several rows (item 2).
 
 ## Files in `sensor_window_2026-11-02/`
 
@@ -271,4 +366,9 @@ ND filter), not a shorter exposure.
 | `figures/wsweep_L64.png`, `figures/altsweep_L255.png` | Section 4.1 |
 | `figures/wkkkk_e1875.png`, `figures/wkkkk_e1875_box.png` | Section 4.3 |
 | `figures/kernel_view.png`, `figures/wkkkk_deconv.png` | Sections 4.3 and 4.4 |
-| `scripts/` | Capture and analysis scripts as run (paths inside point at the worktree) |
+| `data/burst_N3_L64b.csv`, `data/burst_N6_L64.csv` | Burst sweeps, level 64, 50 µs steps (section 6.2) |
+| `data/burst_N6_L255.csv`, `data/burst_N6_L255_5us.csv`, `data/burst_N8_L255_5us.csv` | Burst sweeps, level 255 (section 6.2) |
+| `data/ui_wwwww_{r,g,b}_N8.csv` | `sli_ui.py` sweep logs, RGB filters, N = 8 (section 6.3) |
+| `figures/burst_vs_single.png`, `figures/burst_N6_vs_N3.png` | Burst against single-picture and N = 3 sweeps, level 64 |
+| `figures/burst_N6_L255_5us.png`, `figures/burst_N8_lines.png` | N = 6 and N = 8 at 5 µs steps, level 255 |
+| `scripts/` | Capture and analysis scripts as run (paths inside point at the worktree); the burst sweep script is `host/burst_sweep.py` on `feat/sensor-window-and-sat-fix` |
