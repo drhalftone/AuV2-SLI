@@ -1077,7 +1077,8 @@ module cam_frame_ft #(
     wire [9:0]  kp0,kp1,kp2,kp3,kp4,kp5,kp6,kp7;
     wire [10:0] kbase;
     wire        kvalid, line_start, frame_start, frame_end, in_black;
-    cam_sync_decode u_dec (
+    // The window's first kernel sets the mirror parity of every line (see KPAR0).
+    cam_sync_decode #(.KPAR0((WIN_X / 8) % 2)) u_dec (
         .wordclk(wordclk), .rst(wc_rst), .aligned(aligned),
         .d0_word(d0_word), .d1_word(d1_word), .d2_word(d2_word),
         .d3_word(d3_word), .sync_word(sync_word),

@@ -57,7 +57,14 @@
 // after a line end. Hence the explicit S_WN1/S_WN2 states: `acc` is a function of the STATE,
 // not of sync_word.
 //=============================================================================
-module cam_sync_decode (
+module cam_sync_decode #(
+    // PARITY OF THE FIRST KERNEL OF A LINE, in SENSOR kernels. The sensor mirrors odd
+    // kernels by their position on the ARRAY, not within the line, so a readout window
+    // starting at x_start = 1 (pixel 8) opens every line with an odd, descending kernel.
+    // Restarting the parity at even there mirrors every kernel of the window -- an
+    // 8-pixel flip, measured on a CAM_WIN=8,8,1264,1008 build. Set to (x_start % 2).
+    parameter [0:0] KPAR0 = 1'b0
+)(
     input  wire        wordclk,
     input  wire        rst,
     input  wire        aligned,          // from cam_align: hold decode off until locked
@@ -115,7 +122,7 @@ module cam_sync_decode (
         if (rst || !aligned) begin
             st <= S_IDLE; kvalid <= 1'b0; line_start <= 1'b0; frame_start <= 1'b0;
             frame_end <= 1'b0; in_black <= 1'b0;
-            word_b <= 1'b0; kpar <= 1'b0; kcol <= 11'd0; last_fe <= 1'b0;
+            word_b <= 1'b0; kpar <= KPAR0; kcol <= 11'd0; last_fe <= 1'b0;
         end else begin
             kvalid      <= 1'b0;          // single-cycle strobes
             line_start  <= 1'b0;
@@ -190,7 +197,7 @@ module cam_sync_decode (
                 if (newline || !word_b) begin
                     a0 <= d0_word; a1 <= d1_word; a2 <= d2_word; a3 <= d3_word;
                     word_b <= 1'b1;
-                    if (newline) begin kpar <= 1'b0; kcol <= 11'd0; end
+                    if (newline) begin kpar <= KPAR0; kcol <= 11'd0; end
                 end else begin
                     // kernel complete -- positions:
                     //   p0=a0 p2=a1 p4=a2 p6=a3 (word A)
