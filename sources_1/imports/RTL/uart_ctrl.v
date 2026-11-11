@@ -15,8 +15,11 @@
 //   read   : A5 52 ADDR CK              CK: (0x52+ADDR+CK)           == 0 mod256
 //            -> ADDR DATA CK2  with (ADDR+DATA+CK2)==0 ; or 'E' on bad request CK
 //   upload : A5 5B TGT D[0..N-1] CK     CK: (TGT+sum(D)+CK)          == 0 mod256
-//            N = 720 (TGT 0x00) / 1280 (TGT 0x01) / 256 (TGT 0x02)
+//            N = 720 (TGT 0x00) / 1280 (TGT 0x01) / 256 (TGT 0x02) / 768 (TGT 0x06)
 //            -> 'K' ok / 'E' bad checksum|unknown target  (table committed only on 'K')
+//            TGT 0x02 = corr, ONE curve written to all three channels (as before);
+//            TGT 0x06 = corr RGB, three curves: D[0..255] red, [256..511] green,
+//            [512..767] blue. Read back, 0x02 returns the red curve.
 //   rdtbl  : A5 72 TGT CK               CK: (0x72+TGT+CK)            == 0 mod256
 //            -> TGT D[0..N-1] CK2  with (TGT+sum(D)+CK2)==0 ; or 'E' on bad CK|target
 //            (same N per TGT as upload; lets the host verify an uploaded table)
@@ -116,10 +119,13 @@ module uart_ctrl #(
     // the TOP byte commits, so a delay can never half-apply mid-sweep and put the
     // exposure somewhere neither the old nor the new value asked for.
     output reg  [23:0] gldly_uart,
-    // 0x1F IMPRGB {2:R, 1:G, 0:B} -- which channels the impulse frame drives.
-    // Resets to 0x07 (white) so existing behaviour is unchanged; write 0x04 for a
-    // red-only flash. Per-primary flashes are what the profiling plan needs, and a
+    // 0x1F IMPRGB {3:through corr, 2:R, 1:G, 0:B} -- which channels the impulse frame
+    // drives. Resets to 0x07 (white) so existing behaviour is unchanged; write 0x04 for
+    // a red-only flash. Per-primary flashes are what the profiling plan needs, and a
     // single primary is also ~3x less light, which matters when the sensor rails.
+    // Bit 3 sends the level through the corr tables, one per channel: the frame is
+    // (corr_r[lvl], corr_g[lvl], corr_b[lvl]) instead of (lvl, lvl, lvl). Same bit in
+    // IMPRGB2 for the frame at bpos. See imp_col below.
     output reg  [7:0]  imp_rgb,
     // THE SECOND COLOUR OF THE SEQUENCE, host-writable like the first.
     //
@@ -147,6 +153,12 @@ module uart_ctrl #(
     output reg  [7:0]  imp_lvl,
     // 0x11 IMPCYC -- frames per sequence, default 5. Write 2 for BRIGHT,K.
     output reg  [7:0]  imp_cyc,
+    // THE IMPULSE COLOURS, RESOLVED: {R, G, B} of the ordinary frames (imp_col) and of
+    // the frame at bpos (imp_col2), from the level, the channel mask and IMPRGB bit 3.
+    // Formed here because the corr tables live here; registered on clk, so they cross
+    // to the pixel clock like imp_lvl always has (quasi-static, 2FF in the top).
+    output reg  [23:0] imp_col,
+    output reg  [23:0] imp_col2,
     // SEQUENCE CONFIG -- the fringe sequencer run from the FPGA alone, so a test
     // needs no host pacing and no PC-drawn frames. Packed for pixel_pipe:
     //   [7:0]   0x09 SEQCTL  bit0 free-run: advance every frame, rdy not needed
@@ -170,8 +182,9 @@ module uart_ctrl #(
     // datapath reads either table; they remain only as host-writable storage.
     // They were labelled "row cosine"/"col cosine" here, which is not what they are
     // and not what they were for. THE LIVE LINEARISATION TABLE IS corr (target 0x02,
-    // 256 entries, one per grey level), applied as out = corr[cos] in pattern_gen --
-    // that is what makes a 0..255 ramp come out linear on the display.
+    // or 0x06 for one curve per channel; 256 entries each, one per grey level), applied
+    // as out = corr[cos] in pattern_gen -- that is what makes a 0..255 ramp come out
+    // linear on the display. corr_addr/corr_dout read the RED curve.
     input  wire [9:0]  lut_addr,   output reg [7:0] lut_dout,    // 720 B, unused
     input  wire [10:0] lutv_addr,  output reg [7:0] lutv_dout,   // 1280 B, unused
 
@@ -219,8 +232,10 @@ module uart_ctrl #(
     // Clock domains: written on clk (clk100) during an upload, read continuously from
     // pixel_clk. No handshake -- a table upload takes a few ms and tears the curve for
     // that window (a few pixels get a mix of old/new). Upload while not scanning.
+    //
+    // {R, G, B}: one corrected value per channel for the same cosine value.
     input  wire [7:0]  corr_pat_addr,
-    output wire [7:0]  corr_pat_dout,
+    output wire [23:0] corr_pat_dout,
 
     // ---- MODEFORCE (reg 0x14, R/W) -- bring-up / bring-down of new modes ----
     // {7:force_en, 3..0:idx}. When force_en=1 the host pins the offline mode to idx
@@ -323,9 +338,15 @@ module uart_ctrl #(
     localparam [7:0] TGT_EDID = 8'h03;       // read-only: the display's captured EDID
     localparam [7:0] TGT_CAM_LINE = 8'h04;   // read-only: one captured camera line (task #11)
     localparam [7:0] TGT_EDID_SRV = 8'h05;   // read-only: the MERGED EDID we serve to the PC
+    localparam [7:0] TGT_CORR_RGB = 8'h06;   // corr, one curve per channel (768 B)
 
     // ---- table RAMs (write-through during upload; read ports for Stage 2) ----
-    reg [7:0] corr [0:255];
+    // corr is THREE curves, one per channel. A projector's primaries do not share a
+    // response, and seen through a colour filter each channel has to be straightened on
+    // its own -- one shared curve can make at most one of them linear.
+    reg [7:0] corr_r [0:255];
+    reg [7:0] corr_g [0:255];
+    reg [7:0] corr_b [0:255];
     reg [7:0] lut  [0:719];
     reg [7:0] lutv [0:1279];
 
@@ -333,10 +354,25 @@ module uart_ctrl #(
     // datapath (pattern_gen's radiometric transfer LUT), so an all-zero power-up would
     // black the pattern out until a table was uploaded. Identity == no correction.
     integer ci;
-    initial for (ci = 0; ci < 256; ci = ci + 1) corr[ci] = ci[7:0];
+    initial for (ci = 0; ci < 256; ci = ci + 1) begin
+        corr_r[ci] = ci[7:0]; corr_g[ci] = ci[7:0]; corr_b[ci] = ci[7:0];
+    end
 
     // Combinational (async) read into the pixel datapath -- see the port comment.
-    assign corr_pat_dout = corr[corr_pat_addr];
+    assign corr_pat_dout = {corr_r[corr_pat_addr], corr_g[corr_pat_addr],
+                            corr_b[corr_pat_addr]};
+
+    // The impulse colours. Bit 3 of the mask: through the curves, else the level as is;
+    // bits 2:0 black the channels the frame does not drive. A quasi-static register
+    // value, so one clock of lag is nothing.
+    always @(posedge clk) begin
+        imp_col  <= {imp_rgb[2]  ? (imp_rgb[3]  ? corr_r[imp_lvl]  : imp_lvl)  : 8'h00,
+                     imp_rgb[1]  ? (imp_rgb[3]  ? corr_g[imp_lvl]  : imp_lvl)  : 8'h00,
+                     imp_rgb[0]  ? (imp_rgb[3]  ? corr_b[imp_lvl]  : imp_lvl)  : 8'h00};
+        imp_col2 <= {imp_rgb2[2] ? (imp_rgb2[3] ? corr_r[imp_lvl2] : imp_lvl2) : 8'h00,
+                     imp_rgb2[1] ? (imp_rgb2[3] ? corr_g[imp_lvl2] : imp_lvl2) : 8'h00,
+                     imp_rgb2[0] ? (imp_rgb2[3] ? corr_b[imp_lvl2] : imp_lvl2) : 8'h00};
+    end
 
     // ---- loaded flags ----
     reg corr_ld = 1'b0, lut_ld = 1'b0, lutv_ld = 1'b0;
@@ -395,10 +431,16 @@ module uart_ctrl #(
     reg [3:0]  state = S_SYNC;
     reg [7:0]  addr, dbyte, sum8;
     reg [11:0] cnt, len;             // up to 1280
-    reg [2:0]  tgt;                  // 0=lut 1=lutv 2=corr 3=edid 4=cam_line
+    reg [2:0]  tgt;                  // 0=lut 1=lutv 2=corr 3=edid 4=cam_line 5=edid_srv 6=corr_rgb
+
+    // corr RGB readback: rd_idx[9:8] picks the curve (0 red, 1 green, 2 blue)
+    reg [7:0]  corr_g_q, corr_b_q;
+    wire [7:0] crgb_dout = (rd_idx[9:8] == 2'd0) ? corr_dout :
+                           (rd_idx[9:8] == 2'd1) ? corr_g_q  : corr_b_q;
 
     // readback byte source (selected by target)
-    wire [7:0] rb_dout = (tgt == 3'd5) ? esrv_rd_data  :
+    wire [7:0] rb_dout = (tgt == 3'd6) ? crgb_dout     :
+                         (tgt == 3'd5) ? esrv_rd_data  :
                          (tgt == 3'd4) ? cam_line_data :
                          (tgt == 3'd3) ? edid_rd_data  :
                          (tgt == 3'd2) ? corr_dout     :
@@ -425,7 +467,9 @@ module uart_ctrl #(
     wire [9:0]  lut_ra  = rb_active ? rd_idx[9:0]  : lut_addr;
     wire [10:0] lutv_ra = rb_active ? rd_idx[10:0] : lutv_addr;
     always @(posedge clk) begin
-        corr_dout <= corr[corr_ra];
+        corr_dout <= corr_r[corr_ra];
+        corr_g_q  <= corr_g[corr_ra];
+        corr_b_q  <= corr_b[corr_ra];
         lut_dout  <= lut[lut_ra];
         lutv_dout <= lutv[lutv_ra];
     end
@@ -905,6 +949,7 @@ case (addr)
                         TGT_LUT:  begin tgt <= 3'd0; len <= 12'd720;  state <= S_UDATA; end
                         TGT_LUTV: begin tgt <= 3'd1; len <= 12'd1280; state <= S_UDATA; end
                         TGT_CORR: begin tgt <= 3'd2; len <= 12'd256;  state <= S_UDATA; end
+                        TGT_CORR_RGB: begin tgt <= 3'd6; len <= 12'd768; state <= S_UDATA; end
                         default:  begin                  // unknown target -> 'E' (incl. read-only cam_line)
                             resp[0] <= ACK_E; resp_len <= 2'd1; resp_idx <= 2'd0;
                             state <= S_RESP;
@@ -915,7 +960,16 @@ case (addr)
                     case (tgt)
                         3'd0: lut [cnt[9:0]]  <= rx_data;
                         3'd1: lutv[cnt[10:0]] <= rx_data;
-                        3'd2: corr[cnt[7:0]]  <= rx_data;
+                        3'd2: begin                      // one curve -> all three
+                            corr_r[cnt[7:0]] <= rx_data;
+                            corr_g[cnt[7:0]] <= rx_data;
+                            corr_b[cnt[7:0]] <= rx_data;
+                        end
+                        3'd6: case (cnt[9:8])            // red, green, blue in turn
+                            2'd0:    corr_r[cnt[7:0]] <= rx_data;
+                            2'd1:    corr_g[cnt[7:0]] <= rx_data;
+                            default: corr_b[cnt[7:0]] <= rx_data;
+                        endcase
                     endcase
                     sum8 <= sum8 + rx_data;
                     if (cnt == len - 12'd1) state <= S_UCK;
@@ -926,7 +980,7 @@ case (addr)
                         case (tgt)
                             3'd0: lut_ld  <= 1'b1;
                             3'd1: lutv_ld <= 1'b1;
-                            3'd2: corr_ld <= 1'b1;
+                            3'd2, 3'd6: corr_ld <= 1'b1;
                         endcase
                         resp[0] <= ACK_K;
                     end else begin
@@ -942,6 +996,7 @@ case (addr)
                         TGT_LUT:      begin tgt <= 3'd0; len <= 12'd720;  end
                         TGT_LUTV:     begin tgt <= 3'd1; len <= 12'd1280; end
                         TGT_CORR:     begin tgt <= 3'd2; len <= 12'd256;  end
+                        TGT_CORR_RGB: begin tgt <= 3'd6; len <= 12'd768;  end
                         TGT_EDID:     begin tgt <= 3'd3; len <= 12'd256;  end   // read-only
                         TGT_CAM_LINE: begin tgt <= 3'd4; len <= CAM_LINE_LEN[11:0]; end  // read-only
                         TGT_EDID_SRV: begin tgt <= 3'd5; len <= 12'd256;  end   // read-only

@@ -329,10 +329,12 @@ architecture Behavioral of Au2_SLI is
     -- The frame at bpos takes these; every other frame takes imp_lvl/imp_rgb.
     signal imp_lvl2_w : std_logic_vector(7 downto 0) := x"FF";
     signal imp_rgb2_w : std_logic_vector(7 downto 0) := x"07";
-    signal imp_lvl2_p0, imp_lvl2_p1 : std_logic_vector(7 downto 0) := x"FF";
-    signal imp_rgb2_p0, imp_rgb2_p1 : std_logic_vector(2 downto 0) := "111";
-    signal imp_lvl_now : std_logic_vector(7 downto 0);
-    signal imp_rgb_now : std_logic_vector(2 downto 0);
+    -- THE COLOURS THOSE PAIRS MAKE, resolved in uart_ctrl: the level through the
+    -- channel mask and, with IMPRGB/IMPRGB2 bit 3, through the per-channel corr curves.
+    signal imp_col_w, imp_col2_w   : std_logic_vector(23 downto 0) := x"FFFFFF";
+    signal imp_col_p0, imp_col_p1  : std_logic_vector(23 downto 0) := x"FFFFFF";
+    signal imp_col2_p0, imp_col2_p1 : std_logic_vector(23 downto 0) := x"FFFFFF";
+    signal imp_col_now : std_logic_vector(23 downto 0);
     signal imp_lvl_p0, imp_lvl_p1 : std_logic_vector(7 downto 0) := x"FF";
     signal gl_div_w : std_logic := '0';
     signal imp_cyc_w : std_logic_vector(7 downto 0) := x"05";
@@ -349,7 +351,6 @@ architecture Behavioral of Au2_SLI is
     -- RRKRR needs no new register address -- write 0x11 = 0xA5 for "5 frames,
     -- dark frame at position 2, inverted".
     signal imp_inv_p0, imp_inv_p1 : std_logic := '0';
-    signal imp_rgb_p0, imp_rgb_p1 : std_logic_vector(2 downto 0) := "111";
     signal imp_r, imp_g, imp_b : std_logic_vector(7 downto 0);
     -- TLP hand-off into the camera module, gated by WITH_TLP (see the generic).
     signal tlp_to_cam     : std_logic_vector(23 downto 0);
@@ -440,13 +441,13 @@ architecture Behavioral of Au2_SLI is
             trig_cnt_dbg : out std_logic_vector(7 downto 0);
             -- radiometric transfer LUT seam -> uart_ctrl's host-uploadable corr table
             lut_din      : out std_logic_vector(7 downto 0);
-            lut_dout     : in  std_logic_vector(7 downto 0)
+            lut_dout     : in  std_logic_vector(23 downto 0)
     );
     end component;
 
     -- pattern_gen's tone-LUT seam: raw cosine out, linearised value back, SAME cycle.
     signal pat_lut_din  : std_logic_vector(7 downto 0);
-    signal pat_lut_dout : std_logic_vector(7 downto 0);
+    signal pat_lut_dout : std_logic_vector(23 downto 0);   -- {R,G,B}: one curve per channel
 
     signal not_C1in1 : std_logic;
     signal pixel_clk : std_logic;
@@ -595,7 +596,7 @@ architecture Behavioral of Au2_SLI is
                cam_line_data : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
                -- radiometric transfer LUT read by pattern_gen (combinational)
                corr_pat_addr : in  STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-               corr_pat_dout : out STD_LOGIC_VECTOR(7 downto 0);
+               corr_pat_dout : out STD_LOGIC_VECTOR(23 downto 0);
                -- offline mode decision (regs 0x20..0x2A), already in clk100
                mode_idx_i     : in STD_LOGIC_VECTOR(3 downto 0)  := (others => '0');
                mode_valid_i   : in STD_LOGIC                     := '0';
@@ -631,6 +632,8 @@ architecture Behavioral of Au2_SLI is
                imp_lvl        : out STD_LOGIC_VECTOR(7 downto 0);
                imp_rgb2       : out STD_LOGIC_VECTOR(7 downto 0);
                imp_lvl2       : out STD_LOGIC_VECTOR(7 downto 0);
+               imp_col        : out STD_LOGIC_VECTOR(23 downto 0);
+               imp_col2       : out STD_LOGIC_VECTOR(23 downto 0);
                gl_div         : out STD_LOGIC;
                imp_cyc        : out STD_LOGIC_VECTOR(7 downto 0);
                seq_cfg        : out STD_LOGIC_VECTOR(63 downto 0);
@@ -1142,6 +1145,7 @@ begin
         gldly_uart  => gldly_uart_w, gldly_uart_we => gldly_uart_we_w,
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
         imp_rgb2    => imp_rgb2_w, imp_lvl2 => imp_lvl2_w,
+        imp_col     => imp_col_w,  imp_col2 => imp_col2_w,
         gl_div      => gl_div_w, imp_cyc => imp_cyc_w,
         seq_cfg     => seq_cfg_w,
         vs_meas     => out_vsync,
@@ -1506,14 +1510,12 @@ begin
         -- ROICTL bit 7 (impulse enable) crosses clk100 -> pixel_clk the same way.
         imp_en_p0 <= roi_ctl_w(7);
         imp_en_p1 <= imp_en_p0;
-        imp_rgb_p0 <= imp_rgb_w(2 downto 0);
-        imp_rgb_p1 <= imp_rgb_p0;
         imp_lvl_p0 <= imp_lvl_w;
         imp_lvl_p1 <= imp_lvl_p0;
-        imp_lvl2_p0 <= imp_lvl2_w;
-        imp_lvl2_p1 <= imp_lvl2_p0;
-        imp_rgb2_p0 <= imp_rgb2_w(2 downto 0);
-        imp_rgb2_p1 <= imp_rgb2_p0;
+        imp_col_p0  <= imp_col_w;
+        imp_col_p1  <= imp_col_p0;
+        imp_col2_p0 <= imp_col2_w;
+        imp_col2_p1 <= imp_col2_p0;
         imp_cyc_p0 <= imp_cyc_w(2 downto 0);
         imp_cyc_p1 <= imp_cyc_p0;
         imp_bp_p0  <= imp_cyc_w(6 downto 4);
@@ -1657,11 +1659,15 @@ tlp_tog_to_cam <= tlp_tx_tog;
 --
 -- impulse_gen's own `level` output is no longer used for the colour -- it
 -- encoded a single-level scheme that could not express two colours at once.
-imp_lvl_now <= imp_lvl2_p1 when imp_ph0 = '1' else imp_lvl_p1;
-imp_rgb_now <= imp_rgb2_p1 when imp_ph0 = '1' else imp_rgb_p1;
-imp_r <= imp_lvl_now when imp_rgb_now(2) = '1' else x"00";
-imp_g <= imp_lvl_now when imp_rgb_now(1) = '1' else x"00";
-imp_b <= imp_lvl_now when imp_rgb_now(0) = '1' else x"00";
+--
+-- The (level, mask) pairs arrive already resolved to colours (uart_ctrl's imp_col /
+-- imp_col2), because that is where the corr curves live: IMPRGB bit 3 sends the
+-- level through them, one curve per channel, so a frame can be (corr_r[L],
+-- corr_g[L], corr_b[L]) -- three different levels -- which the mask alone never could.
+imp_col_now <= imp_col2_p1 when imp_ph0 = '1' else imp_col_p1;
+imp_r <= imp_col_now(23 downto 16);
+imp_g <= imp_col_now(15 downto 8);
+imp_b <= imp_col_now(7 downto 0);
 
 -- The impulse sequence replaces active-video colour only; blanking, hsync and
 -- vsync are untouched. Nothing is written into the top-left pixel -- it carries

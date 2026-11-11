@@ -63,10 +63,11 @@ module pattern_gen #(
     // Ignored when EXT_SEQ=0 (the internal auto-cycler drives frm/frq).
     input  wire [2:0]  ext_frm,                    // phase index 0..7
     input  wire [1:0]  ext_frq,                    // spatial-freq index 0..2 (3 = flashing block)
-    // radiometric transfer LUT seam (pattern_lut): raw cosine value out, linearized in.
-    // Tie lut_dout = lut_din externally for no correction (pattern_lut powers up identity).
+    // radiometric transfer LUT seam (pattern_lut): raw cosine value out, linearized in,
+    // one value per channel. Tie lut_dout = {3{lut_din}} externally for no correction
+    // (pattern_lut powers up identity).
     output wire [7:0]  lut_din,                    // raw 8-bit cosine value (pattern only)
-    input  wire [7:0]  lut_dout,                   // linearized value back from pattern_lut
+    input  wire [23:0] lut_dout,                   // {R,G,B} linearized values back
     output reg  [7:0]  out_red,
     output reg  [7:0]  out_green,
     output reg  [7:0]  out_blue,
@@ -263,16 +264,18 @@ module pattern_gen #(
 
     // Fringe pixels use the LUT-corrected value; FLASH pixels bypass it and emit raw pat
     // (= flash_val, true 0x00/0xFF). pat and lut_dout share a pipeline stage, so flash_d
-    // selects cleanly between them.
-    wire [7:0] pat_out = flash_d ? pat : lut_dout;
+    // selects cleanly between them. Each channel takes its own curve.
+    wire [7:0] pat_r = flash_d ? pat : lut_dout[23:16];
+    wire [7:0] pat_g = flash_d ? pat : lut_dout[15:8];
+    wire [7:0] pat_b = flash_d ? pat : lut_dout[7:0];
 
     // Channel enables: compile-time RGB_EN, or the runtime rgb_en input when RGB_RUNTIME.
     wire [2:0] rgb_sel = (RGB_RUNTIME != 0) ? chan_en : RGB_EN;
     wire show = enable & valid & ~blank_d;
     always @(posedge pixel_clk) begin
-        out_red   <= show ? (rgb_sel[2] ? pat_out : 8'h00) : r_d;
-        out_green <= show ? (rgb_sel[1] ? pat_out : 8'h00) : g_d;
-        out_blue  <= show ? (rgb_sel[0] ? pat_out : 8'h00) : b_d;
+        out_red   <= show ? (rgb_sel[2] ? pat_r : 8'h00) : r_d;
+        out_green <= show ? (rgb_sel[1] ? pat_g : 8'h00) : g_d;
+        out_blue  <= show ? (rgb_sel[0] ? pat_b : 8'h00) : b_d;
     end
 
     assign dbg = {valid, orient, enable, frq_use, frm_use, bcnt};

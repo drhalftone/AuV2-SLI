@@ -35,7 +35,7 @@ module tb_seq;
         .out_red(o_r), .out_green(o_g), .out_blue(o_b),
         .out_hsync(o_hs), .out_vsync(o_vs), .out_blank(o_bl),
         .tlp_dbg(), .tlp_tog(), .olp_dbg(), .trig_cnt_dbg(),
-        .lut_din(lut), .lut_dout(lut));
+        .lut_din(lut), .lut_dout({3{lut}}));
 
     // output-side raster position, from the pipe's own blank
     reg [11:0] ox = 0, oy = 0;

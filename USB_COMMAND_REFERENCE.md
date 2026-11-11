@@ -201,15 +201,24 @@ leaves whatever was last forced. Logged against genlock G4.
 |---|---|---|---|
 | `0x00` | row LUT | 720 B | upload + readback — **vestigial**, tied off, read by nothing |
 | `0x01` | column LUT | 1280 B | upload + readback — **vestigial** |
-| `0x02` | **`corr` intensity correction** | 256 B | upload + readback — **the live linearisation table** |
+| `0x02` | **`corr` intensity correction** | 256 B | upload + readback — **the live linearisation table**; one curve, written to all three channels; reads back the red curve |
 | `0x03` | display's captured EDID | 256 B | **read-only** (`A5 5B 03` is rejected) |
 | `0x04` | one captured camera line | — | **read-only** |
 | `0x05` | the merged EDID served to the PC | 256 B | **read-only** |
+| `0x06` | **`corr`, one curve per channel** | 768 B | upload + readback — red `[0..255]`, green `[256..511]`, blue `[512..767]` |
 
 **`0x02` is the one that matters.** 256 entries, one per grey level, applied as
 `out = corr[cos]` in `pattern_gen` — that is what makes a 0–255 ramp reproduce
 linearly on the projector. It powers up as identity. `0x00` and `0x01` are tied off
 in `Au2_SLI.vhd` ("vestigial from the old indexMap/LUT ROM design").
+
+**`corr` is three curves** (2026-11-11), one per channel, so each primary can be
+linearized on its own. `0x02` still takes one 256-byte curve and writes it to all
+three, so existing tools behave as before; `0x06` sets them separately. `pattern_gen`
+gives each channel its own curve. The impulse generator uses them only when
+**IMPRGB / IMPRGB2 bit 3** is set: the frame is then (`corr_r[L]`, `corr_g[L]`,
+`corr_b[L]`) for level L, three different levels in one frame. Bit 3 resets to 0, so
+every existing sweep is unchanged.
 
 For `0x03`: always 256 B, but if the display has no extension block, bytes 128–255
 are stale RAM. Byte `0x7E` of block 0 is the authoritative extension count.

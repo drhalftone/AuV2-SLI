@@ -61,10 +61,11 @@ module pixel_pipe(
     output reg [7:0] trig_cnt_dbg, // free-running count of trigger pulses (diagnostic)
 
     // Radiometric transfer LUT seam. Drive these from the host-uploadable `corr` table
-    // (uart_ctrl, 256 entries, USB target 0x02); it powers up identity, so leaving it
-    // unwritten is a no-op. COMBINATIONAL: lut_dout must come back in the same cycle.
-    output wire [7:0] lut_din,     // raw 8-bit cosine value out of pattern_gen
-    input  wire [7:0] lut_dout     // linearized value back in
+    // (uart_ctrl, 256 entries per channel, USB target 0x02 or 0x06); it powers up
+    // identity, so leaving it unwritten is a no-op. COMBINATIONAL: lut_dout must come
+    // back in the same cycle.
+    output wire [7:0]  lut_din,    // raw 8-bit cosine value out of pattern_gen
+    input  wire [23:0] lut_dout    // {R,G,B} linearized values back in
     );
     parameter V=2'b01; parameter B=2'b10; parameter O=2'b11; //states for Vsync, V back porch + 1st hysnc period, others.
     reg flag=1'b0; // flag for pattern change

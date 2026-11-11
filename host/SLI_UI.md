@@ -762,7 +762,7 @@ stops any running measurement first, and waits up to 15 s for it to return.
 | Reg | Name | Use |
 |---|---|---|
 | 0x02 | STATUS | bit 4 = pass-through (PC video on HDMI-IN), refused |
-| 0x07 / 0x08 | IMPLVL2 / IMPRGB2 | the odd frame's level and LED mask |
+| 0x07 / 0x08 | IMPLVL2 / IMPRGB2 | the odd frame's level and LED mask (bit 3: through the per-channel `corr` curves) |
 | 0x11 | IMPCYC | cycle length: 5 for sweeps, 2 for runway pairs |
 | 0x12 | IMPLVL | level of the other frames |
 | 0x13 | SLICTL | 0 = SLI patterns off (runway maps) |
@@ -772,7 +772,7 @@ stops any running measurement first, and waits up to 15 s for it to return.
 | 0x48 | window on | profiling build only: bit 0 = the sensor is reading the window |
 | 0x1A / 0x1B | EXPO lo / hi | exposure in 0.375 µs units (the hi write commits) |
 | 0x1C–0x1E | DLY | genlock delay, 24-bit, 0.01 µs ticks |
-| 0x1F | IMPRGB | LED mask of the other frames (0x07 = all) |
+| 0x1F | IMPRGB | LED mask of the other frames (0x07 = all; bit 3: through the per-channel `corr` curves, `USB_COMMAND_REFERENCE.md` § Tables) |
 | 0x20 | MODE | bit 7 = valid; low nibble = mode index in use |
 | 0x29 / 0x2A | mode mask | bit *i* = mode *i* is supported by the projector's EDID |
 | 0x4A–0x4C | period | measured frame period, 0.01 µs ticks |

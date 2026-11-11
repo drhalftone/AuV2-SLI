@@ -91,8 +91,9 @@ module usb_link #(
     // ---- radiometric transfer LUT into the pixel datapath (combinational) ----
     // pattern_gen presents the raw cosine on corr_pat_addr and consumes the corrected
     // value on corr_pat_dout in the SAME pipeline stage, so this path is async by design.
+    // {R, G, B}: corr is one curve per channel.
     input  wire [7:0]  corr_pat_addr,
-    output wire [7:0]  corr_pat_dout,
+    output wire [23:0] corr_pat_dout,
 
     // ---- MODEFORCE (reg 0x14): {7:force_en, 3..0:idx} ----
     output wire [7:0]  mode_force,
@@ -130,6 +131,8 @@ module usb_link #(
     output wire [7:0]  imp_rgb2,      // 0x08: the odd frame's colour
     output wire [7:0]  imp_lvl2,      // 0x07: the odd frame's level
     output wire [7:0]  imp_lvl,
+    output wire [23:0] imp_col,       // {R,G,B} of the ordinary frames: level, mask, corr
+    output wire [23:0] imp_col2,      // the same for the frame at bpos
     output wire [7:0]  imp_cyc,
     output wire [63:0] seq_cfg,         // 0x09..0x0F, 0x2B: FPGA fringe sequencer config
     output wire        gl_div,          // ROICTL bit 5: one trigger per sequence
@@ -525,6 +528,7 @@ module usb_link #(
         .imp_rgb(imp_rgb), .imp_lvl(imp_lvl), .imp_cyc(imp_cyc),
         .seq_cfg(seq_cfg),
         .imp_rgb2(imp_rgb2), .imp_lvl2(imp_lvl2),
+        .imp_col(imp_col), .imp_col2(imp_col2),
         .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),
