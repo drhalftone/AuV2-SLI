@@ -30,13 +30,14 @@ The background (why profile, which traps the measurement has to avoid) is in
 6. [Adjust iris dialog](#6-adjust-iris-dialog)
 7. [RGB filters tab](#7-rgb-filters-tab)
 8. [Runway maps tab](#8-runway-maps-tab)
-9. [Menus and keys](#9-menus-and-keys)
-10. [Files it reads and writes](#10-files-it-reads-and-writes)
-11. [How a measurement works](#11-how-a-measurement-works)
-12. [Board registers used](#12-board-registers-used)
-13. [The embedded mode table](#13-the-embedded-mode-table)
-14. [Troubleshooting](#14-troubleshooting)
-15. [Code map](#15-code-map)
+9. [White level tab](#9-white-level-tab)
+10. [Menus and keys](#10-menus-and-keys)
+11. [Files it reads and writes](#11-files-it-reads-and-writes)
+12. [How a measurement works](#12-how-a-measurement-works)
+13. [Board registers used](#13-board-registers-used)
+14. [The embedded mode table](#14-the-embedded-mode-table)
+15. [Troubleshooting](#15-troubleshooting)
+16. [Code map](#16-code-map)
 
 ---
 
@@ -175,11 +176,13 @@ This is the same sequence as **Help → Instructions** (F1) in the app.
 5. **Mark the runway**: where projector light may start *before* the exposure (cyan).
 6. *(Optional)* **RGB filters tab**: mount each filter in turn and scan it.
 7. *(Optional)* **Runway maps tab**: measure the runway as grey-pair maps.
-8. **File → Save** writes the `.sliprof`. **Sweep → Export exposure window JSON…** writes
+8. *(For linearization)* **White level tab**: hold white at the placed exposure and set the
+   iris so it does not clip there, then **Linearize W**.
+9. **File → Save** writes the `.sliprof`. **Sweep → Export exposure window JSON…** writes
    the window for other tools to use.
 
-Only **one measurement runs at a time** in the whole app: any sweep, the iris dialog, or the
-runway maps. The other Run buttons are disabled while one is running.
+Only **one measurement runs at a time** in the whole app: any sweep, the iris dialog, the
+runway maps, or the white hold. The other Run buttons are disabled while one is running.
 
 ---
 
@@ -443,7 +446,84 @@ document's `runway_maps.rows` or the temp-folder CSV.
 
 ---
 
-## 9. Menus and keys
+## 9. White level tab
+
+Sets the iris for a **white-light linearization** at the exposure you placed on the Profile
+tab, not the 4.875 µs one the sweeps run at. It holds every frame white and shows each ROI
+reading live, so you can turn the iris until nothing clips *at that exposure*.
+
+- **The exposure it uses.** The Profile tab's leading edge (green) and trailing edge (purple).
+  The leading edge is taken **modulo the frame period**: with every frame white it does not
+  matter which frame of the 5-frame cycle the exposure starts in. A lead of 8835.86 µs on an
+  8325.8 µs frame becomes 510.06 µs after vsync. The length is rounded to whole 0.375 µs
+  units. The line beside the buttons shows both.
+- **What it runs.** The impulse cycle with every position at 255 (all LEDs), one picture per
+  frame. An exposure this long does not fit between burst triggers, so the tab never uses the
+  Pictures per frame setting.
+- **readout.**
+  - **window** (default): ROICTL `0xC1`. The sensor reads only its 32×24 window, right after
+    the exposure, so the reading is the exposure's light alone. Needs the profiling
+    bitstream; on any other, Start says the sensor never reported its window on.
+  - **full frame**: ROICTL `0xC0`. Each row is read out some time after the exposure ends,
+    and the light landing on the ROI's rows until then is added in: about 3 ms at row 512
+    (the runway, see `TESTING_SENSOR_WINDOW.md` §8).
+- **The charts, the green band and the advice** are the [iris dialog](#6-adjust-iris-dialog)'s:
+  ROI mean against the 750–900 ADU band, and the saturated-pixel count, over the last 600
+  readings (5 s at 120 Hz).
+- **Start white** / **Stop.** Stop puts the board back (ROICTL `0x00`, delay 0) and records
+  `white_hold` in the document: the delay, the exposure, the readout, the median of the last
+  30 readings, and the worst saturated count among them. If the document holds sweeps, the
+  status line reminds you that they no longer match the iris if it moved.
+
+### Linearize W / R / G / B
+
+**Linearize W** measures the camera's ROI mean against the projected level, with white
+light, at the same exposure and readout as the hold. Set the iris with the hold first.
+**R, G and B are disabled for now.** They will need the colour mask set for each level, and
+the FPGA a correction table per channel (`TESTING_SENSOR_WINDOW.md` §8, Stage 1).
+
+- **What it runs.** Levels 0, 1, … 255 in order, every frame of the impulse cycle at that
+  level (IMPLVL and IMPLVL2), all LEDs. At each level it:
+  1. waits until a camera line's tag names the new level, for at most 1 s ("level not seen"
+     counts the levels where it never did);
+  2. drops 3 more frames, so the light on screen (one frame behind the tag) is new as well;
+  3. averages the next **readings per level** lines whose tag still names the level, with
+     all 256 ROI pixels valid.
+
+  At 20 readings per level, a sweep takes about a minute at 120 Hz.
+- **The plot** (right): measured ROI mean (ADU) against level, with 1023 dashed. Each reading
+  also goes on the live charts on the left, so saturation shows as it happens. The line under
+  the readout names the latest level, and warns once any level has had saturated pixels:
+  the top of the curve is then clipped. Close the iris and measure again.
+- **Stop** ends it after the current level and keeps what it has, marked INCOMPLETE. Running
+  it again asks before replacing the one in the document.
+- **Afterwards** the board is put back: ROICTL `0x00`, delay 0, levels 255.
+- **Saved** as `linearization.w` in the document. Every reading is also logged to
+  `%TEMP%\auv2sli_lin_w_<time>.csv` as it arrives.
+
+### Check W
+
+**Check W** tests the W curve: it sweeps x = 0…255 again, but projects `lut[x]`, the
+inverse of the curve. A correct curve then measures a straight line. It is enabled once
+the document holds a complete W linearization.
+
+- **The table** (`inverse_lut`). Entry x is the level whose measured mean is
+  min + (max − min) · x / 255 on the W curve, interpolated and rounded. The curve is made
+  monotonic first, using a running maximum, so noise in the flat dark region cannot send
+  the inverse backwards. Below the projector's first visible level the curve is flat, so
+  `lut[1]` jumps straight to that level. On the 2026-11-11 curve it was 59, and only 160 of
+  the 256 levels are used.
+- **Done on the host.** The FPGA's `corr` table (upload target 0x02) corrects only the SLI
+  fringes in `pattern_gen`; the impulse generator's levels bypass it.
+- **The plot** adds the corrected curve (orange) and the straight line through its own end
+  points (dashed). When the check finishes, the readout line and the status give the largest
+  and RMS deviation from that line, in ADU and as a percentage of the span (`linearity`).
+- **Saved** as `linearization.w_check`. Its rows carry a seventh column with the level
+  projected. Its settings hold the `lut` and `lin_when`, the time of the W curve it came from.
+
+---
+
+## 10. Menus and keys
 
 | Menu | Item | Key |
 |---|---|---|
@@ -492,7 +572,7 @@ only when the document already holds sweeps:
 
 ---
 
-## 10. Files it reads and writes
+## 11. Files it reads and writes
 
 ### `.sliprof`, the document (JSON)
 
@@ -512,6 +592,16 @@ document.
   "projector": {"name": "PROJ (ABC)", "idx": 0, "w": 800, "h": 600, "hz": 120, "khz": 73270},
   "edges": {"lead_us": ..., "trail_us": ..., "runway_us": ...},   // null until an edge is moved
   "iris":  {"delay_us": ..., "expo_us": 4.875, "peak_mean": ..., "saturated_px": ..., "when": ...},
+  "white_hold": {"delay_us": ..., "expo_us": ..., "expo_units": ..., "readout": "window",
+                 "mean": ..., "saturated_px": ..., "when": ...},   // null until a White level hold
+  "lin_head": ["level", "mean", "sd", "n", "nhi_max", "seen"],
+  "linearization": {             // {} until a Linearize run; only "w" so far
+    "w": {"settings": {"delay_us": ..., "expo_us": ..., "expo_units": ..., "readout": "window",
+                       "per": 20, "skip": 3, "channel": "w", "rgb": 7, "T_us": ...},
+          "rows": [[level, mean, sd, n, nhi_max, seen], ...], "when": ..., "complete": true},
+    "w_check": {"settings": {..., "lut": [256 levels], "lin_when": ...},
+                "rows": [[x, mean, sd, n, nhi_max, seen, projected], ...], ...}
+  },
   "csv_head": ["T_us","expo_us","delay_us","position","t_us","mean","sd","n","ref","tag_fix_us"],
   "sweeps": {
     "wwwww":   {"settings": {...}, "rows": [[...csv_head row...], ...], "when": ..., "complete": true},
@@ -590,7 +680,7 @@ While a measurement runs, every reading is also written to a CSV in the system t
 
 ---
 
-## 11. How a measurement works
+## 12. How a measurement works
 
 ### The serial protocol
 
@@ -667,7 +757,7 @@ stops any running measurement first, and waits up to 15 s for it to return.
 
 ---
 
-## 12. Board registers used
+## 13. Board registers used
 
 | Reg | Name | Use |
 |---|---|---|
@@ -677,7 +767,7 @@ stops any running measurement first, and waits up to 15 s for it to return.
 | 0x12 | IMPLVL | level of the other frames |
 | 0x13 | SLICTL | 0 = SLI patterns off (runway maps) |
 | 0x14 | MODEFORCE | `0x80 \| idx` pins the offline mode (sticky until the FPGA reloads) |
-| 0x17 | ROICTL | `0xC0` = impulse enable + per-frame stream; `0x00` = off. Bit 0 (profiling build only) = read out only a 32×24 window around the ROI; the app does not use it yet (`window_check.py` does) |
+| 0x17 | ROICTL | `0xC0` = impulse enable + per-frame stream; `0x00` = off. Bit 0 (profiling build only) = read out only a 32×24 window around the ROI; bits 3:1 = burst triggers − 1. The app sets bit 0 for burst sweeps and the White level tab's window readout (`0xC1`) |
 | 0x42–0x44 / 0x45–0x47 | trig→fs / readout | profiling build only: trigger to first line out, and readout length, last frame, 10 ns ticks |
 | 0x48 | window on | profiling build only: bit 0 = the sensor is reading the window |
 | 0x1A / 0x1B | EXPO lo / hi | exposure in 0.375 µs units (the hi write commits) |
@@ -697,7 +787,7 @@ The full register reference is in [`../FTPLUS_API.md`](../FTPLUS_API.md) and
 
 ---
 
-## 13. The embedded mode table
+## 14. The embedded mode table
 
 The board's offline video modes are defined in
 [`../sources_1/imports/RTL/mode_table.vh`](../sources_1/imports/RTL/mode_table.vh). The app
@@ -736,7 +826,7 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -757,7 +847,7 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 
 ---
 
-## 15. Code map
+## 16. Code map
 
 | Section / class | Role |
 |---|---|
@@ -770,7 +860,8 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 | `ProfileView` | **Profile tab**: traces, edges, best window, runway, readout, mouse, iris launch, import/export |
 | `FilterView` | **RGB filters tab**: the three filter sweeps, normalize and fit-to-white |
 | `RunwayView` | **Runway maps tab**: windows, worker thread, log-scale maps |
-| `IrisDialog` | live reading at the WWWWW peak |
+| `IrisDialog`, `iris_hint` | live reading at the WWWWW peak; the clip / band advice it shares |
+| `WhiteView`, `level_sweep`, `inverse_lut`, `linearity` | **White level tab**: every frame white at the placed exposure, read live; Linearize W steps the level 0..255; Check W sweeps through the inverse |
 | `HelpDialog`, `INSTRUCTIONS` | Help → Instructions |
 | `App` | the main window: menus, tabs, the one-at-a-time rule, connection, the file menu |
 

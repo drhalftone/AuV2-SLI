@@ -47,6 +47,11 @@ reading live, with the saturated-pixel count, while the lens iris is turned: aim
 green band with nothing clipping. Done records the setting in the document and, if the
 document already holds sweeps, says they were taken at the old setting and need re-running.
 
+THE WHITE LEVEL TAB does the same at the exposure placed on the Profile tab (the leading
+edge modulo the frame period, every frame white, window readout by default), to set the
+iris for a white-light linearization. Stop records the hold in the document. Linearize W
+then steps every frame through levels 0..255 there and plots ROI mean against level.
+
 Run WWWWW / Run WKKKK replace that sweep; Stop ends it after the current delay and keeps
 what it has. The Sweep menu imports a lag_sweep.py CSV (one written before the vblank tag
 fix is corrected on import) and exports the sweeps as CSV and the window as JSON. While a
@@ -397,10 +402,11 @@ def preflight(port):
 
 
 # ---- the 5-frame impulse sweep (Profile and RGB filters tabs) -------------------------
-def start_impulse(ser, level, bg, expo, mx, per_frame=1):
+def start_impulse(ser, level, bg, expo, mx, per_frame=1, window=False):
     """5-frame cycle: `level` at position 0, `bg` at 1-4, all LEDs. Returns the real exposure.
     per_frame > 1 also turns on the sensor's readout window and that many triggers per
-    projected frame (ROICTL bits 0 and 3:1) -- see sweep_burst."""
+    projected frame (ROICTL bits 0 and 3:1) -- see sweep_burst. window=True turns the
+    window on with one trigger per frame (ROICTL bit 0 alone)."""
     u = max(1, int(round(expo / EXPO_UNIT_US)))
     if u > mx:
         raise RuntimeError("%.2f us is over the exposure limit" % expo)
@@ -409,17 +415,19 @@ def start_impulse(ser, level, bg, expo, mx, per_frame=1):
     wr(ser, R_IMPRGB, 0x07)
     wr(ser, R_IMPLVL2, level & 0xFF)
     wr(ser, R_IMPRGB2, 0x07)
-    burst = 0x01 | ((per_frame - 1) << 1) if per_frame > 1 else 0x00
-    wr(ser, R_ROICTL, 0xC0 | burst)                  # impulse_en | per-frame stream [| burst]
+    window = window or per_frame > 1
+    burst = (0x01 | ((per_frame - 1) << 1)) if window else 0x00
+    wr(ser, R_ROICTL, 0xC0 | burst)                  # impulse_en | per-frame stream [| window]
     wr(ser, R_EXPO_LO, u & 0xFF)
     wr(ser, R_EXPO_HI, (u >> 8) & 0xFF)
     time.sleep(0.4)
-    if per_frame > 1:
+    if window:
         t0 = time.time()
         while not (reg(ser, R_WINON) & 1):
             if time.time() - t0 > 3:
                 raise RuntimeError("the sensor never reported its readout window on -- "
-                                   "this bitstream has no burst mode; use 1 picture per frame")
+                                   "this bitstream has no window; use 1 picture per frame "
+                                   "(full-frame readout)")
             time.sleep(0.05)
     return u * EXPO_UNIT_US
 
@@ -763,6 +771,77 @@ def measure_window(ser, T, d, units, pairs, per=10, skip=2):
         yield A, B, cells, seen
 
 
+LIN_CSV_HEAD = ["level", "mean", "sd", "n", "nhi_max", "seen", "delay_us", "expo_us",
+                "readout", "T_us"]
+
+
+def level_sweep(ser, levels, per=20, skip=3, stop=None, each=None):
+    """Every frame at each level in turn, at the delay, exposure and readout already set
+    (start_impulse with all LEDs). Yields (level, mean, sd, n, nhi_max, seen) per level;
+    `each(mean, nhi)` is called for every reading kept, for a live display.
+
+    Same settling rule as measure_window: wait until the tag shows the new level, then
+    drop `skip` more frames so the light on screen (a frame behind the tag) is new too,
+    and keep only readings whose tag still names the level. seen is False when the tag
+    never showed it within a second."""
+    ser.timeout = 0
+    ser.reset_input_buffer()
+    st = Stream(ser)
+    for L in levels:
+        if stop is not None and stop.is_set():
+            return
+        wr_now(ser, R_IMPLVL, L)
+        wr_now(ser, R_IMPLVL2, L)
+        seen, t_w = False, time.time()
+        while time.time() - t_w < 1.0:
+            r = st.get()
+            if r is None:
+                break
+            if r[2] == L:
+                seen = True
+                break
+        for _ in range(skip):
+            st.get()
+        got, t_c = [], time.time()
+        while len(got) < per and time.time() - t_c < 3.0:
+            r = st.get()
+            if r is None:
+                break
+            if r[1] == 256 and r[2] == L:
+                got.append((r[0], r[3]))
+                if each is not None:
+                    each(r[0], r[3])
+        ms = [g[0] for g in got]
+        yield (L, float(np.mean(ms)) if ms else float("nan"),
+               float(np.std(ms)) if ms else float("nan"), len(ms),
+               max((g[1] for g in got), default=0), seen)
+
+
+def inverse_lut(rows):
+    """256 projector levels that should make the measured curve `rows` ([level, mean,
+    ...] for 0..255) a straight line: entry x is the level whose mean is the curve's
+    minimum + (maximum - minimum) * x / 255, interpolated and rounded.
+
+    The curve is made monotonic first (running maximum): below the projector's first
+    visible level it is flat dark plus noise, and a dip there would send the inverse
+    backwards. The 1e-6 ramp breaks the plateaus' ties so the interpolation picks the
+    first level of a plateau."""
+    lv = np.arange(256)
+    m = np.maximum.accumulate(np.array([float(r[1]) for r in sorted(rows)]))
+    target = m[0] + (m[-1] - m[0]) * lv / 255.0
+    return [int(v) for v in np.rint(np.interp(target, m + lv * 1e-6, lv))]
+
+
+def linearity(rows):
+    """(max |deviation|, rms deviation, span) in ADU of a check curve ([x, mean, ...])
+    from the straight line through its own end points."""
+    x = np.array([float(r[0]) for r in rows])
+    m = np.array([float(r[1]) for r in rows])
+    lo, hi = m[np.argmin(x)], m[np.argmax(x)]
+    dev = m - (lo + (hi - lo) * (x - x.min()) / max(x.max() - x.min(), 1.0))
+    return float(np.abs(dev).max()), float(np.sqrt(np.mean(dev ** 2))), float(hi - lo)
+
+
 def runway_windows(edges, Tp):
     """The runway as measurement windows, split where the previous frame's exposure
     (trail - T) ends: [(start, end, name)] in us into the runway's frame."""
@@ -827,6 +906,8 @@ class Document:
         self.sweeps = {}                             # key -> {"settings", "rows", "when", "complete"}
         self.edges = None                            # {"lead_us", "trail_us", "runway_us"}
         self.iris = None                             # last Adjust iris: {"delay_us", ...}
+        self.white_hold = None                       # last White level hold: {"delay_us", ...}
+        self.linearization = {}                      # "w" -> {"settings", "rows", "when", "complete"}
         self.projector = None                        # {"name", "idx", "w", "h", "hz", "khz"}
         self.runway_maps = None                      # {"settings", "rows", "when", "complete"}
         self.created = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -849,6 +930,8 @@ class Document:
                "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
                "port": self.port, "display": self.display, "T_us": self.T,
                "max_expo_units": self.mx, "edges": self.edges, "iris": self.iris,
+               "white_hold": self.white_hold, "linearization": self.linearization,
+               "lin_head": LIN_CSV_HEAD[:6],
                "projector": self.projector, "runway_maps": self.runway_maps,
                "csv_head": SWEEP_CSV_HEAD, "sweeps": self.sweeps}
         tmp = path + ".tmp"
@@ -870,6 +953,8 @@ class Document:
         d.T, d.mx = j.get("T_us"), j.get("max_expo_units")
         d.edges = j.get("edges")
         d.iris = j.get("iris")
+        d.white_hold = j.get("white_hold")           # None in profiles saved before 2026-11-11
+        d.linearization = j.get("linearization") or {}
         d.projector = j.get("projector")             # None in profiles saved before 2026-10-16
         d.runway_maps = j.get("runway_maps")
         d.sweeps = j.get("sweeps", {})
@@ -1520,7 +1605,7 @@ class ProfileView(SweepHost, ttk.Frame):
             b.state(["disabled"] if self.app.busy() else ["!disabled"])
         self.stop_btn.state(["!disabled"] if r and not r.stop_ev.is_set() else ["disabled"])
         self.best_btn.state(["!disabled"] if self.sig is not None else ["disabled"])
-        for v in (self.app.fview, self.app.rview):   # the iris also holds the other tabs
+        for v in (self.app.fview, self.app.rview, self.app.wview):   # the iris holds them too
             if v is not None:
                 v.buttons()
 
@@ -2528,6 +2613,26 @@ class RunwayView(ttk.Frame):
 # ======================================================================================
 # Adjust iris: live reading at the WWWWW peak
 # ======================================================================================
+IRIS_SAT = "SATURATED -- close the iris"
+IRIS_LOW = "below the target band -- open the iris a little"
+IRIS_HIGH = "above the target band, not clipping -- close it slightly for headroom"
+HINT_COLOUR = {IRIS_SAT: "#b00020", IRIS_LOW: "#a06000", IRIS_HIGH: "#a06000"}
+HINT_OK = "#2e7d32"
+
+
+def iris_hint(m, s, target):
+    """(advice, in the band) for one reading: mean m, saturated pixels s (None from a
+    bitstream that does not send the count). Any saturated pixel, or a mean of 1022 or
+    more, is clipping whatever the mean says."""
+    if m >= 1022 or (s is not None and s > 0):
+        return IRIS_SAT, False
+    if m < target[0]:
+        return IRIS_LOW, False
+    if m > target[1]:
+        return IRIS_HIGH, False
+    return "in the target band, nothing clipping", True
+
+
 class IrisDialog(tk.Toplevel):
     """Hold a short exposure on the brightest part of the WWWWW sweep and show every
     reading live, so the lens iris can be turned until the peak no longer clips.
@@ -2659,20 +2764,9 @@ class IrisDialog(tk.Toplevel):
             recent = self.means[-30:]
             self.big["text"] = "%6.1f ADU   %s saturated px   (last 30: %.1f .. %.1f)" % (
                 m, "-" if s is None else "%3d" % s, min(recent), max(recent))
-            clipped = m >= 1022 or (s is not None and s > 0)
-            if clipped:
-                self.hint["text"], self.hint["foreground"] = \
-                    "SATURATED -- close the iris", "#b00020"
-            elif m < self.TARGET[0]:
-                self.hint["text"], self.hint["foreground"] = \
-                    "below the target band -- open the iris a little", "#a06000"
-            elif m > self.TARGET[1]:
-                self.hint["text"], self.hint["foreground"] = \
-                    "above the target band, not clipping -- close it slightly for headroom", \
-                    "#a06000"
-            else:
-                self.hint["text"], self.hint["foreground"] = \
-                    "in the target band, nothing clipping -- Done", "#2e7d32"
+            text, ok = iris_hint(m, s, self.TARGET)
+            self.hint["text"] = text + (" -- Done" if ok else "")
+            self.hint["foreground"] = HINT_OK if ok else HINT_COLOUR[text]
             self.canvas.draw_idle()
         self.after(100, self.poll)
 
@@ -2709,6 +2803,412 @@ class IrisDialog(tk.Toplevel):
             view.iris_dlg = None
             self.destroy()
             view.buttons()
+
+
+# ======================================================================================
+# White level tab: every frame white at the chosen exposure, read live
+# ======================================================================================
+class WhiteView(ttk.Frame):
+    """Every frame white, exposed with the Profile tab's edges (green to purple), and each
+    ROI reading shown live -- to set the iris for a white-light linearization at the
+    exposure that will actually be used, not the 4.875 us one the sweeps run at. Then the
+    linearization itself: every frame at each level 0..255 in turn, ROI mean against level.
+
+    The leading edge is taken modulo the frame period: with every frame at one level it
+    does not matter which frame of the 5-frame cycle the exposure starts in. One picture
+    per frame (an exposure this long does not fit between burst triggers). WINDOW readout
+    by default: the sensor reads only its 32 x 24 window right after the exposure, so the
+    reading is the exposure's light alone. FULL FRAME also takes in the light that reaches
+    the ROI's rows between the end of the exposure and their readout (the runway, ~3 ms at
+    row 512).
+
+    Same live chart, target band and advice as Adjust iris. Stop on a hold records it in
+    the document (white_hold); a linearization is kept in doc.linearization[channel], also
+    when stopped early (complete False). Only W is wired: R, G and B need the colour mask
+    per level and, for the FPGA, a correction table per channel.
+
+    CHECK W proves the W curve: it sweeps x = 0..255 again but projects inverse_lut(W)[x],
+    so a good correction measures a straight line. It is done here on the host because the
+    FPGA's corr table only corrects the SLI fringes, not the impulse generator's levels.
+    Kept as doc.linearization["w_check"], each row with the level projected appended.
+    """
+
+    N = 600                                          # readings on the live chart (5 s at 120 Hz)
+    READOUTS = ("window", "full frame")
+    CHANNELS = (("w", "W", 0x07, "#444444"), ("r", "R", 0x04, "#d02a2a"),
+                ("g", "G", 0x02, "#2e9e4f"), ("b", "B", 0x01, "#1f5fd0"))
+    WIRED = ("w",)                                   # channels Linearize works for yet
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.worker = None
+        self.stop_ev = threading.Event()
+        self.q = queue.Queue()
+        self.means, self.sats = [], []
+        self.held = None                             # what the running hold/sweep started with
+        self.mode = None                             # None, "hold" or a channel key
+        self.log_csv = None
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **PAD)
+        self.run_btn = ttk.Button(bar, text="Start white", command=self.start)
+        self.run_btn.pack(side="left", padx=(0, 4))
+        self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop)
+        self.stop_btn.pack(side="left", padx=(0, 16))
+        self.lin_btns = {}
+        for k, name, _, _ in self.CHANNELS:
+            b = ttk.Button(bar, text="Linearize %s" % name, width=11,
+                           command=lambda k=k: self.linearize(k))
+            b.pack(side="left", padx=(0, 4))
+            self.lin_btns[k] = b
+        self.chk_btn = ttk.Button(bar, text="Check W", command=self.check)
+        self.chk_btn.pack(side="left", padx=(8, 0))
+        ttk.Label(bar, text="readings per level").pack(side="left", padx=(12, 0))
+        self.per_v = tk.IntVar(value=20)
+        self.per_box = ttk.Spinbox(bar, from_=2, to=200, textvariable=self.per_v, width=5)
+        self.per_box.pack(side="left", padx=(4, 16))
+        ttk.Label(bar, text="readout").pack(side="left")
+        self.readout_v = tk.StringVar(value=self.READOUTS[0])
+        self.readout_box = ttk.Combobox(bar, textvariable=self.readout_v, state="readonly",
+                                        width=11, values=self.READOUTS)
+        self.readout_box.pack(side="left", padx=(4, 0))
+        self.expo_lbl = ttk.Label(self, text="", foreground="#555")
+        self.expo_lbl.pack(fill="x", padx=8)
+        self.big = ttk.Label(self, text="", font=("Consolas", 22, "bold"))
+        self.big.pack(fill="x", padx=8)
+        self.hint = ttk.Label(self, text="", font=("Segoe UI", 11))
+        self.hint.pack(fill="x", padx=8)
+        self.status = ttk.Label(self, text="", font=("Consolas", 9))
+        self.status.pack(fill="x", padx=8)
+
+        self.fig = Figure(figsize=(13, 6))
+        gs = self.fig.add_gridspec(2, 2, width_ratios=(3, 2), wspace=0.22)
+        self.ax = self.fig.add_subplot(gs[0, 0])
+        self.az = self.fig.add_subplot(gs[1, 0], sharex=self.ax)
+        self.al = self.fig.add_subplot(gs[:, 1])
+        self.ax.axhspan(*IrisDialog.TARGET, color="#2e9e4f", alpha=.12, lw=0)
+        self.ax.axhline(1023, color="#d02a2a", ls="--", lw=1)
+        self.ax.set_ylim(0, 1080)
+        self.ax.set_xlim(0, self.N)
+        self.ax.set_ylabel("ROI mean (ADU)")
+        self.ax.grid(alpha=.3)
+        self.az.set_ylim(-5, 261)
+        self.az.set_ylabel("saturated px")
+        self.az.set_xlabel("reading (newest on the right)")
+        self.az.grid(alpha=.3)
+        self.line, = self.ax.plot([], [], lw=1.2, color="#1f5fd0")
+        self.sline, = self.az.plot([], [], lw=1.2, color="#d02a2a")
+        self.al.axhline(1023, color="#d02a2a", ls="--", lw=1)
+        self.al.set_xlim(-4, 259)
+        self.al.set_ylim(0, 1080)
+        self.al.set_xlabel("projected level")
+        self.al.set_ylabel("measured ROI mean (ADU)")
+        self.al.set_title("linearization", fontsize=10)
+        self.al.grid(alpha=.3)
+        self.lin_lines = {k: self.al.plot([], [], lw=1, marker=".", ms=3, color=c,
+                                          label=name)[0]
+                          for k, name, _, c in self.CHANNELS}
+        self.chk_line, = self.al.plot([], [], lw=1, marker=".", ms=3, color="#e07b00",
+                                      label="W corrected (Check W)")
+        self.ideal_line, = self.al.plot([], [], lw=1, ls="--", color="#888",
+                                        label="straight line")
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas.mpl_connect("resize_event", lambda e: fit_margins(self.fig))
+        fit_margins(self.fig)
+        self.refresh()
+
+    def exposure(self):
+        """(delay us within one frame, exposure units) from the Profile tab's edges."""
+        v, T = self.app.view, self.app.doc.T or 8333.3
+        return v.lead % T, max(1, int(round((v.trail - v.lead) / EXPO_UNIT_US)))
+
+    @property
+    def running(self):
+        return self.worker is not None and self.worker.is_alive()
+
+    def refresh(self):
+        d, u = self.exposure()
+        self.expo_lbl["text"] = (
+            "exposure from the Profile tab: %.2f us after vsync, %.2f us (%d units)"
+            % (d, u * EXPO_UNIT_US, u))
+        self.draw_lin()
+        self.buttons()
+        if self.mode is None:
+            self.status["text"] = self.summary()
+
+    def summary(self):
+        doc = self.app.doc
+        wh, lin = doc.white_hold, doc.linearization.get("w")
+        out = []
+        if wh:
+            out.append("last hold %s: %s readout, %.2f us at %.2f us, median %.1f ADU, worst "
+                       "%s saturated px" % (
+                           wh["when"], wh["readout"], wh["expo_us"], wh["delay_us"],
+                           wh["mean"], "-" if wh["saturated_px"] is None
+                           else wh["saturated_px"]))
+        else:
+            out.append("Start white holds every frame white at this exposure and reads the "
+                       "ROI live -- turn the iris until nothing clips")
+        if lin:
+            st = lin["settings"]
+            out.append("W linearization %s%s: %d levels, %s readout, %.2f us at %.2f us" % (
+                "" if lin["complete"] else "INCOMPLETE ", lin["when"], len(lin["rows"]),
+                st["readout"], st["expo_us"], st["delay_us"]))
+        chk = doc.linearization.get("w_check")
+        if chk and len(chk["rows"]) > 1:
+            out.append("Check W %s%s: %s" % ("" if chk["complete"] else "INCOMPLETE ",
+                                             chk["when"], self.linearity_text(chk["rows"])))
+        return "   |   ".join(out)
+
+    @staticmethod
+    def linearity_text(rows):
+        mx, rms, span = linearity(rows)
+        return "off the straight line by at most %.1f ADU (%.2f %% of %.0f), rms %.1f ADU" % (
+            mx, 100 * mx / span if span else 0, span, rms)
+
+    def draw_lin(self):
+        lin = self.app.doc.linearization
+        for k, ln in self.lin_lines.items():
+            rows = lin.get(k, {}).get("rows", [])
+            ln.set_data([r[0] for r in rows], [r[1] for r in rows])
+        rows = lin.get("w_check", {}).get("rows", [])
+        self.chk_line.set_data([r[0] for r in rows], [r[1] for r in rows])
+        if len(rows) > 1:                            # through its own end points, as linearity()
+            self.ideal_line.set_data([rows[0][0], rows[-1][0]], [rows[0][1], rows[-1][1]])
+        else:
+            self.ideal_line.set_data([], [])
+        shown = [ln for k, ln in self.lin_lines.items() if lin.get(k)] + \
+            ([self.chk_line, self.ideal_line] if len(rows) > 1 else [])
+        if shown:
+            self.al.legend(handles=shown, loc="upper left")
+        self.canvas.draw_idle()
+
+    def buttons(self):
+        busy = self.app.busy()
+        self.run_btn.state(["disabled"] if busy else ["!disabled"])
+        for k, b in self.lin_btns.items():
+            b.state(["disabled"] if busy or k not in self.WIRED else ["!disabled"])
+        w = self.app.doc.linearization.get("w")
+        self.chk_btn.state(["disabled"] if busy or not (w and w["complete"])
+                           else ["!disabled"])
+        for w in (self.readout_box, self.per_box):
+            w.state(["disabled"] if self.running else ["!disabled"])
+        self.readout_box.state(["readonly"])
+        self.stop_btn.state(["!disabled"] if self.running and not self.stop_ev.is_set()
+                            else ["disabled"])
+
+    def begin(self, level):
+        """Program the impulse cycle at `level` everywhere and the placed exposure. The
+        held settings, or None (and the error shown) if the board refused."""
+        doc = self.app.doc
+        if self.app.busy() or not self.app.ensure_connected():
+            return None
+        d, u = self.exposure()
+        readout = self.readout_v.get()
+        try:
+            e = start_impulse(doc.ser, level, level, u * EXPO_UNIT_US, doc.mx,
+                              window=readout == "window")
+            ticks = int(round(d / TICK_US))
+            set_delay(doc.ser, ticks)
+            wait_delay(doc.ser, ticks)
+        except Exception as ex:
+            try:
+                stop_impulse(doc.ser)
+            except Exception:
+                pass
+            messagebox.showerror("White level", str(ex), parent=self)
+            return None
+        return {"delay_us": round(d, 2), "expo_us": round(e, 3), "expo_units": u,
+                "readout": readout}
+
+    def launch(self, mode, target, args):
+        self.mode = mode
+        self.means, self.sats = [], []
+        self.stop_ev.clear()
+        self.worker = threading.Thread(target=target, args=args, daemon=True)
+        self.worker.start()
+        self.app.view.buttons()
+        self.after(100, self.poll)
+
+    def start(self):
+        self.held = self.begin(255)
+        if self.held is None:
+            return
+        self.status["text"] = "holding white: %s readout, %.2f us at %.2f us after vsync" % (
+            self.held["readout"], self.held["expo_us"], self.held["delay_us"])
+        self.launch("hold", self.work, (self.app.doc.ser,))
+
+    def linearize(self, k):
+        if k in self.WIRED:
+            self.level_run(k, list(range(256)), {"channel": k, "rgb": 0x07},
+                           "Measure a new %s linearization" % k.upper())
+
+    def check(self):
+        """Sweep again through the inverse of the W curve: a straight line if it is right."""
+        w = self.app.doc.linearization.get("w")
+        if w and w["complete"]:
+            lut = inverse_lut(w["rows"])
+            self.level_run("w_check", lut, {"channel": "w", "rgb": 0x07, "lut": lut,
+                                            "lin_when": w["when"]},
+                           "Run Check W again")
+
+    def level_run(self, key, levels, extra, ask):
+        """Sweep x = 0..255 projecting levels[x]; the result goes to doc.linearization[key]."""
+        doc = self.app.doc
+        if self.app.busy():
+            return
+        if doc.linearization.get(key) and not messagebox.askokcancel(
+                "Replace", "%s and replace the one in this document?" % ask, parent=self):
+            return
+        try:
+            per = max(2, int(self.per_v.get()))
+        except (tk.TclError, ValueError):
+            per = 20
+        self.held = self.begin(levels[0])
+        if self.held is None:
+            return
+        doc.linearization[key] = {"settings": dict(self.held, per=per, skip=3, T_us=doc.T,
+                                                   **extra),
+                                  "rows": [], "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                  "complete": False}
+        self.log_csv = os.path.join(tempfile.gettempdir(), "auv2sli_lin_%s_%s.csv"
+                                    % (key, time.strftime("%Y-%m-%d_%H%M%S")))
+        self.t0 = time.time()
+        self.launch(key, self.work_lin, (doc.ser, levels, per, doc.T, key == "w_check"))
+        self.app.changed()
+
+    def work(self, ser):
+        """Worker thread: read ROI lines until stopped."""
+        try:
+            ser.reset_input_buffer()
+            while not self.stop_ev.is_set():
+                for r in collect(ser, 4, timeout=0.5, sat=True):
+                    if r[1] == 256:
+                        self.q.put(("r", (r[0], r[4])))
+        except Exception as ex:
+            self.q.put(("error", ex))
+
+    def work_lin(self, ser, levels, per, T, with_level):
+        """Worker thread: x = 0..255 projecting levels[x], every reading to the live chart
+        and the temp CSV, one row per x to the poll ([x, ...], plus the level projected
+        when with_level)."""
+        h = self.held
+        try:
+            with open(self.log_csv, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(LIN_CSV_HEAD + (["projected"] if with_level else []))
+                for x, (L, m, sd, n, nhi, seen) in enumerate(level_sweep(
+                        ser, levels, per, 3, self.stop_ev,
+                        lambda m_, s_: self.q.put(("r", (m_, s_))))):
+                    row = [x, round(m, 3), round(sd, 3), n, nhi, int(seen)]
+                    w.writerow(row + [h["delay_us"], h["expo_us"], h["readout"], T]
+                               + ([L] if with_level else []))
+                    self.q.put(("lin", row + ([L] if with_level else [])))
+            self.q.put(("end", None))
+        except Exception as ex:
+            self.q.put(("error", ex))
+
+    def poll(self):
+        new, lin_new = False, []
+        while True:
+            try:
+                kind, v = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "r":
+                self.means.append(v[0])
+                self.sats.append(v[1])
+                new = True
+            elif kind == "lin":
+                lin_new.append(v)
+            elif kind == "error":
+                self.big["text"] = "ERROR: %s" % v
+        if new:
+            self.means, self.sats = self.means[-self.N:], self.sats[-self.N:]
+            x = range(len(self.means))
+            self.line.set_data(x, self.means)
+            self.sline.set_data(x, [s if s is not None else np.nan for s in self.sats])
+            m, s = self.means[-1], self.sats[-1]
+            recent = self.means[-30:]
+            self.big["text"] = "%6.1f ADU   %s saturated px   (last 30: %.1f .. %.1f)" % (
+                m, "-" if s is None else "%3d" % s, min(recent), max(recent))
+            if self.mode == "hold":
+                text, ok = iris_hint(m, s, IrisDialog.TARGET)
+                self.hint["text"] = text + (" -- Stop records it" if ok else "")
+                self.hint["foreground"] = HINT_OK if ok else HINT_COLOUR[text]
+            self.canvas.draw_idle()
+        if lin_new:
+            lin = self.app.doc.linearization[self.mode]
+            lin["rows"] += lin_new
+            self.app.doc.dirty = True
+            self.app.update_title()
+            self.draw_lin()
+            r, el = lin_new[-1], time.time() - self.t0
+            L = r[0]
+            sat = max(q[4] for q in lin["rows"])
+            unseen = sum(1 for q in lin["rows"] if not q[5])
+            self.hint["text"] = (("x %d (level %d)" % (L, r[6]) if len(r) > 6
+                                  else "level %d" % L) + ": %.1f ADU" % r[1]
+                                 + ("   -- SATURATED pixels seen, the top is clipped"
+                                    if sat else ""))
+            self.hint["foreground"] = HINT_COLOUR[IRIS_SAT] if sat else "#333"
+            self.status["text"] = (
+                "%s: %d/255   %.0f s, ~%.0f s left   level not seen %d   log %s" % (
+                    "checking W" if self.mode == "w_check" else
+                    "linearizing %s" % self.mode.upper(), L, el,
+                    el / (L + 1) * (255 - L), unseen, self.log_csv))
+        if self.running:
+            self.after(100, self.poll)
+        elif self.mode is not None:
+            self.finish()
+
+    def stop(self):
+        """Ask the worker to end; poll() finishes once it has (a sweep after this level)."""
+        if self.running:
+            self.stop_ev.set()
+            self.buttons()
+
+    def finish(self):
+        """The worker has ended: put the board back and record what it measured."""
+        mode, self.mode = self.mode, None
+        doc = self.app.doc
+        try:
+            doc.ser.timeout = 0.05                   # level_sweep left it at 0
+            stop_impulse(doc.ser)
+            if mode != "hold":
+                wr(doc.ser, R_IMPLVL, 0xFF)          # the other tabs expect white
+                wr(doc.ser, R_IMPLVL2, 0xFF)
+        except Exception:
+            pass
+        if mode == "hold" and self.means:
+            recent = self.means[-30:]
+            sats = [s for s in self.sats[-30:] if s is not None]
+            doc.white_hold = dict(self.held, mean=round(float(np.median(recent)), 1),
+                                  saturated_px=int(max(sats)) if sats else None,
+                                  when=time.strftime("%Y-%m-%d %H:%M:%S"))
+        elif mode != "hold":
+            lin = doc.linearization[mode]
+            lin["complete"] = len(lin["rows"]) == 256
+        self.app.changed()
+        rows = doc.linearization.get("w_check", {}).get("rows", [])
+        if mode == "w_check" and len(rows) > 1:
+            self.hint["text"] = "corrected W is " + self.linearity_text(rows)
+            self.hint["foreground"] = "#333"
+        if mode == "hold" and self.means:
+            had = [ALL_SWEEPS[k][0] for k in ALL_SWEEPS if doc.sweeps.get(k)]
+            if had:
+                self.status["text"] += ("   -- if the iris moved, %s no longer match it"
+                                         % " and ".join(had))
+        self.app.view.buttons()
+
+    def shutdown(self):
+        if self.running:
+            self.stop_ev.set()
+            self.worker.join(timeout=5)
+        if self.mode is not None:
+            self.finish()
 
 
 # ======================================================================================
@@ -2786,6 +3286,26 @@ which A B A B makes the same: the frame before and the exposure frame after.
 
 Pick how many levels (every 8th takes minutes, all 256 hours) and press Run. Stop keeps
 what has been measured. The maps are saved in the document."""),
+    ("9. White level tab", """\
+Sets the iris for a white-light linearization at the exposure you placed on the Profile
+tab (green to purple), not the short one the sweeps use. Start white makes every frame
+white and reads the ROI live: the same chart, green target band and advice as Adjust
+iris. Turn the iris until the reading sits in the band with no saturated pixels, then
+Stop: the hold is saved in the document.
+
+Readout "window" (the default) reads only the sensor's small window right after the
+exposure, so the reading is the exposure's light alone. "full frame" also takes in the
+light that lands on the ROI's rows before they are read out.
+
+Linearize W then steps every frame through levels 0 to 255 at that same exposure and
+readout, and plots the measured ROI mean against the level (right-hand plot). Set the
+iris first: if level 255 shows saturated pixels, the top of the curve is clipped.
+"readings per level" sets how many frames are averaged at each level (20 takes about a
+minute). Stop keeps the levels measured so far. R, G and B are not wired yet.
+
+Check W then sweeps again through the inverse of the W curve. If the curve is right, the
+orange line is straight; the readout gives its largest and rms distance from the dashed
+straight line."""),
     ("The plot", None),
     ("Mouse", """\
 Wheel: zoom the time axis around the cursor.
@@ -2859,7 +3379,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.doc = None
-        self.view = self.fview = self.rview = self.tabs = None
+        self.view = self.fview = self.rview = self.wview = self.tabs = None
         self.geometry("1300x820+40+40")
         self.protocol("WM_DELETE_WINDOW", self.exit)
 
@@ -2931,8 +3451,9 @@ class App(tk.Tk):
 
     # ---- state -----------------------------------------------------------------------
     def busy(self):
-        """A sweep (either tab) or the iris dialog has the camera."""
-        return any(v is not None and v.running for v in (self.view, self.fview, self.rview))
+        """A sweep (any tab), the iris dialog or the white hold has the camera."""
+        return any(v is not None and v.running
+                   for v in (self.view, self.fview, self.rview, self.wview))
 
     def changed(self, redraw=True):
         """Something in the document changed: title, and the view if asked."""
@@ -2942,6 +3463,7 @@ class App(tk.Tk):
             self.view.refresh()
             self.fview.refresh()
             self.rview.refresh()
+            self.wview.refresh()
         self.update_title()
 
     def update_title(self):
@@ -2963,7 +3485,7 @@ class App(tk.Tk):
         """Swap between the empty window and the document's view."""
         if self.tabs is not None:
             self.tabs.destroy()
-            self.tabs = self.view = self.fview = self.rview = None
+            self.tabs = self.view = self.fview = self.rview = self.wview = None
         self.empty.pack_forget()
         self.conn.pack_forget()
         if self.doc is None:
@@ -2977,6 +3499,8 @@ class App(tk.Tk):
             self.rview = RunwayView(self.tabs, self)
             self.tabs.add(self.fview, text="RGB filters")
             self.tabs.add(self.rview, text="Runway maps")
+            self.wview = WhiteView(self.tabs, self)
+            self.tabs.add(self.wview, text="White level")
             self.tabs.pack(fill="both", expand=True)
             self.tabs.bind("<<NotebookTabChanged>>", lambda e: self.tab_shown())
         self.update_title()
@@ -3096,6 +3620,7 @@ class App(tk.Tk):
             self.view.shutdown()
             self.fview.shutdown()
             self.rview.shutdown()
+            self.wview.shutdown()
         if self.doc.dirty:
             r = messagebox.askyesnocancel("Unsaved changes",
                                           "Save changes to %s?" % self.doc.name, parent=self)

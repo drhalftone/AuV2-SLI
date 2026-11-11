@@ -51,7 +51,7 @@ light is real projector light, so windowing will not shrink the runway.
 | `abe0d90` | **Runtime window, profiling build.** ROICTL (0x17) bit 0 switches the sensor between the full frame and a 32 × 24 window around the 16 × 16 ROI. Adds two timings to the status registers. Adds `host/window_check.py`. | `build_roimin.tcl` |
 | `7828ba4` | **Build-time window, merged build.** `CAM_WIN=x,y,w,h` builds a bitstream that reads only that window and streams it as video. The viewer takes the frame size from each frame header. | `build_merged.tcl` |
 
-Registers added on the profiling build (also in `host/SLI_UI.md` §12):
+Registers added on the profiling build (also in `host/SLI_UI.md` §13):
 
 | Reg | Meaning |
 |---|---|
