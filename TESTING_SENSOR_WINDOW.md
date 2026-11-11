@@ -202,7 +202,9 @@ Steps 1–3 were run on the Pt V2. Measurements and figures:
   UART_BAUD=921600` carries N = 8 (N ≤ 3 at 115200). Measured: N = 8, 5 µs steps, 209 delays in
   84 s, 0 of ~25 000 lines lost.
 - **The app.** `sli_ui.py` detects the board's serial rate and runs burst sweeps (Sweep >
-  Pictures per frame); `host/burst_sweep.py` does the same from the command line.
+  Pictures per frame), **6 per frame by default** on a 921600 board (1 otherwise). Six ~27-byte
+  lines per frame are ~21% of 921600 baud at 120 Hz; the camera lines travel on the serial port,
+  not the Ft+. `host/burst_sweep.py` does the same from the command line.
 - **Known issue: placement-sensitive camera bring-up.** One 921600 build never aligned; the same
   logic plus status wires came up normally. After every build, check status 0x3A: bit 2
   (aligned) and bit 1 (streaming) must both be 1. Bits 7..4 show where bring-up stopped

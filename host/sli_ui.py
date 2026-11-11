@@ -804,11 +804,12 @@ SETTINGS = dict(expo_us=5.0, step_us=5.0, frames=20, settle=4, active_us=ACTIVE_
 
 def per_frame_for(port):
     """Pictures per projected frame for a sweep on `port`: the Sweep menu's choice, or
-    automatically 8 on a board at 921600 baud (a burst build) and 1 otherwise."""
+    automatically 6 on a board at 921600 baud (a burst build) and 1 otherwise. Six
+    ~27-byte lines per frame use ~21% of 921600 baud even at 120 Hz."""
     n = SETTINGS["per_frame"]
     if n:
         return n
-    return 8 if port_baud(port) == 921600 else 1
+    return 6 if port_baud(port) == 921600 else 1
 
 
 # ======================================================================================
@@ -2885,7 +2886,7 @@ class App(tk.Tk):
         s.add_separator()
         pf = tk.Menu(s, tearoff=False)
         self.per_frame_var = tk.IntVar(value=SETTINGS["per_frame"])
-        for v, lab in ((0, "Automatic (8 on a burst board, else 1)"),
+        for v, lab in ((0, "Automatic (6 on a burst board, else 1)"),
                        (1, "1 -- full-frame readout"),
                        (3, "3 -- window readout"), (6, "6 -- window readout"),
                        (8, "8 -- window readout")):
