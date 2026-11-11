@@ -660,7 +660,8 @@ def sweep_burst(ser, T, e, delays, out, n, delta, level=255, bg=0, frames=20, se
 
 # ---- grey pairs over the runway (Runway maps tab) -------------------------------------
 class Stream:
-    """Camera lines one at a time, as (mean, npx, level-from-tag, nhi)."""
+    """Camera lines one at a time, as (mean, npx, level-from-tag, nhi, tag): the tag's red
+    byte as the level, and the whole 24-bit tag."""
 
     def __init__(self, ser):
         self.ser, self.buf, self.q = ser, b"", []
@@ -679,7 +680,8 @@ class Stream:
             for m in ms:
                 self.q.append((int(m.group(1), 16), int(m.group(2), 16),
                                (int(m.group(3), 16) >> 16) & 0xFF,
-                               int(m.group(5), 16) if m.group(5) else 0))
+                               int(m.group(5), 16) if m.group(5) else 0,
+                               int(m.group(3), 16)))
             if ms:
                 self.buf = self.buf[ms[-1].end():]
             elif len(self.buf) > 8192:
@@ -775,10 +777,14 @@ LIN_CSV_HEAD = ["level", "mean", "sd", "n", "nhi_max", "seen", "delay_us", "expo
                 "readout", "T_us"]
 
 
-def level_sweep(ser, levels, per=20, skip=3, stop=None, each=None):
+def level_sweep(ser, levels, per=20, skip=3, stop=None, each=None, tags=None):
     """Every frame at each level in turn, at the delay, exposure and readout already set
     (start_impulse with all LEDs). Yields (level, mean, sd, n, nhi_max, seen) per level;
     `each(mean, nhi)` is called for every reading kept, for a live display.
+
+    tags: the 24-bit colour each level is expected to put on the wire, when that is not
+    simply (L, L, L) -- through the corr curves (IMPRGB bit 3) it is (R[L], G[L], B[L]),
+    and the whole tag is matched instead of its red byte.
 
     Same settling rule as measure_window: wait until the tag shows the new level, then
     drop `skip` more frames so the light on screen (a frame behind the tag) is new too,
@@ -787,9 +793,10 @@ def level_sweep(ser, levels, per=20, skip=3, stop=None, each=None):
     ser.timeout = 0
     ser.reset_input_buffer()
     st = Stream(ser)
-    for L in levels:
+    for i, L in enumerate(levels):
         if stop is not None and stop.is_set():
             return
+        mine = (lambda r: r[4] == tags[i]) if tags else (lambda r: r[2] == L)
         wr_now(ser, R_IMPLVL, L)
         wr_now(ser, R_IMPLVL2, L)
         seen, t_w = False, time.time()
@@ -797,7 +804,7 @@ def level_sweep(ser, levels, per=20, skip=3, stop=None, each=None):
             r = st.get()
             if r is None:
                 break
-            if r[2] == L:
+            if mine(r):
                 seen = True
                 break
         for _ in range(skip):
@@ -807,7 +814,7 @@ def level_sweep(ser, levels, per=20, skip=3, stop=None, each=None):
             r = st.get()
             if r is None:
                 break
-            if r[1] == 256 and r[2] == L:
+            if r[1] == 256 and mine(r):
                 got.append((r[0], r[3]))
                 if each is not None:
                     each(r[0], r[3])
@@ -830,6 +837,49 @@ def inverse_lut(rows):
     m = np.maximum.accumulate(np.array([float(r[1]) for r in sorted(rows)]))
     target = m[0] + (m[-1] - m[0]) * lv / 255.0
     return [int(v) for v in np.rint(np.interp(target, m + lv * 1e-6, lv))]
+
+
+OP_L, TGT_CORR_RGB = 0x5B, 0x06                  # table upload; corr, one curve per channel
+
+
+def upload_corr_rgb(ser, r, g, b):
+    """Upload the three corr curves (target 0x06: red, green, blue, 256 each) and wait for
+    the board's 'K'. A bitstream from before the per-channel tables answers 'E'."""
+    data = bytes(r) + bytes(g) + bytes(b)
+    ser.reset_input_buffer()
+    ser.write(bytes([SYNC, OP_L, TGT_CORR_RGB]) + data
+              + bytes([ck(TGT_CORR_RGB + sum(data))]))
+    buf, t0 = b"", time.time()
+    while time.time() - t0 < 1.5:
+        buf += ser.read(ser.in_waiting or 1)
+        if b"K" in buf:                              # camera lines never contain K or E
+            return
+        if b"E" in buf:
+            raise RuntimeError("the board refused the RGB correction tables (upload target "
+                               "0x06) -- this bitstream predates them; rebuild")
+    raise RuntimeError("no answer to the RGB correction table upload")
+
+
+def refine_table(table, rows):
+    """One channel's curve after a pass: rows ([x, mean, ...] for x = 0..255) measured
+    while projecting table[x]. The pass's own (level, mean) pairs sample the response --
+    with the other channels' light, at their current curves, included -- and each x gets
+    the level that response says gives the straight line through the pass's end points.
+
+    Levels the table used twice are averaged; the response is made monotonic (running
+    maximum) as in inverse_lut, and the ends of the table are kept."""
+    rows = sorted(rows)
+    by = collections.defaultdict(list)
+    for r in rows:
+        by[table[int(r[0])]].append(float(r[1]))
+    ls = np.array(sorted(by), dtype=float)
+    f = np.maximum.accumulate([np.mean(by[int(L)]) for L in ls])
+    m0, m1 = float(rows[0][1]), float(rows[-1][1])
+    target = m0 + (m1 - m0) * np.arange(256) / 255.0
+    new = np.rint(np.interp(target, f + np.arange(len(f)) * 1e-6, ls)).astype(int)
+    new = np.clip(new, 0, 255)
+    new[0], new[-1] = table[0], table[-1]
+    return [int(v) for v in new]
 
 
 def linearity(rows):
@@ -908,6 +958,7 @@ class Document:
         self.iris = None                             # last Adjust iris: {"delay_us", ...}
         self.white_hold = None                       # last White level hold: {"delay_us", ...}
         self.linearization = {}                      # "w" -> {"settings", "rows", "when", "complete"}
+        self.corr_rgb = None                         # the R, G, B curves being converged
         self.projector = None                        # {"name", "idx", "w", "h", "hz", "khz"}
         self.runway_maps = None                      # {"settings", "rows", "when", "complete"}
         self.created = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -931,6 +982,7 @@ class Document:
                "port": self.port, "display": self.display, "T_us": self.T,
                "max_expo_units": self.mx, "edges": self.edges, "iris": self.iris,
                "white_hold": self.white_hold, "linearization": self.linearization,
+               "corr_rgb": self.corr_rgb,
                "lin_head": LIN_CSV_HEAD[:6],
                "projector": self.projector, "runway_maps": self.runway_maps,
                "csv_head": SWEEP_CSV_HEAD, "sweeps": self.sweeps}
@@ -955,6 +1007,7 @@ class Document:
         d.iris = j.get("iris")
         d.white_hold = j.get("white_hold")           # None in profiles saved before 2026-11-11
         d.linearization = j.get("linearization") or {}
+        d.corr_rgb = j.get("corr_rgb")
         d.projector = j.get("projector")             # None in profiles saved before 2026-10-16
         d.runway_maps = j.get("runway_maps")
         d.sweeps = j.get("sweeps", {})
@@ -2824,8 +2877,16 @@ class WhiteView(ttk.Frame):
 
     Same live chart, target band and advice as Adjust iris. Stop on a hold records it in
     the document (white_hold); a linearization is kept in doc.linearization[channel], also
-    when stopped early (complete False). Only W is wired: R, G and B need the colour mask
-    per level and, for the FPGA, a correction table per channel.
+    when stopped early (complete False).
+
+    R, G AND B CONVERGE ONE CURVE AT A TIME, through that colour's filter on the lens.
+    doc.corr_rgb holds the three curves, starting from the W inverse. A pass uploads all
+    three to the FPGA (corr target 0x06), sweeps x = 0..255 with IMPRGB bit 3 so every
+    frame is (R[x], G[x], B[x]), then replaces only its own channel's curve with
+    refine_table's -- the other two stay where they are, and their light through the
+    filter is part of what the pass measured. Pressing the same button again repeats;
+    G, R, B, G... until all three are straight. Each pass is kept in
+    doc.linearization["passes"].
 
     CHECK W proves the W curve: it sweeps x = 0..255 again but projects inverse_lut(W)[x],
     so a good correction measures a straight line. It is done here on the host because the
@@ -2837,7 +2898,8 @@ class WhiteView(ttk.Frame):
     READOUTS = ("window", "full frame")
     CHANNELS = (("w", "W", 0x07, "#444444"), ("r", "R", 0x04, "#d02a2a"),
                 ("g", "G", 0x02, "#2e9e4f"), ("b", "B", 0x01, "#1f5fd0"))
-    WIRED = ("w",)                                   # channels Linearize works for yet
+    WIRED = ("w", "r", "g", "b")                     # channels Linearize works for
+    FILTER = {"r": "red", "g": "green", "b": "blue"}
 
     def __init__(self, master, app):
         super().__init__(master)
@@ -2864,6 +2926,8 @@ class WhiteView(ttk.Frame):
             self.lin_btns[k] = b
         self.chk_btn = ttk.Button(bar, text="Check W", command=self.check)
         self.chk_btn.pack(side="left", padx=(8, 0))
+        self.reset_btn = ttk.Button(bar, text="Reset R,G,B to W", command=self.reset_rgb)
+        self.reset_btn.pack(side="left", padx=(4, 0))
         ttk.Label(bar, text="readings per level").pack(side="left", padx=(12, 0))
         self.per_v = tk.IntVar(value=20)
         self.per_box = ttk.Spinbox(bar, from_=2, to=200, textvariable=self.per_v, width=5)
@@ -2960,6 +3024,12 @@ class WhiteView(ttk.Frame):
         if chk and len(chk["rows"]) > 1:
             out.append("Check W %s%s: %s" % ("" if chk["complete"] else "INCOMPLETE ",
                                              chk["when"], self.linearity_text(chk["rows"])))
+        last = {p["channel"]: p for p in doc.linearization.get("passes", [])}
+        if last:                                     # the latest pass of each channel
+            out.append("R,G,B passes: " + "   ".join(
+                "%s #%d off by %.1f ADU, changed %d" % (
+                    c.upper(), last[c]["n"], last[c]["max_dev"], last[c]["max_change"])
+                for c in "rgb" if c in last))
         return "   |   ".join(out)
 
     @staticmethod
@@ -2988,11 +3058,13 @@ class WhiteView(ttk.Frame):
     def buttons(self):
         busy = self.app.busy()
         self.run_btn.state(["disabled"] if busy else ["!disabled"])
-        for k, b in self.lin_btns.items():
-            b.state(["disabled"] if busy or k not in self.WIRED else ["!disabled"])
         w = self.app.doc.linearization.get("w")
-        self.chk_btn.state(["disabled"] if busy or not (w and w["complete"])
-                           else ["!disabled"])
+        w_done = bool(w and w["complete"])
+        for k, b in self.lin_btns.items():               # R, G, B start from the W curve
+            b.state(["disabled"] if busy or (k != "w" and not w_done) else ["!disabled"])
+        self.chk_btn.state(["disabled"] if busy or not w_done else ["!disabled"])
+        self.reset_btn.state(["disabled"] if busy or self.app.doc.corr_rgb is None
+                             else ["!disabled"])
         for w in (self.readout_box, self.per_box):
             w.state(["disabled"] if self.running else ["!disabled"])
         self.readout_box.state(["readonly"])
@@ -3041,9 +3113,50 @@ class WhiteView(ttk.Frame):
         self.launch("hold", self.work, (self.app.doc.ser,))
 
     def linearize(self, k):
-        if k in self.WIRED:
+        if k == "w":
             self.level_run(k, list(range(256)), {"channel": k, "rgb": 0x07},
                            "Measure a new %s linearization" % k.upper())
+        elif k in self.WIRED:
+            self.rgb_pass(k)
+
+    def rgb_pass(self, k):
+        """One pass of channel k through its filter: upload the three curves, sweep x with
+        the impulse through them, and (in finish) refine k's curve from what was measured."""
+        doc = self.app.doc
+        w = doc.linearization.get("w")
+        if self.app.busy() or not (w and w["complete"]):
+            return
+        if not messagebox.askokcancel(
+                "Linearize %s" % k.upper(), "Mount the %s filter on the lens, then OK.\n\n"
+                "Only the %s curve is changed by this pass." % (self.FILTER[k], k.upper()),
+                parent=self):
+            return
+        if not self.app.ensure_connected():
+            return
+        if doc.corr_rgb is None:
+            lut = inverse_lut(w["rows"])
+            doc.corr_rgb = {"r": list(lut), "g": list(lut), "b": list(lut),
+                            "from_w": w["when"]}
+        t = doc.corr_rgb
+        try:
+            upload_corr_rgb(doc.ser, t["r"], t["g"], t["b"])
+        except Exception as ex:
+            messagebox.showerror("Linearize %s" % k.upper(), str(ex), parent=self)
+            return
+        tags = [(t["r"][x] << 16) | (t["g"][x] << 8) | t["b"][x] for x in range(256)]
+        self.level_run(k, list(range(256)),
+                       {"channel": k, "rgb": 0x0F, "filter": self.FILTER[k],
+                        "tables": {c: list(t[c]) for c in "rgb"}},
+                       None, tags=tags, rgb=0x0F)
+
+    def reset_rgb(self):
+        doc = self.app.doc
+        if self.app.busy() or doc.corr_rgb is None:
+            return
+        if messagebox.askokcancel("Reset R,G,B", "Put all three curves back to the W inverse? "
+                                  "The passes stay in the document's history.", parent=self):
+            doc.corr_rgb = None
+            self.app.changed()
 
     def check(self):
         """Sweep again through the inverse of the W curve: a straight line if it is right."""
@@ -3054,12 +3167,14 @@ class WhiteView(ttk.Frame):
                                             "lin_when": w["when"]},
                            "Run Check W again")
 
-    def level_run(self, key, levels, extra, ask):
-        """Sweep x = 0..255 projecting levels[x]; the result goes to doc.linearization[key]."""
+    def level_run(self, key, levels, extra, ask, tags=None, rgb=0x07):
+        """Sweep x = 0..255 projecting levels[x]; the result goes to doc.linearization[key].
+        ask: the replace question, or None to replace without asking. rgb: IMPRGB for the
+        sweep (0x0F: through the corr curves); tags: what each x puts on the wire then."""
         doc = self.app.doc
         if self.app.busy():
             return
-        if doc.linearization.get(key) and not messagebox.askokcancel(
+        if ask and doc.linearization.get(key) and not messagebox.askokcancel(
                 "Replace", "%s and replace the one in this document?" % ask, parent=self):
             return
         try:
@@ -3069,6 +3184,9 @@ class WhiteView(ttk.Frame):
         self.held = self.begin(levels[0])
         if self.held is None:
             return
+        if rgb != 0x07:
+            wr(doc.ser, R_IMPRGB, rgb)
+            wr(doc.ser, R_IMPRGB2, rgb)
         doc.linearization[key] = {"settings": dict(self.held, per=per, skip=3, T_us=doc.T,
                                                    **extra),
                                   "rows": [], "when": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -3076,7 +3194,7 @@ class WhiteView(ttk.Frame):
         self.log_csv = os.path.join(tempfile.gettempdir(), "auv2sli_lin_%s_%s.csv"
                                     % (key, time.strftime("%Y-%m-%d_%H%M%S")))
         self.t0 = time.time()
-        self.launch(key, self.work_lin, (doc.ser, levels, per, doc.T, key == "w_check"))
+        self.launch(key, self.work_lin, (doc.ser, levels, per, doc.T, key == "w_check", tags))
         self.app.changed()
 
     def work(self, ser):
@@ -3090,7 +3208,7 @@ class WhiteView(ttk.Frame):
         except Exception as ex:
             self.q.put(("error", ex))
 
-    def work_lin(self, ser, levels, per, T, with_level):
+    def work_lin(self, ser, levels, per, T, with_level, tags=None):
         """Worker thread: x = 0..255 projecting levels[x], every reading to the live chart
         and the temp CSV, one row per x to the poll ([x, ...], plus the level projected
         when with_level)."""
@@ -3101,7 +3219,7 @@ class WhiteView(ttk.Frame):
                 w.writerow(LIN_CSV_HEAD + (["projected"] if with_level else []))
                 for x, (L, m, sd, n, nhi, seen) in enumerate(level_sweep(
                         ser, levels, per, 3, self.stop_ev,
-                        lambda m_, s_: self.q.put(("r", (m_, s_))))):
+                        lambda m_, s_: self.q.put(("r", (m_, s_))), tags)):
                     row = [x, round(m, 3), round(sd, 3), n, nhi, int(seen)]
                     w.writerow(row + [h["delay_us"], h["expo_us"], h["readout"], T]
                                + ([L] if with_level else []))
@@ -3178,10 +3296,28 @@ class WhiteView(ttk.Frame):
             doc.ser.timeout = 0.05                   # level_sweep left it at 0
             stop_impulse(doc.ser)
             if mode != "hold":
-                wr(doc.ser, R_IMPLVL, 0xFF)          # the other tabs expect white
+                wr(doc.ser, R_IMPLVL, 0xFF)          # the other tabs expect white,
                 wr(doc.ser, R_IMPLVL2, 0xFF)
+                wr(doc.ser, R_IMPRGB, 0x07)          # not through the curves
+                wr(doc.ser, R_IMPRGB2, 0x07)
         except Exception:
             pass
+        passed = None
+        if mode in self.FILTER:
+            lin = doc.linearization[mode]
+            if len(lin["rows"]) == 256:
+                old = lin["settings"]["tables"][mode]
+                new = refine_table(old, lin["rows"])
+                doc.corr_rgb[mode] = new
+                mx, rms, span = linearity(lin["rows"])
+                passes = doc.linearization.setdefault("passes", [])
+                passed = {"channel": mode, "n": 1 + sum(p["channel"] == mode for p in passes),
+                          "when": lin["when"], "filter": self.FILTER[mode],
+                          "max_dev": round(mx, 2), "rms_dev": round(rms, 2),
+                          "span": round(span, 1),
+                          "max_change": max(abs(a - b) for a, b in zip(old, new)),
+                          "before": old, "after": new, "rows": lin["rows"]}
+                passes.append(passed)
         if mode == "hold" and self.means:
             recent = self.means[-30:]
             sats = [s for s in self.sats[-30:] if s is not None]
@@ -3196,6 +3332,16 @@ class WhiteView(ttk.Frame):
         if mode == "w_check" and len(rows) > 1:
             self.hint["text"] = "corrected W is " + self.linearity_text(rows)
             self.hint["foreground"] = "#333"
+        if passed:
+            K = mode.upper()
+            self.hint["text"] = (
+                "%s pass %d: %s   -- %s curve updated, largest change %d levels; Linearize %s "
+                "again to repeat" % (K, passed["n"], self.linearity_text(passed["rows"]), K,
+                                     passed["max_change"], K))
+            self.hint["foreground"] = "#333"
+        elif mode in self.FILTER:
+            self.hint["text"] = "%s pass stopped early: curve not changed" % mode.upper()
+            self.hint["foreground"] = HINT_COLOUR[IRIS_LOW]
         if mode == "hold" and self.means:
             had = [ALL_SWEEPS[k][0] for k in ALL_SWEEPS if doc.sweeps.get(k)]
             if had:
@@ -3301,11 +3447,16 @@ Linearize W then steps every frame through levels 0 to 255 at that same exposure
 readout, and plots the measured ROI mean against the level (right-hand plot). Set the
 iris first: if level 255 shows saturated pixels, the top of the curve is clipped.
 "readings per level" sets how many frames are averaged at each level (20 takes about a
-minute). Stop keeps the levels measured so far. R, G and B are not wired yet.
+minute). Stop keeps the levels measured so far.
 
 Check W then sweeps again through the inverse of the W curve. If the curve is right, the
 orange line is straight; the readout gives its largest and rms distance from the dashed
-straight line."""),
+straight line.
+
+Linearize G (then R, then B) straightens one channel at a time: mount that colour's
+filter, press it, and only that channel's curve is corrected from what was measured.
+Press it again to repeat; go round G, R, B until all three stop changing. Needs the
+bitstream with per-channel correction tables."""),
     ("The plot", None),
     ("Mouse", """\
 Wheel: zoom the time axis around the cursor.

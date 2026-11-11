@@ -479,8 +479,8 @@ reading live, so you can turn the iris until nothing clips *at that exposure*.
 
 **Linearize W** measures the camera's ROI mean against the projected level, with white
 light, at the same exposure and readout as the hold. Set the iris with the hold first.
-**R, G and B are disabled for now.** They will need the colour mask set for each level, and
-the FPGA a correction table per channel (`TESTING_SENSOR_WINDOW.md` §8, Stage 1).
+**Linearize R / G / B** then straighten one channel at a time through colour filters
+([below](#linearize-r-g-b-converging-the-three-curves)).
 
 - **What it runs.** Levels 0, 1, … 255 in order, every frame of the impulse cycle at that
   level (IMPLVL and IMPLVL2), all LEDs. At each level it:
@@ -520,6 +520,46 @@ the document holds a complete W linearization.
   and RMS deviation from that line, in ADU and as a percentage of the span (`linearity`).
 - **Saved** as `linearization.w_check`. Its rows carry a seventh column with the level
   projected. Its settings hold the `lut` and `lin_when`, the time of the W curve it came from.
+
+### Linearize R, G, B: converging the three curves
+
+Needs the bitstream with **per-channel `corr`** (upload target 0x06 and IMPRGB bit 3,
+`USB_COMMAND_REFERENCE.md` § Tables); an older one refuses the upload and the pass stops.
+
+The document holds three curves, `corr_rgb` (R, G, B: 256 levels each). The first pass
+starts all three from the W inverse (`inverse_lut`). One press of **Linearize G**:
+1. asks you to mount the **green** filter;
+2. uploads all three curves to the FPGA (target 0x06);
+3. sweeps x = 0…255 with IMPRGB / IMPRGB2 = `0x0F`, so every frame is
+   (`R[x]`, `G[x]`, `B[x]`): three different levels in one frame. Each x is confirmed by the
+   whole 24-bit tag, not its red byte;
+4. replaces **only the G curve** with `refine_table`'s.
+
+**`refine_table`.** The pass's own (level, ADU) pairs, (`G[x]`, mean at x), sample the
+response through the filter. Light leaking through from R and B at their current curves
+is part of every sample. Each x then gets the level that response says lands on the
+straight line through the pass's end points. Levels used twice are averaged, the response
+is made monotonic, and the curve's two ends are kept. A pass stopped early changes nothing.
+
+**The loop.** Press Linearize G again until G is straight, then mount red and do R, then
+blue and B, then go back to G. Each channel's change shifts the others' leakage a little,
+so repeat until all three stop moving.
+
+The **readout line** after each pass gives its distance from straight and the largest
+change it made to the curve. The **status line** shows the latest pass of each channel. On
+a simulated board (a different gamma per primary, 2–8 % leakage through each filter) the
+passes went G 18.0 → R 10.1 → B 9.2 → G 3.1 → R 2.0 → B 2.7 → G 2.2 ADU off straight.
+
+**Reset R,G,B to W** puts the three curves back to the W inverse.
+
+**Saved:** `corr_rgb` holds the current curves. `linearization.r/g/b` holds the last pass
+of each channel, with the three curves it used in `settings.tables`. Every pass is kept in
+`linearization.passes`: its channel, number, filter, distance from straight, largest
+change, the curve before and after, and its rows.
+
+**Afterwards** the board is put back: ROICTL `0x00`, delay 0, levels 255, IMPRGB /
+IMPRGB2 `0x07`. The curves stay in the FPGA until the next upload or a reload, and they
+also correct the SLI fringes.
 
 ---
 
@@ -595,12 +635,17 @@ document.
   "white_hold": {"delay_us": ..., "expo_us": ..., "expo_units": ..., "readout": "window",
                  "mean": ..., "saturated_px": ..., "when": ...},   // null until a White level hold
   "lin_head": ["level", "mean", "sd", "n", "nhi_max", "seen"],
-  "linearization": {             // {} until a Linearize run; only "w" so far
+  "corr_rgb": {"r": [256 levels], "g": [...], "b": [...], "from_w": ...},   // null until Linearize R/G/B
+  "linearization": {             // {} until a Linearize run
     "w": {"settings": {"delay_us": ..., "expo_us": ..., "expo_units": ..., "readout": "window",
                        "per": 20, "skip": 3, "channel": "w", "rgb": 7, "T_us": ...},
           "rows": [[level, mean, sd, n, nhi_max, seen], ...], "when": ..., "complete": true},
     "w_check": {"settings": {..., "lut": [256 levels], "lin_when": ...},
-                "rows": [[x, mean, sd, n, nhi_max, seen, projected], ...], ...}
+                "rows": [[x, mean, sd, n, nhi_max, seen, projected], ...], ...},
+    "g": {"settings": {..., "rgb": 15, "filter": "green", "tables": {"r": [...], "g": [...], "b": [...]}},
+          "rows": [[x, mean, sd, n, nhi_max, seen], ...], ...},          // likewise "r", "b"
+    "passes": [{"channel": "g", "n": 1, "filter": "green", "max_dev": ..., "rms_dev": ...,
+                "span": ..., "max_change": ..., "before": [...], "after": [...], "rows": [...]}, ...]
   },
   "csv_head": ["T_us","expo_us","delay_us","position","t_us","mean","sd","n","ref","tag_fix_us"],
   "sweeps": {
@@ -861,7 +906,7 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 | `FilterView` | **RGB filters tab**: the three filter sweeps, normalize and fit-to-white |
 | `RunwayView` | **Runway maps tab**: windows, worker thread, log-scale maps |
 | `IrisDialog`, `iris_hint` | live reading at the WWWWW peak; the clip / band advice it shares |
-| `WhiteView`, `level_sweep`, `inverse_lut`, `linearity` | **White level tab**: every frame white at the placed exposure, read live; Linearize W steps the level 0..255; Check W sweeps through the inverse |
+| `WhiteView`, `level_sweep`, `inverse_lut`, `linearity`, `upload_corr_rgb`, `refine_table` | **White level tab**: every frame white at the placed exposure, read live; Linearize W steps the level 0..255; Check W sweeps through the inverse; Linearize R/G/B converge the per-channel curves |
 | `HelpDialog`, `INSTRUCTIONS` | Help → Instructions |
 | `App` | the main window: menus, tabs, the one-at-a-time rule, connection, the file menu |
 
