@@ -44,6 +44,8 @@ Eleven addresses accept writes. Everything else returns `N`.
 
 | Addr | Name | Payload |
 |---|---|---|
+| `0x03` | **THETA lo** | `THETA[7:0]`, staged until `0x04` |
+| `0x04` | **THETA hi / SIN** | `{7:sin_en, 3..0:THETA[11:8]}` — commits both bytes. With `sin_en` the impulse generator plays an **F = 0, N = 8 sinusoid**: an 8-frame cycle in which frame *n* is the full-field level `c(THETA − 512·n)`, where `c` is `pattern_gen`'s 4096-entry cosine (4096 = 2π). The level goes through IMPRGB's mask and, with IMPRGB bit 3, through the per-channel `corr` curves. Both registers read back |
 | `0x13` | **SLICTRL** | `{7:sw_en, 6:mode_en, 5:mode_val, 3:R, 2:G, 1:B, 0:orient}` |
 | `0x14` | **MODEFORCE** | `{7:force_en, 3..0:idx}` — pin the offline mode, overriding the EDID pick |
 | `0x15` | **LINKCTL** | `{7..2:secs×2, 1:proj, 0:host}` — self-timed HDMI disconnect |

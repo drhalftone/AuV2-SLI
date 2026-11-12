@@ -133,6 +133,10 @@ module usb_link #(
     output wire [7:0]  imp_lvl,
     output wire [23:0] imp_col,       // {R,G,B} of the ordinary frames: level, mask, corr
     output wire [23:0] imp_col2,      // the same for the frame at bpos
+    // F = 0 sinusoid (regs 0x03/0x04): the frame's position in, the mode bit out (the
+    // impulse cycle is 8 frames long while it is set).
+    input  wire [2:0]  imp_phase_i,
+    output wire        sin_en,
     output wire [7:0]  imp_cyc,
     output wire [63:0] seq_cfg,         // 0x09..0x0F, 0x2B: FPGA fringe sequencer config
     output wire        gl_div,          // ROICTL bit 5: one trigger per sequence
@@ -529,6 +533,7 @@ module usb_link #(
         .seq_cfg(seq_cfg),
         .imp_rgb2(imp_rgb2), .imp_lvl2(imp_lvl2),
         .imp_col(imp_col), .imp_col2(imp_col2),
+        .imp_phase_i(imp_phase_i), .sin_en(sin_en), .theta(),
         .sli_ctrl_en(sli_ctrl_en), .lut_loaded(lut_loaded),
         .corr_addr(corr_addr), .corr_dout(corr_dout),
         .lut_addr(lut_addr),   .lut_dout(lut_dout),

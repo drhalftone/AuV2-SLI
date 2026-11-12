@@ -335,6 +335,10 @@ architecture Behavioral of Au2_SLI is
     signal imp_col_p0, imp_col_p1  : std_logic_vector(23 downto 0) := x"FFFFFF";
     signal imp_col2_p0, imp_col2_p1 : std_logic_vector(23 downto 0) := x"FFFFFF";
     signal imp_col_now : std_logic_vector(23 downto 0);
+    -- F = 0 sinusoid mode (reg 0x04 bit 7): the impulse cycle is 8 frames, one per
+    -- phase step. uart_ctrl forms the levels from impulse_gen's phase (imp_ph_s1).
+    signal sin_en_w : std_logic := '0';
+    signal sin_en_p0, sin_en_p1 : std_logic := '0';
     signal imp_lvl_p0, imp_lvl_p1 : std_logic_vector(7 downto 0) := x"FF";
     signal gl_div_w : std_logic := '0';
     signal imp_cyc_w : std_logic_vector(7 downto 0) := x"05";
@@ -362,6 +366,7 @@ architecture Behavioral of Au2_SLI is
                cyc : in std_logic_vector(2 downto 0);
                bpos : in std_logic_vector(2 downto 0);
                inv : in std_logic;
+               cyc8 : in std_logic;
                level : out std_logic_vector(7 downto 0);
                phase : out std_logic_vector(2 downto 0);
                phase0 : out std_logic );
@@ -634,6 +639,8 @@ architecture Behavioral of Au2_SLI is
                imp_lvl2       : out STD_LOGIC_VECTOR(7 downto 0);
                imp_col        : out STD_LOGIC_VECTOR(23 downto 0);
                imp_col2       : out STD_LOGIC_VECTOR(23 downto 0);
+               imp_phase_i    : in  STD_LOGIC_VECTOR(2 downto 0);
+               sin_en         : out STD_LOGIC;
                gl_div         : out STD_LOGIC;
                imp_cyc        : out STD_LOGIC_VECTOR(7 downto 0);
                seq_cfg        : out STD_LOGIC_VECTOR(63 downto 0);
@@ -1146,6 +1153,7 @@ begin
         imp_rgb     => imp_rgb_w, imp_lvl => imp_lvl_w,
         imp_rgb2    => imp_rgb2_w, imp_lvl2 => imp_lvl2_w,
         imp_col     => imp_col_w,  imp_col2 => imp_col2_w,
+        imp_phase_i => imp_ph_s1,  sin_en => sin_en_w,
         gl_div      => gl_div_w, imp_cyc => imp_cyc_w,
         seq_cfg     => seq_cfg_w,
         vs_meas     => out_vsync,
@@ -1522,6 +1530,8 @@ begin
         imp_bp_p1  <= imp_bp_p0;
         imp_inv_p0 <= imp_cyc_w(7);
         imp_inv_p1 <= imp_inv_p0;
+        sin_en_p0 <= sin_en_w;
+        sin_en_p1 <= sin_en_p0;
     end if;
 end process;
 
@@ -1581,7 +1591,7 @@ i_impulse: impulse_gen
     generic map ( CYCLE => 5 )
     port map ( pclk => pixel_clk, vsync_pos => vsync_Pos, en => imp_en,
                lvl => imp_lvl_p1, cyc => imp_cyc_p1, bpos => imp_bp_p1,
-               inv => imp_inv_p1,
+               inv => imp_inv_p1, cyc8 => sin_en_p1,
                level => imp_level, phase => imp_phase, phase0 => imp_ph0 );
 
 -- TLP into the camera: the real values in a pass-through build, hard zeros in a

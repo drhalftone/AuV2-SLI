@@ -56,13 +56,16 @@ module impulse_gen #(
     // saturated: the information is in where the light STOPS, and saturation
     // does not blur that.
     input  wire       inv,
+    // 8-FRAME CYCLE for the F = 0 sinusoid (reg 0x04 bit 7): one frame per phase step
+    // of an N = 8 sequence. The 3-bit cyc field stops at 7, so this overrides it.
+    input  wire       cyc8,
 
     output reg  [7:0] level,              // 8'hFF on the bright frame, else 8'h00
     output reg  [2:0] phase,              // 0 = the bright frame
     output reg        phase0              // level pulse: high for the whole bright frame
 );
     reg vs_d = 1'b0;
-    wire [2:0] cyc_eff = (cyc < 3'd2) ? CYCLE[2:0] : cyc;
+    wire [3:0] cyc_eff = cyc8 ? 4'd8 : (cyc < 3'd2) ? CYCLE[3:0] : {1'b0, cyc};
 
     initial begin level = 8'h00; phase = 3'd0; phase0 = 1'b0; end
 
@@ -77,7 +80,7 @@ module impulse_gen #(
             level  <= 8'h00;
             phase0 <= 1'b0;
         end else if (vsync_pos & ~vs_d) begin        // rising edge = new frame
-            if (phase >= cyc_eff - 3'd1) phase <= 3'd0;
+            if ({1'b0, phase} >= cyc_eff - 4'd1) phase <= 3'd0;
             else                         phase <= phase + 3'd1;
         end
 

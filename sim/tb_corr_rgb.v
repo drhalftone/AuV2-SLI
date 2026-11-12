@@ -14,14 +14,18 @@
 //      and with channels masked off
 //   7. upload TGT 0x02 (256 B): one curve lands in all three tables
 //   8. a bad checksum and an unknown target are both answered 'E'
+//   9. THETA (0x03/0x04): with sin_en, frame n's colour is c(THETA - 512 n) through the
+//      mask and, with IMPRGB bit 3, through the curves; THETA reads back; sin_en off
+//      restores the plain level. Expected levels computed outside the RTL (Python).
+//  10. impulse_gen: 8-frame cycle with cyc8, the IMPCYC length without
 //
 // Run (from sim/):
-//   xvlog tb_corr_rgb.v ../sources_1/imports/RTL/uart_ctrl.v
+//   xvlog tb_corr_rgb.v ../sources_1/imports/RTL/uart_ctrl.v ../sources_1/imports/RTL/impulse_gen.v
 //   xelab -R tb_corr_rgb
 //==============================================================================
 module tb_corr_rgb;
 
-    localparam [7:0] SYNC = 8'hA5, OP_W = 8'h57, OP_L = 8'h5B, OP_LR = 8'h72;
+    localparam [7:0] SYNC = 8'hA5, OP_W = 8'h57, OP_R = 8'h52, OP_L = 8'h5B, OP_LR = 8'h72;
     localparam [7:0] ACK_K = 8'h4B, ACK_E = 8'h45;
 
     reg clk = 1'b0;
@@ -34,6 +38,8 @@ module tb_corr_rgb;
     wire       tx_send;
     reg  [7:0] pat_addr = 8'h00;
     wire [23:0] pat_dout, imp_col, imp_col2;
+    reg  [2:0]  phase_i = 3'd0;
+    wire        sin_en;
 
     uart_ctrl #(.CLK_HZ(100_000_000)) dut (
         .clk(clk), .rst(rst),
@@ -42,8 +48,16 @@ module tb_corr_rgb;
         .led(8'h00), .pins(8'h00),
         .corr_addr(8'h00), .corr_dout(),
         .corr_pat_addr(pat_addr), .corr_pat_dout(pat_dout),
-        .imp_col(imp_col), .imp_col2(imp_col2)
+        .imp_col(imp_col), .imp_col2(imp_col2),
+        .imp_phase_i(phase_i), .sin_en(sin_en), .theta()
     );
+
+    // impulse_gen on the same clock, vsync driven by the test
+    reg        vs = 1'b0, cyc8 = 1'b0;
+    wire [2:0] ig_phase;
+    impulse_gen #(.CYCLE(5)) ig (
+        .pclk(clk), .vsync_pos(vs), .en(1'b1), .lvl(8'hFF), .cyc(3'd5), .bpos(3'd0),
+        .inv(1'b0), .cyc8(cyc8), .level(), .phase(ig_phase), .phase0());
 
     integer errors = 0, checks = 0;
 
@@ -96,14 +110,34 @@ module tb_corr_rgb;
     end
     endtask
 
+    task rd(input [7:0] a, output [7:0] d);
+        integer f;
+    begin
+        f = txn;
+        send(SYNC); send(OP_R); send(a); send(8'h00 - (OP_R + a));
+        wait_tx(3, f);
+        d = txq[f + 1];
+    end
+    endtask
+
+    // c(THETA - 512 n) for n = 0..7, from Python, for THETA = 0x123 and 0xFFF (wraps)
+    reg [7:0] s123 [0:7];
+    reg [7:0] sfff [0:7];
+    initial begin
+        s123[0]=243; s123[1]=248; s123[2]=183; s123[3]=85;
+        s123[4]=12;  s123[5]=7;   s123[6]=72;  s123[7]=170;
+        sfff[0]=255; sfff[1]=218; sfff[2]=127; sfff[3]=37;
+        sfff[4]=0;   sfff[5]=37;  sfff[6]=128; sfff[7]=218;
+    end
+
     // the three test curves
     function [7:0] cr(input integer i); cr = 8'd255 - i[7:0];      endfunction
     function [7:0] cg(input integer i); cg = i[7:0] >> 1;          endfunction
     function [7:0] cb(input integer i); cb = (i * 3) & 8'hFF;      endfunction
     function [7:0] c1(input integer i); c1 = i[7:0] ^ 8'h55;       endfunction
 
-    integer i, f, k;
-    reg [7:0] sum;
+    integer i, f, k, n;
+    reg [7:0] sum, rv;
 
     initial begin
         repeat (10) @(posedge clk);
@@ -199,6 +233,68 @@ module tb_corr_rgb;
         send(SYNC); send(OP_L); send(8'h07);
         wait_tx(1, f);
         expect_eq("upload unknown target 0x07 -> E", txq[f], ACK_E);
+
+        // ---- 9. the F = 0 sinusoid ---------------------------------------------
+        // Step 8's rejected upload still wrote its bytes: the RAM is written as they
+        // arrive and only the loaded flag waits for the checksum. Put c1 back.
+        f = txn;
+        send(SYNC); send(OP_L); send(8'h02);
+        sum = 8'h02;
+        for (i = 0; i < 256; i = i + 1) begin send(c1(i)); sum = sum + c1(i); end
+        send(8'h00 - sum);
+        wait_tx(1, f);
+        expect_eq("re-upload 0x02 ack", txq[f], ACK_K);
+        wr(8'h1F, 8'h07);                            // white, not through corr
+        wr(8'h03, 8'h23);
+        wr(8'h04, 8'h81);                            // sin_en, THETA = 0x123
+        expect_eq("sin_en", sin_en, 1);
+        rd(8'h03, rv); expect_eq("THETA[7:0] readback", rv, 8'h23);
+        rd(8'h04, rv); expect_eq("0x04 readback", rv, 8'h81);
+        for (n = 0; n < 8; n = n + 1) begin
+            phase_i = n; repeat (4) @(posedge clk);
+            expect_eq("sin 0x123 imp_col", imp_col, {3{s123[n]}});
+            expect_eq("sin 0x123 imp_col2", imp_col2, {3{s123[n]}});
+        end
+        wr(8'h1F, 8'h0F);                            // through the curves (c1, from step 7)
+        for (n = 0; n < 8; n = n + 1) begin
+            phase_i = n; repeat (4) @(posedge clk);
+            expect_eq("sin 0x123 through corr", imp_col, {3{c1(s123[n])}});
+        end
+        wr(8'h1F, 8'h02);                            // green only
+        phase_i = 3'd2; repeat (4) @(posedge clk);
+        expect_eq("sin green only", imp_col, {8'h00, s123[2], 8'h00});
+        wr(8'h1F, 8'h07);
+        wr(8'h03, 8'hFF);
+        expect_eq("THETA staged, not yet applied", imp_col, {3{s123[2]}});
+        wr(8'h04, 8'h8F);                            // THETA = 0xFFF: 0xFFF - 512 n wraps
+        for (n = 0; n < 8; n = n + 1) begin
+            phase_i = n; repeat (4) @(posedge clk);
+            expect_eq("sin 0xFFF imp_col", imp_col, {3{sfff[n]}});
+        end
+        wr(8'h12, 8'h40);
+        wr(8'h04, 8'h0F);                            // sin_en off
+        expect_eq("sin_en off", sin_en, 0);
+        expect_eq("sin_en off: plain level", imp_col, 24'h404040);
+
+        // ---- 10. impulse_gen cycle length -------------------------------------
+        k = 0;
+        cyc8 = 1'b1;
+        for (n = 0; n < 20; n = n + 1) begin
+            @(posedge clk) vs <= 1'b1; repeat (3) @(posedge clk); vs <= 1'b0;
+            repeat (3) @(posedge clk);
+            if (ig_phase !== ((n + 1) % 8)) k = k + 1;
+        end
+        expect_eq("impulse_gen cyc8: phase 0..7 (mismatches)", k, 0);
+        cyc8 = 1'b0; k = 0;
+        @(posedge clk) vs <= 1'b1; repeat (3) @(posedge clk); vs <= 1'b0;   // wraps at 5
+        repeat (3) @(posedge clk);
+        for (n = 0; n < 12; n = n + 1) begin
+            i = ig_phase;
+            @(posedge clk) vs <= 1'b1; repeat (3) @(posedge clk); vs <= 1'b0;
+            repeat (3) @(posedge clk);
+            if (ig_phase !== ((i + 1) % 5)) k = k + 1;
+        end
+        expect_eq("impulse_gen cyc 5 without cyc8 (mismatches)", k, 0);
 
         if (errors == 0) $display("PASS: tb_corr_rgb, %0d checks", checks);
         else             $display("FAIL: tb_corr_rgb, %0d of %0d checks failed", errors, checks);

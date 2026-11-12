@@ -32,6 +32,10 @@
 //   0x00 ID      = 0x48 'H'      (RO)        0x02 STATUS = live `led` byte (RO)
 //   0x01 VERSION = 0x01          (RO)        0x06 FLAGS  = {.., usb_sw_en, lut_loaded} (RO)
 //   0x10 PINS    = {eff_sw[3:0], phys_sw[3:0]}  (RO -- active vs physical R/G/B/orient)
+//   0x03 THETA lo / 0x04 {7:sin_en, 3..0:THETA[11:8]}  (R/W; 0x04 commits both) -- the
+//        F = 0, N = 8 sinusoid: with sin_en the impulse cycle is 8 frames and frame n
+//        is the full-field level c(THETA - 512 n), c = pattern_gen's 4096-entry cosine.
+//        See imp_col / theta below.
 //   0x14 MODEFORCE = {7:force_en, 3..0:idx}  (R/W -- pin the offline mode to idx,
 //        overriding mode_select's EDID pick. For bringing up a new high-clock mode on a
 //        display whose EDID would otherwise always steer to a lower-clock, higher-refresh
@@ -159,6 +163,16 @@ module uart_ctrl #(
     // to the pixel clock like imp_lvl always has (quasi-static, 2FF in the top).
     output reg  [23:0] imp_col,
     output reg  [23:0] imp_col2,
+    // THE F = 0 SINUSOID. 0x03 THETA[7:0] (staged), 0x04 {7:sin_en, 3..0:THETA[11:8]}
+    // (commits both). With sin_en the impulse sequence is 8 frames long and frame n is
+    // the level c(THETA - 512 n), c being pattern_gen's 4096-entry cosine -- one temporal
+    // period of an N = 8 phase-shift sequence at phase THETA (4096 = 2 pi), on every
+    // pixel. The level goes through IMPRGB's mask and, with IMPRGB bit 3, through the
+    // corr curves, like any impulse level. imp_phase_i is the frame's position in the
+    // sequence (impulse_gen's phase, already synchronised to clk).
+    input  wire [2:0]  imp_phase_i,
+    output reg         sin_en,
+    output reg  [11:0] theta,
     // SEQUENCE CONFIG -- the fringe sequencer run from the FPGA alone, so a test
     // needs no host pacing and no PC-drawn frames. Packed for pixel_pipe:
     //   [7:0]   0x09 SEQCTL  bit0 free-run: advance every frame, rdy not needed
@@ -362,17 +376,40 @@ module uart_ctrl #(
     assign corr_pat_dout = {corr_r[corr_pat_addr], corr_g[corr_pat_addr],
                             corr_b[corr_pat_addr]};
 
+    // The F = 0 sinusoid's level for the frame on screen: the same cosine table, built
+    // the same way, as pattern_gen's master ROM, so a phase here is a phase there.
+    // 512 n is one eighth of the table. One read per clock; the frame position changes
+    // once per frame, in vertical blanking, so the level settles long before the first
+    // active pixel.
+    (* rom_style = "block" *) reg [7:0] scos [0:4095];
+    integer si;
+    real    sth;
+    initial begin
+        for (si = 0; si < 4096; si = si + 1) begin
+            sth = 6.28318530717958647692 * si / 4096.0;
+            scos[si] = $rtoi(255.0*(0.5 + 0.5*$cos(sth)) + 0.5);
+        end
+    end
+    reg  [7:0]  sin_lvl = 8'hFF;
+    wire [11:0] sin_addr = theta - {imp_phase_i, 9'd0};
+    always @(posedge clk) sin_lvl <= scos[sin_addr];
+
     // The impulse colours. Bit 3 of the mask: through the curves, else the level as is;
     // bits 2:0 black the channels the frame does not drive. A quasi-static register
-    // value, so one clock of lag is nothing.
+    // value, so one clock of lag is nothing. In sinusoid mode every frame takes the
+    // sinusoid's level and IMPRGB's mask, so the frame at bpos is not special.
+    wire [7:0] lv1 = sin_en ? sin_lvl : imp_lvl;
+    wire [7:0] lv2 = sin_en ? sin_lvl : imp_lvl2;
+    wire [7:0] m2  = sin_en ? imp_rgb : imp_rgb2;
     always @(posedge clk) begin
-        imp_col  <= {imp_rgb[2]  ? (imp_rgb[3]  ? corr_r[imp_lvl]  : imp_lvl)  : 8'h00,
-                     imp_rgb[1]  ? (imp_rgb[3]  ? corr_g[imp_lvl]  : imp_lvl)  : 8'h00,
-                     imp_rgb[0]  ? (imp_rgb[3]  ? corr_b[imp_lvl]  : imp_lvl)  : 8'h00};
-        imp_col2 <= {imp_rgb2[2] ? (imp_rgb2[3] ? corr_r[imp_lvl2] : imp_lvl2) : 8'h00,
-                     imp_rgb2[1] ? (imp_rgb2[3] ? corr_g[imp_lvl2] : imp_lvl2) : 8'h00,
-                     imp_rgb2[0] ? (imp_rgb2[3] ? corr_b[imp_lvl2] : imp_lvl2) : 8'h00};
+        imp_col  <= {imp_rgb[2] ? (imp_rgb[3] ? corr_r[lv1] : lv1) : 8'h00,
+                     imp_rgb[1] ? (imp_rgb[3] ? corr_g[lv1] : lv1) : 8'h00,
+                     imp_rgb[0] ? (imp_rgb[3] ? corr_b[lv1] : lv1) : 8'h00};
+        imp_col2 <= {m2[2]      ? (m2[3]      ? corr_r[lv2] : lv2) : 8'h00,
+                     m2[1]      ? (m2[3]      ? corr_g[lv2] : lv2) : 8'h00,
+                     m2[0]      ? (m2[3]      ? corr_b[lv2] : lv2) : 8'h00};
     end
+    reg [7:0] theta_lo = 8'h00;                  // 0x03, staged until 0x04
 
     // ---- loaded flags ----
     reg corr_ld = 1'b0, lut_ld = 1'b0, lutv_ld = 1'b0;
@@ -516,6 +553,8 @@ case (addr)
             8'h07:   rd_data  = imp_lvl2;
             8'h08:   rd_data  = imp_rgb2;
             8'h12:   rd_data  = imp_lvl;
+            8'h03:   rd_data  = theta[7:0];
+            8'h04:   rd_data  = {sin_en, 3'b000, theta[11:8]};
             8'h11:   rd_data  = imp_cyc;
             8'h09:   rd_data  = seq_cfg[7:0];
             8'h0A:   rd_data  = seq_cfg[15:8];
@@ -754,6 +793,7 @@ case (addr)
             // default: the odd frame is full white, so an unwritten
             // second colour reproduces the old KKWKK behaviour exactly.
             imp_rgb2 <= 8'h07; imp_lvl2 <= 8'hFF;
+            sin_en <= 1'b0; theta <= 12'd0; theta_lo <= 8'h00;
             link_active <= 1'b0; link_secs <= 6'd0; link_presc <= 26'd0; link_tgt <= 2'd0;
             resp_len <= 2'd0; resp_idx <= 2'd0;
             rb_active <= 1'b0; rb_ph <= 2'd0; rd_idx <= 12'd0;
@@ -861,6 +901,11 @@ case (addr)
                         imp_rgb2 <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h12) begin    // IMPLVL bright-frame code
                         imp_lvl <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h03) begin    // THETA[7:0]  staged
+                        theta_lo <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
+                    end else if (addr == 8'h04) begin    // {sin_en, THETA[11:8]} COMMITS
+                        theta <= {dbyte[3:0], theta_lo}; sin_en <= dbyte[7];
+                        resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h11) begin    // IMPCYC frames per sequence
                         imp_cyc <= dbyte; resp[0] <= ACK_K; resp_len <= 2'd1;
                     end else if (addr == 8'h09) begin    // SEQCTL
