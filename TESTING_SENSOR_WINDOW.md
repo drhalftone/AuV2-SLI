@@ -217,10 +217,27 @@ The runway changes how linearization has to be done.
 **Stage 1: linearize the projector with the window ROI.** The window reading is the light
 during the exposure only, so it measures the projector's output without the runway. Measure
 each colour's response (R, G, B independently) and build one correction table per colour.
-Needs three `corr` tables in the FPGA; today there is one 256-entry table (upload target
-0x02) applied to all three channels. Decisions still open: drive one channel at a time or use
-the lens colour filters; integrate with a burst sweep (~20 s per level) or one long window
-exposure (needs an ND filter); how many levels (256, or ~33 with interpolation).
+
+*The goal (2026-11-12):* `pattern_gen` makes ONE white cosine (0..255). The `corr` table
+maps each value c to (`R[c]`, `G[c]`, `B[c]`), so that each channel's light is a clean
+sinusoid. All three channels keep the same phase and frequency; only the shape differs per
+channel, and `pattern_gen` does not change.
+
+*Decided and built (2026-11-11):*
+- **Hardware.** Three `corr` tables in the FPGA: upload target 0x06. IMPRGB bit 3 sends the
+  impulse level through them, so the sweep reads the same tables the fringes index.
+- **Measurement.** Lens colour filters with all three channels on, matching fringe use.
+- **Exposure.** One long window exposure per level, at the placed exposure (6.2 ms).
+- **Levels.** All 256.
+- **Method.** The White level tab's Linearize R/G/B loop (`host/SLI_UI.md` §9).
+
+*Still open:*
+- **Dark end.** The projector is flat below about level 50, so sinusoid troughs are built from
+  a few coarse levels. Accept that, or narrow the cosine's range.
+- **Per-channel amplitude.** Equalise it, or leave it, which is fine if each channel is
+  decoded on its own.
+- **Persistence.** The tables are lost at power-off: upload them at startup, then flash them.
+- **Final check.** Fit a sinusoid per filter on real fringes: amplitude, offset and harmonics.
 
 **Stage 2: linearize the full-sensor image, with the runway.** A full-frame pixel in row r
 reads E + k · (light over the T_r after the exposure), with T_r ≈ 78 µs + r × 5.53 µs
