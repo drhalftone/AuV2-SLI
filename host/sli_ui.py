@@ -660,8 +660,8 @@ def sweep_burst(ser, T, e, delays, out, n, delta, level=255, bg=0, frames=20, se
 
 # ---- grey pairs over the runway (Runway maps tab) -------------------------------------
 class Stream:
-    """Camera lines one at a time, as (mean, npx, level-from-tag, nhi, tag): the tag's red
-    byte as the level, and the whole 24-bit tag."""
+    """Camera lines one at a time, as (mean, npx, level-from-tag, nhi, tag, cc): the tag's
+    red byte as the level, the whole 24-bit tag, and the trigger ordinal."""
 
     def __init__(self, ser):
         self.ser, self.buf, self.q = ser, b"", []
@@ -681,7 +681,7 @@ class Stream:
                 self.q.append((int(m.group(1), 16), int(m.group(2), 16),
                                (int(m.group(3), 16) >> 16) & 0xFF,
                                int(m.group(5), 16) if m.group(5) else 0,
-                               int(m.group(3), 16)))
+                               int(m.group(3), 16), int(m.group(4), 16)))
             if ms:
                 self.buf = self.buf[ms[-1].end():]
             elif len(self.buf) > 8192:
@@ -882,6 +882,110 @@ def refine_table(table, rows):
     return [int(v) for v in new]
 
 
+# ---- the F = 0, N = 8 sinusoid (regs 0x03/0x04) -------------------------------------
+R_THETA_LO, R_THETA_HI = 0x03, 0x04              # THETA, 4096 = 2 pi; 0x04 bit 7 = sin_en
+R_ROI_COL8, R_ROI_ROW8 = 0x18, 0x19              # ROI position in 8-pixel units
+SIN_N = 8
+
+
+def set_theta(ser, theta, on=True):
+    """THETA (0..4095 is one period) and the sinusoid mode. The high byte commits both, so
+    the sequence never plays a half-written phase."""
+    theta = int(theta) % 4096
+    wr(ser, R_THETA_LO, theta & 0xFF)
+    wr(ser, R_THETA_HI, (0x80 if on else 0x00) | (theta >> 8))
+
+
+def sin_levels(theta):
+    """The levels the FPGA plays for THETA: c(THETA - 512 n), n = 0..7, c being
+    pattern_gen's cosine table (round half up, as its $rtoi(x + 0.5))."""
+    a = (int(theta) - 512 * np.arange(SIN_N)) % 4096
+    return [int(v) for v in np.floor(255 * (0.5 + 0.5 * np.cos(2 * np.pi * a / 4096)) + 0.5)]
+
+
+def phase_of(means):
+    """(phase in radians 0..2 pi, amplitude B, offset A) of I_n = A + B cos(theta - 2 pi n / N).
+    With that sign convention sum I_n sin(2 pi n / N) = (N/2) B sin(theta)."""
+    i = np.asarray(means, float)
+    n = len(i)
+    ph = 2 * np.pi * np.arange(n) / n
+    s, c = float(i @ np.sin(ph)), float(i @ np.cos(ph))
+    return float(np.arctan2(s, c) % (2 * np.pi)), 2 * float(np.hypot(s, c)) / n, float(i.mean())
+
+
+def sin_samples(ser, tags, cycles, lat, timeout=6.0):
+    """The ROI readings of the playing sinusoid, sorted by the sample whose LIGHT they hold:
+    ({n: [(mean, nhi)]}, share of lines whose tag matched).
+
+    Pairing: one trigger per frame and cc counts triggers mod 256, a multiple of 8, so a
+    line's position in the 8-frame cycle is (cc + o) mod 8 for one offset o -- the one under
+    which the most tags equal the expected colours `tags`. A cosine's eight samples are not
+    a shift of themselves, so o is unique. The tag names the frame transmitted at the
+    trigger; the exposure holds the light of the frame `lat` frames before it (the
+    projector's latency, lead // T on the Profile tab). Lines whose tag does not match
+    their position, or with fewer than 256 ROI pixels, are dropped."""
+    st = Stream(ser)
+    want = (cycles + 2) * SIN_N
+    lines, t0 = [], time.time()
+    while len(lines) < want and time.time() - t0 < timeout:
+        r = st.get()
+        if r is None:
+            break
+        lines.append(r)
+    by = {n: [] for n in range(SIN_N)}
+    if not lines:
+        return by, 0.0
+    o = max(range(SIN_N),
+            key=lambda o_: sum(r[4] == tags[(r[5] + o_) % SIN_N] for r in lines))
+    hit = 0
+    for r in lines:
+        k = (r[5] + o) % SIN_N
+        if r[4] == tags[k]:
+            hit += 1
+            if r[1] == 256:
+                by[(k - lat) % SIN_N].append((r[0], r[3]))
+    return by, hit / len(lines)
+
+
+def set_readout(ser, window):
+    """Switch the ROI readout under a running impulse: the sensor's 32 x 24 window (no
+    storage wait) or the full frame (each row waits its turn, ~78 us + 5.53 us x row)."""
+    wr(ser, R_ROICTL, 0xC1 if window else 0xC0)
+    if window:
+        t0 = time.time()
+        while not (reg(ser, R_WINON) & 1):
+            if time.time() - t0 > 3:
+                raise RuntimeError("the sensor never reported its readout window on")
+            time.sleep(0.05)
+    else:
+        time.sleep(0.1)
+
+
+def phase_scan(ser, thetas, readouts, cycles, lat, tag_fn, stop=None, settle=0.25):
+    """The F = 0 scan: for each THETA, the sinusoid is set and each readout captured in turn.
+    Yields (theta, readout, phase, B, A, means[8], counts[8], nhi_max, matched). tag_fn(L)
+    is the 24-bit colour level L puts on the wire (through the curves when they are on)."""
+    for th in thetas:
+        set_theta(ser, th)
+        tags = [tag_fn(L) for L in sin_levels(th)]
+        for ro in readouts:
+            if stop is not None and stop.is_set():
+                return
+            set_readout(ser, ro == "window")
+            ser.timeout = 0
+            time.sleep(settle)                       # projector and pipeline: ~30 frames
+            ser.reset_input_buffer()
+            by, matched = sin_samples(ser, tags, cycles, lat)
+            ser.timeout = 0.05
+            counts = [len(by[n]) for n in range(SIN_N)]
+            if min(counts) == 0:
+                yield th, ro, float("nan"), float("nan"), float("nan"), [float("nan")] * SIN_N,                     counts, 0, matched
+                continue
+            means = [float(np.mean([v[0] for v in by[n]])) for n in range(SIN_N)]
+            p, B, A = phase_of(means)
+            yield th, ro, p, B, A, means, counts, max(v[1] for n in by for v in by[n]), matched
+
+
 def linearity(rows):
     """(max |deviation|, rms deviation, span) in ADU of a check curve ([x, mean, ...])
     from the straight line through its own end points."""
@@ -959,6 +1063,7 @@ class Document:
         self.white_hold = None                       # last White level hold: {"delay_us", ...}
         self.linearization = {}                      # "w" -> {"settings", "rows", "when", "complete"}
         self.corr_rgb = None                         # the R, G, B curves being converged
+        self.phase_scans = []                        # F = 0 phase scans, oldest first
         self.projector = None                        # {"name", "idx", "w", "h", "hz", "khz"}
         self.runway_maps = None                      # {"settings", "rows", "when", "complete"}
         self.created = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -982,7 +1087,7 @@ class Document:
                "port": self.port, "display": self.display, "T_us": self.T,
                "max_expo_units": self.mx, "edges": self.edges, "iris": self.iris,
                "white_hold": self.white_hold, "linearization": self.linearization,
-               "corr_rgb": self.corr_rgb,
+               "corr_rgb": self.corr_rgb, "phase_scans": self.phase_scans,
                "lin_head": LIN_CSV_HEAD[:6],
                "projector": self.projector, "runway_maps": self.runway_maps,
                "csv_head": SWEEP_CSV_HEAD, "sweeps": self.sweeps}
@@ -1008,6 +1113,7 @@ class Document:
         d.white_hold = j.get("white_hold")           # None in profiles saved before 2026-11-11
         d.linearization = j.get("linearization") or {}
         d.corr_rgb = j.get("corr_rgb")
+        d.phase_scans = j.get("phase_scans") or []
         d.projector = j.get("projector")             # None in profiles saved before 2026-10-16
         d.runway_maps = j.get("runway_maps")
         d.sweeps = j.get("sweeps", {})
@@ -1658,7 +1764,8 @@ class ProfileView(SweepHost, ttk.Frame):
             b.state(["disabled"] if self.app.busy() else ["!disabled"])
         self.stop_btn.state(["!disabled"] if r and not r.stop_ev.is_set() else ["disabled"])
         self.best_btn.state(["!disabled"] if self.sig is not None else ["disabled"])
-        for v in (self.app.fview, self.app.rview, self.app.wview):   # the iris holds them too
+        for v in (self.app.fview, self.app.rview, self.app.wview,
+                  self.app.pview):                   # the iris holds them too
             if v is not None:
                 v.buttons()
 
@@ -3358,6 +3465,317 @@ class WhiteView(ttk.Frame):
 
 
 # ======================================================================================
+# Phase tab: the F = 0, N = 8 sinusoid with and without the storage wait
+# ======================================================================================
+class PhaseView(ttk.Frame):
+    """The F = 0, N = 8 phase scan: phase recovered with and without the sensor's storage
+    wait, over a whole period of THETA.
+
+    The FPGA plays an 8-frame sequence of full-field levels c(THETA - 512 n) (regs
+    0x03/0x04), at the exposure placed on the Profile tab. For each THETA the ROI is read
+    in the WINDOW readout (read ~30 us after the exposure: no storage wait) and in the FULL
+    FRAME (the ROI's rows wait ~78 us + 5.53 us x row before readout, collecting light at
+    the storage node's parasitic sensitivity). The phase of each is atan2 of the eight
+    sample means (phase_of), and its error against THETA is plotted for both.
+
+    A linear storage-node term mixes in the NEXT sample's light, which shifts the phase by
+    a constant; a row near the top waits too briefly to reach the next frame's light, so
+    the difference between readouts should grow from top to bottom. Anything that varies
+    with THETA is the tone curve's harmonics, not the storage node -- "through R,G,B
+    curves" separates the two.
+
+    Each run is kept in doc.phase_scans: settings, and one row per (THETA, readout):
+    [theta, readout, phase, B, A, err] + 8 means + 8 counts + [nhi_max, matched].
+    """
+
+    ROWS = (("top, row 64", 64), ("middle, row 512", 512), ("bottom, row 960", 960))
+    COLORS = {"window": "#1f5fd0", "full": "#d02a2a"}
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.worker = None
+        self.stop_ev = threading.Event()
+        self.q = queue.Queue()
+        self.run_doc = None                          # the run being measured
+        self.restore = None                          # board state to put back
+
+        bar = ttk.Frame(self)
+        bar.pack(fill="x", **PAD)
+        self.run_btn = ttk.Button(bar, text="Run phase scan", command=self.run)
+        self.run_btn.pack(side="left", padx=(0, 4))
+        self.stop_btn = ttk.Button(bar, text="Stop", command=self.stop)
+        self.stop_btn.pack(side="left", padx=(0, 16))
+        ttk.Label(bar, text="THETA steps").pack(side="left")
+        self.steps_v = tk.IntVar(value=64)
+        self.steps_box = ttk.Spinbox(bar, from_=8, to=4096, increment=8,
+                                     textvariable=self.steps_v, width=6)
+        self.steps_box.pack(side="left", padx=(4, 12))
+        ttk.Label(bar, text="cycles per THETA").pack(side="left")
+        self.cyc_v = tk.IntVar(value=8)
+        self.cyc_box = ttk.Spinbox(bar, from_=1, to=200, textvariable=self.cyc_v, width=5)
+        self.cyc_box.pack(side="left", padx=(4, 12))
+        ttk.Label(bar, text="ROI").pack(side="left")
+        self.row_v = tk.StringVar(value=self.ROWS[1][0])
+        self.row_box = ttk.Combobox(bar, textvariable=self.row_v, state="readonly", width=16,
+                                    values=[n for n, _ in self.ROWS])
+        self.row_box.pack(side="left", padx=(4, 12))
+        self.win_v, self.full_v = tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        self.win_chk = ttk.Checkbutton(bar, text="window", variable=self.win_v)
+        self.win_chk.pack(side="left")
+        self.full_chk = ttk.Checkbutton(bar, text="full frame", variable=self.full_v)
+        self.full_chk.pack(side="left", padx=(4, 12))
+        self.corr_v = tk.BooleanVar(value=False)
+        self.corr_chk = ttk.Checkbutton(bar, text="through R,G,B curves", variable=self.corr_v)
+        self.corr_chk.pack(side="left")
+        self.expo_lbl = ttk.Label(self, text="", foreground="#555")
+        self.expo_lbl.pack(fill="x", padx=8)
+        self.status = ttk.Label(self, text="", font=("Consolas", 9))
+        self.status.pack(fill="x", padx=8)
+        self.info = ttk.Label(self, text="", font=("Consolas", 9))
+        self.info.pack(fill="x", padx=8)
+
+        self.fig = Figure(figsize=(13, 6))
+        self.ax = self.fig.add_subplot(211)
+        self.ab = self.fig.add_subplot(212, sharex=self.ax)
+        self.ax.axhline(0, color="#888", lw=.8)
+        self.ax.set_ylabel("phase error (mrad)")
+        self.ax.grid(alpha=.3)
+        self.ab.set_ylabel("amplitude B (ADU)")
+        self.ab.set_xlabel("THETA (degrees)")
+        self.ab.set_xlim(0, 360)
+        self.ab.grid(alpha=.3)
+        self.err_lines = {k: self.ax.plot([], [], lw=1, marker=".", ms=3, color=c,
+                                          label=k)[0] for k, c in self.COLORS.items()}
+        self.b_lines = {k: self.ab.plot([], [], lw=1, marker=".", ms=3, color=c)[0]
+                        for k, c in self.COLORS.items()}
+        self.ax.legend(loc="upper right")
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        self.canvas.mpl_connect("resize_event", lambda e: fit_margins(self.fig))
+        fit_margins(self.fig)
+        self.refresh()
+
+    # ---- what to measure / what was measured -----------------------------------------
+    def exposure(self):
+        """(delay us within one frame, exposure units, latency in frames) from the
+        Profile tab's edges: the light of a frame lands lead // T frames later."""
+        v, T = self.app.view, self.app.doc.T or 8333.3
+        return (v.lead % T, max(1, int(round((v.trail - v.lead) / EXPO_UNIT_US))),
+                int(v.lead // T))
+
+    @property
+    def running(self):
+        return self.worker is not None and self.worker.is_alive()
+
+    def latest(self):
+        runs = self.app.doc.phase_scans
+        return self.run_doc if self.run_doc is not None else (runs[-1] if runs else None)
+
+    def refresh(self):
+        d, u, lat = self.exposure()
+        self.expo_lbl["text"] = (
+            "exposure from the Profile tab: %.2f us after vsync, %.2f us (%d units); light "
+            "lands %d frame%s after its pattern" % (d, u * EXPO_UNIT_US, u, lat,
+                                                    "" if lat == 1 else "s"))
+        self.draw()
+        self.buttons()
+        if not self.running:
+            r = self.latest()
+            self.status["text"] = (
+                "%s%s: %s" % ("" if r["complete"] else "INCOMPLETE ", r["when"],
+                              self.settings_text(r["settings"]))
+                if r else "no phase scans yet -- Run plays the F = 0 sinusoid at every THETA")
+            self.info["text"] = self.result_text(r["rows"]) if r else ""
+
+    @staticmethod
+    def settings_text(st):
+        return ("ROI row %d, %d THETA, %d cycles, %s, %.2f us at %.2f us%s"
+                % (st["roi_row"], st["steps"], st["cycles"], " + ".join(st["readouts"]),
+                   st["expo_us"], st["delay_us"], ", through R,G,B curves"
+                   if st["corr"] else ""))
+
+    @staticmethod
+    def result_text(rows):
+        """Per readout: mean and spread of the phase error, and the full - window bias."""
+        out, mean = [], {}
+        for ro in ("window", "full"):
+            e = np.array([r[5] for r in rows if r[1] == ro and np.isfinite(r[5])])
+            if len(e):
+                mean[ro] = float(e.mean())
+                out.append("%s: error %+.2f mrad mean, %.2f mrad rms about it, %d THETA"
+                           % (ro, 1e3 * e.mean(), 1e3 * e.std(), len(e)))
+        if len(mean) == 2:
+            out.append("full - window %+.2f mrad" % (1e3 * (mean["full"] - mean["window"])))
+        return "   |   ".join(out)
+
+    def draw(self):
+        r = self.latest()
+        rows = r["rows"] if r else []
+        for ro in self.COLORS:
+            pts = sorted((q[0], q[5], q[3]) for q in rows if q[1] == ro)
+            x = [360.0 * p[0] / 4096 for p in pts]
+            self.err_lines[ro].set_data(x, [1e3 * p[1] for p in pts])
+            self.b_lines[ro].set_data(x, [p[2] for p in pts])
+        for a in (self.ax, self.ab):
+            a.relim()
+            a.autoscale_view(scalex=False)
+        self.canvas.draw_idle()
+
+    def buttons(self):
+        self.run_btn.state(["disabled"] if self.app.busy() else ["!disabled"])
+        for w in (self.steps_box, self.cyc_box, self.win_chk, self.full_chk):
+            w.state(["disabled"] if self.running else ["!disabled"])
+        self.row_box.state(["disabled"] if self.running else ["!disabled"])
+        self.row_box.state(["readonly"])
+        self.corr_chk.state(["disabled"] if self.running or self.app.doc.corr_rgb is None
+                            else ["!disabled"])
+        self.stop_btn.state(["!disabled"] if self.running and not self.stop_ev.is_set()
+                            else ["disabled"])
+
+    # ---- running ---------------------------------------------------------------------
+    def run(self):
+        doc = self.app.doc
+        if self.app.busy():
+            return
+        readouts = [k for k, v in (("window", self.win_v), ("full", self.full_v)) if v.get()]
+        if not readouts:
+            messagebox.showinfo("Phase scan", "Tick window, full frame or both.", parent=self)
+            return
+        if not self.app.ensure_connected():
+            return
+        try:
+            steps = max(8, int(self.steps_v.get()))
+            cycles = max(1, int(self.cyc_v.get()))
+        except (tk.TclError, ValueError):
+            steps, cycles = 64, 8
+        row = dict(self.ROWS)[self.row_v.get()]
+        corr = bool(self.corr_v.get() and doc.corr_rgb)
+        d, u, lat = self.exposure()
+        ser = doc.ser
+        try:
+            if corr:
+                t = doc.corr_rgb
+                upload_corr_rgb(ser, t["r"], t["g"], t["b"])
+                tag_fn = (lambda L, t=t: (t["r"][L] << 16) | (t["g"][L] << 8) | t["b"][L])
+            else:
+                tag_fn = (lambda L: (L << 16) | (L << 8) | L)
+            self.restore = {"row8": reg(ser, R_ROI_ROW8)}
+            e = start_impulse(ser, 255, 255, u * EXPO_UNIT_US, doc.mx)
+            wr(ser, R_IMPRGB, 0x0F if corr else 0x07)
+            wr(ser, R_IMPRGB2, 0x0F if corr else 0x07)
+            wr(ser, R_ROI_ROW8, row // 8)
+            ticks = int(round(d / TICK_US))
+            set_delay(ser, ticks)
+            wait_delay(ser, ticks)
+        except Exception as ex:
+            self.put_back()
+            messagebox.showerror("Phase scan", str(ex), parent=self)
+            return
+        thetas = [int(v) for v in np.rint(np.arange(steps) * 4096.0 / steps)]
+        self.run_doc = {"settings": {"roi_row": row, "steps": steps, "cycles": cycles,
+                                     "readouts": readouts, "corr": corr, "lat": lat,
+                                     "delay_us": round(d, 2), "expo_us": round(e, 3),
+                                     "expo_units": u, "T_us": doc.T,
+                                     "tables": ({c: list(doc.corr_rgb[c]) for c in "rgb"}
+                                                if corr else None)},
+                        "rows": [], "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "complete": False}
+        doc.phase_scans.append(self.run_doc)
+        self.n_todo, self.t0 = steps * len(readouts), time.time()
+        self.stop_ev.clear()
+        self.worker = threading.Thread(target=self.work, daemon=True,
+                                       args=(ser, thetas, readouts, cycles, lat, tag_fn))
+        self.worker.start()
+        self.app.changed()
+        self.after(200, self.poll)
+
+    def work(self, ser, thetas, readouts, cycles, lat, tag_fn):
+        """Worker thread: one row per (THETA, readout) to the poll."""
+        try:
+            for th, ro, p, B, A, means, counts, nhi, matched in phase_scan(
+                    ser, thetas, readouts, cycles, lat, tag_fn, self.stop_ev):
+                err = float((p - 2 * np.pi * th / 4096 + np.pi) % (2 * np.pi) - np.pi) \
+                    if np.isfinite(p) else float("nan")
+                self.q.put(("row", [th, ro, p, B, A, err] + [round(m, 3) for m in means]
+                            + counts + [nhi, round(matched, 3)]))
+            self.q.put(("end", None))
+        except Exception as ex:
+            self.q.put(("error", ex))
+
+    def poll(self):
+        rows, end = [], None
+        while True:
+            try:
+                kind, v = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "row":
+                rows.append(v)
+            else:
+                end = (kind, v)
+        if rows:
+            self.run_doc["rows"] += rows
+            self.app.doc.dirty = True
+            self.app.update_title()
+            self.draw()
+            k, el = len(self.run_doc["rows"]), time.time() - self.t0
+            last = rows[-1]
+            self.status["text"] = (
+                "phase scan: THETA %d (%.1f deg) %s   %d/%d   %.0f s, ~%.0f s left   "
+                "tags matched %.0f %%" % (last[0], 360.0 * last[0] / 4096, last[1], k,
+                                          self.n_todo, el, el / k * (self.n_todo - k),
+                                          100 * last[-1]))
+            self.info["text"] = self.result_text(self.run_doc["rows"])
+        if end is not None or not self.running:
+            self.finish(end)
+        else:
+            self.after(200, self.poll)
+
+    def stop(self):
+        if self.running:
+            self.stop_ev.set()
+            self.buttons()
+
+    def put_back(self):
+        """Sinusoid off, impulse off, white, not through the curves, the ROI where it was."""
+        ser = self.app.doc.ser
+        try:
+            ser.timeout = 0.05
+            set_theta(ser, 0, on=False)
+            stop_impulse(ser)
+            wr(ser, R_IMPLVL, 0xFF)
+            wr(ser, R_IMPLVL2, 0xFF)
+            wr(ser, R_IMPRGB, 0x07)
+            wr(ser, R_IMPRGB2, 0x07)
+            if self.restore is not None:
+                wr(ser, R_ROI_ROW8, self.restore["row8"])
+        except Exception:
+            pass
+        self.restore = None
+
+    def finish(self, end):
+        if self.worker is not None:
+            self.worker.join(timeout=5)
+        self.put_back()
+        r, self.run_doc = self.run_doc, None
+        if r is not None:
+            r["complete"] = (end is not None and end[0] == "end" and not self.stop_ev.is_set()
+                             and len(r["rows"]) == self.n_todo)
+        self.app.changed()
+        if end is not None and end[0] == "error":
+            self.status["text"] = "phase scan ERROR: %s   (%d rows kept)" % (
+                end[1], len(r["rows"]) if r else 0)
+
+    def shutdown(self):
+        if self.running:
+            self.stop_ev.set()
+            self.worker.join(timeout=15)
+        if self.run_doc is not None:
+            self.finish(None)
+
+
+# ======================================================================================
 # Help > Instructions
 # ======================================================================================
 INSTRUCTIONS = [
@@ -3456,7 +3874,15 @@ straight line.
 Linearize G (then R, then B) straightens one channel at a time: mount that colour's
 filter, press it, and only that channel's curve is corrected from what was measured.
 Press it again to repeat; go round G, R, B until all three stop changing. Needs the
-bitstream with per-channel correction tables."""),
+bitstream with per-channel correction tables.""""),
+    ("10. Phase (F = 0) tab", """\r
+Phase recovered from an F = 0, N = 8 sinusoid -- eight full-field frames at levels
+c(THETA - 45 deg x n) -- at every THETA over a period, with the ROI read in the window
+(no storage wait) and in the full frame (the ROI's rows wait for readout and the storage
+node keeps collecting light). Pick the ROI row (top, middle, bottom), the number of THETA
+steps and the cycles averaged per THETA, and Run. The top plot is the phase error against
+THETA for both readouts; the line above it gives their means and the full - window bias.
+Needs the bitstream with the THETA registers (0x03/0x04)."""),
     ("The plot", None),
     ("Mouse", """\
 Wheel: zoom the time axis around the cursor.
@@ -3530,7 +3956,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.doc = None
-        self.view = self.fview = self.rview = self.wview = self.tabs = None
+        self.view = self.fview = self.rview = self.wview = self.pview = self.tabs = None
         self.geometry("1300x820+40+40")
         self.protocol("WM_DELETE_WINDOW", self.exit)
 
@@ -3602,9 +4028,9 @@ class App(tk.Tk):
 
     # ---- state -----------------------------------------------------------------------
     def busy(self):
-        """A sweep (any tab), the iris dialog or the white hold has the camera."""
+        """A sweep (any tab), the iris dialog, the white hold or a phase scan has the camera."""
         return any(v is not None and v.running
-                   for v in (self.view, self.fview, self.rview, self.wview))
+                   for v in (self.view, self.fview, self.rview, self.wview, self.pview))
 
     def changed(self, redraw=True):
         """Something in the document changed: title, and the view if asked."""
@@ -3615,6 +4041,7 @@ class App(tk.Tk):
             self.fview.refresh()
             self.rview.refresh()
             self.wview.refresh()
+            self.pview.refresh()
         self.update_title()
 
     def update_title(self):
@@ -3636,7 +4063,7 @@ class App(tk.Tk):
         """Swap between the empty window and the document's view."""
         if self.tabs is not None:
             self.tabs.destroy()
-            self.tabs = self.view = self.fview = self.rview = self.wview = None
+            self.tabs = self.view = self.fview = self.rview = self.wview = self.pview = None
         self.empty.pack_forget()
         self.conn.pack_forget()
         if self.doc is None:
@@ -3652,6 +4079,8 @@ class App(tk.Tk):
             self.tabs.add(self.rview, text="Runway maps")
             self.wview = WhiteView(self.tabs, self)
             self.tabs.add(self.wview, text="White level")
+            self.pview = PhaseView(self.tabs, self)
+            self.tabs.add(self.pview, text="Phase (F = 0)")
             self.tabs.pack(fill="both", expand=True)
             self.tabs.bind("<<NotebookTabChanged>>", lambda e: self.tab_shown())
         self.update_title()
@@ -3772,6 +4201,7 @@ class App(tk.Tk):
             self.fview.shutdown()
             self.rview.shutdown()
             self.wview.shutdown()
+            self.pview.shutdown()
         if self.doc.dirty:
             r = messagebox.askyesnocancel("Unsaved changes",
                                           "Save changes to %s?" % self.doc.name, parent=self)

@@ -31,13 +31,14 @@ The background (why profile, which traps the measurement has to avoid) is in
 7. [RGB filters tab](#7-rgb-filters-tab)
 8. [Runway maps tab](#8-runway-maps-tab)
 9. [White level tab](#9-white-level-tab)
-10. [Menus and keys](#10-menus-and-keys)
-11. [Files it reads and writes](#11-files-it-reads-and-writes)
-12. [How a measurement works](#12-how-a-measurement-works)
-13. [Board registers used](#13-board-registers-used)
-14. [The embedded mode table](#14-the-embedded-mode-table)
-15. [Troubleshooting](#15-troubleshooting)
-16. [Code map](#16-code-map)
+10. [Phase (F = 0) tab](#10-phase-f--0-tab)
+11. [Menus and keys](#11-menus-and-keys)
+12. [Files it reads and writes](#12-files-it-reads-and-writes)
+13. [How a measurement works](#13-how-a-measurement-works)
+14. [Board registers used](#14-board-registers-used)
+15. [The embedded mode table](#15-the-embedded-mode-table)
+16. [Troubleshooting](#16-troubleshooting)
+17. [Code map](#17-code-map)
 
 ---
 
@@ -563,7 +564,49 @@ also correct the SLI fringes.
 
 ---
 
-## 10. Menus and keys
+## 10. Phase (F = 0) tab
+
+Measures what the sensor's storage node does to recovered phase. The FPGA plays an
+**F = 0, N = 8 sinusoid**: eight full-field frames, frame *n* at level `c(THETA − 512·n)`,
+where `c` is `pattern_gen`'s 4096-entry cosine and 4096 = 2π (registers `0x03`/`0x04`,
+`USB_COMMAND_REFERENCE.md`). It is one temporal period of the phase-shift sequence, the
+same on every pixel. Needs the bitstream with those registers.
+
+- **Exposure.** The Profile tab's edges: the lead taken modulo the frame period, as on the
+  White level tab. The light of a pattern lands `lead // T` frames after it (the latency,
+  1 on the ML750ST), and the tab pairs each reading with that earlier sample.
+- **Readouts.** For each THETA, the ROI is read in the **window** (read about 30 µs after
+  the exposure, so there is no storage wait) and then in the **full frame** (the ROI's rows
+  wait about 78 µs + 5.53 µs × row, collecting light at the storage node's parasitic
+  sensitivity). Either can be turned off.
+- **ROI row.** 64 (top), 512 (middle) or 960 (bottom), written to `0x19` for the run and
+  restored afterwards. The window follows the ROI.
+- **Through R,G,B curves.** Uploads `corr_rgb` and sets IMPRGB bit 3, so the sinusoid is
+  shaped per channel as the fringes will be. Enabled once Linearize R/G/B has made curves.
+- **Pairing** (`sin_samples`). There is one trigger per frame, and the camera line's `cc`
+  counts triggers mod 256, a multiple of 8. A line's position in the cycle is therefore
+  (`cc` + o) mod 8, for the one offset o under which the most 24-bit tags equal the
+  expected colours. A cosine's eight samples are never a shift of themselves, so o is
+  unique. Lines whose tag doesn't match their position are dropped. The status line gives
+  the share of lines that matched.
+- **Phase** (`phase_of`). With I_n = A + B·cos(θ − 2πn/8), θ̂ = atan2(Σ I_n sin(2πn/8),
+  Σ I_n cos(2πn/8)). The **error** is θ̂ − 2π·THETA/4096, wrapped to ±π.
+- **Plots.** The phase error (mrad) against THETA for both readouts, and the amplitude B.
+  The line above them gives each readout's mean error and its RMS about that mean, and the
+  full − window difference.
+- **What to expect.** A linear storage-node term mixes in the *next* sample's light, which
+  shifts the phase by a constant, so the full − window difference is the storage node's
+  effect on phase. A row near the top waits too briefly to reach the next frame's light,
+  so the difference should grow from top to bottom. Error that varies with THETA (with
+  N = 8, mainly ripple at 8 cycles per period, from the 7th and 9th harmonics) comes from
+  the tone curve. Compare runs with and without the R,G,B curves.
+- **Afterwards** the board is put back: sinusoid off, ROICTL `0x00`, delay 0, levels 255,
+  IMPRGB / IMPRGB2 `0x07`, and the ROI row as it was.
+- **Saved** in `phase_scans`, one entry per run (see the `.sliprof` format below).
+
+---
+
+## 11. Menus and keys
 
 | Menu | Item | Key |
 |---|---|---|
@@ -612,7 +655,7 @@ only when the document already holds sweeps:
 
 ---
 
-## 11. Files it reads and writes
+## 12. Files it reads and writes
 
 ### `.sliprof`, the document (JSON)
 
@@ -647,6 +690,13 @@ document.
     "passes": [{"channel": "g", "n": 1, "filter": "green", "max_dev": ..., "rms_dev": ...,
                 "span": ..., "max_change": ..., "before": [...], "after": [...], "rows": [...]}, ...]
   },
+  "phase_scans": [               // Phase (F = 0) tab, oldest first
+    {"settings": {"roi_row": 512, "steps": 64, "cycles": 8, "readouts": ["window", "full"],
+                  "corr": false, "lat": 1, "delay_us": ..., "expo_us": ..., "expo_units": ...,
+                  "T_us": ..., "tables": null},
+     "rows": [[theta, "window"|"full", phase, B, A, err, m0..m7, n0..n7, nhi_max, matched], ...],
+     "when": ..., "complete": true}
+  ],
   "csv_head": ["T_us","expo_us","delay_us","position","t_us","mean","sd","n","ref","tag_fix_us"],
   "sweeps": {
     "wwwww":   {"settings": {...}, "rows": [[...csv_head row...], ...], "when": ..., "complete": true},
@@ -725,7 +775,7 @@ While a measurement runs, every reading is also written to a CSV in the system t
 
 ---
 
-## 12. How a measurement works
+## 13. How a measurement works
 
 ### The serial protocol
 
@@ -802,7 +852,7 @@ stops any running measurement first, and waits up to 15 s for it to return.
 
 ---
 
-## 13. Board registers used
+## 14. Board registers used
 
 | Reg | Name | Use |
 |---|---|---|
@@ -817,6 +867,8 @@ stops any running measurement first, and waits up to 15 s for it to return.
 | 0x48 | window on | profiling build only: bit 0 = the sensor is reading the window |
 | 0x1A / 0x1B | EXPO lo / hi | exposure in 0.375 µs units (the hi write commits) |
 | 0x1C–0x1E | DLY | genlock delay, 24-bit, 0.01 µs ticks |
+| 0x03 / 0x04 | THETA / SIN | THETA[7:0]; `{7:sin_en, 3..0:THETA[11:8]}`, commits both. The F = 0, N = 8 sinusoid (Phase tab) |
+| 0x19 | ROI row8 | the ROI's row in 8-row units; the Phase tab sets it for a run |
 | 0x1F | IMPRGB | LED mask of the other frames (0x07 = all; bit 3: through the per-channel `corr` curves, `USB_COMMAND_REFERENCE.md` § Tables) |
 | 0x20 | MODE | bit 7 = valid; low nibble = mode index in use |
 | 0x29 / 0x2A | mode mask | bit *i* = mode *i* is supported by the projector's EDID |
@@ -832,7 +884,7 @@ The full register reference is in [`../FTPLUS_API.md`](../FTPLUS_API.md) and
 
 ---
 
-## 14. The embedded mode table
+## 15. The embedded mode table
 
 The board's offline video modes are defined in
 [`../sources_1/imports/RTL/mode_table.vh`](../sources_1/imports/RTL/mode_table.vh). The app
@@ -871,7 +923,7 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -892,7 +944,7 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 
 ---
 
-## 16. Code map
+## 17. Code map
 
 | Section / class | Role |
 |---|---|
@@ -906,6 +958,7 @@ The embedded table was checked identical to the parsed `mode_table.vh` when it w
 | `FilterView` | **RGB filters tab**: the three filter sweeps, normalize and fit-to-white |
 | `RunwayView` | **Runway maps tab**: windows, worker thread, log-scale maps |
 | `IrisDialog`, `iris_hint` | live reading at the WWWWW peak; the clip / band advice it shares |
+| `PhaseView`, `set_theta`, `sin_levels`, `sin_samples`, `set_readout`, `phase_scan`, `phase_of` | **Phase (F = 0) tab**: the N = 8 full-field sinusoid at every THETA, window versus full-frame readout |
 | `WhiteView`, `level_sweep`, `inverse_lut`, `linearity`, `upload_corr_rgb`, `refine_table` | **White level tab**: every frame white at the placed exposure, read live; Linearize W steps the level 0..255; Check W sweeps through the inverse; Linearize R/G/B converge the per-channel curves |
 | `HelpDialog`, `INSTRUCTIONS` | Help → Instructions |
 | `App` | the main window: menus, tabs, the one-at-a-time rule, connection, the file menu |
