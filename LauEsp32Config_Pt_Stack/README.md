@@ -1,9 +1,10 @@
 # ESP32 wireless programmer — Pt V2 element card
 
-_Started 2026-09-02. Nothing is built. Scope is deliberately narrow: **reprogram
-the Pt V2's FPGA over WiFi from a board inside the stack.** Everything needed
-electrically is now confirmed from Alchitry's own Rev A schematic and pinout sheet,
-both in `docs/`. Read the **rev B warning** in §3 before committing a layout._
+_Started 2026-09-02. Boards ordered 2026-09-30; firmware drafted 2026-10-01 — it
+builds, but **nothing has run on hardware yet** (§8). Scope: **reprogram the Pt V2's
+FPGA over WiFi from a board inside the stack, driven by an MCP server on the ESP32.**
+Everything needed electrically is confirmed from Alchitry's own Rev A schematic and
+pinout sheet, both in `docs/`. Read the **rev B warning** in §3 before committing a layout._
 
 ---
 
@@ -24,6 +25,14 @@ loader. Fine on a bench with the enclosure open; not fine for
 So: an element card carrying an ESP32, sitting in the stack, driving the FPGA's
 JTAG from inside. It replaces the GPIO board currently used as a spacer, so it
 costs no stack height that is not already accounted for.
+
+**The interface is an MCP server on the ESP32, over its WiFi link.** Claude (or any
+MCP client) talks to it directly at `http://<name>.local/mcp` to list the bitstreams
+held on the card's microSD, fetch a fresh build from the host, load one into the
+FPGA's configuration RAM over JTAG, read back `DONE`/IDCODE, and restore the flash
+image. That closes the just-in-time loop — compile, then ask for the load — with no
+cable and no vendor tool in the path. Design: [`SD_BITSTREAM_LIBRARY.md`](SD_BITSTREAM_LIBRARY.md)
+§6; implementation: [`firmware/`](firmware/README.md).
 
 > The founder of Alchitry, who designed these boards, says the approach should
 > work. §3 and §4 are the pin- and part-level confirmation of that.
@@ -516,7 +525,9 @@ Batch.pdf` sits on the same CDN path; it is the pre-production drawing and repor
 | Schematic | **generated 2026-09-16**, straps revised 2026-09-30 — `SCHEMATIC.md`; ERC clean, all 17 BOM lines JLCPCB-stocked |
 | Layout | **routed, DRC clean** — 4-layer, In1 GND / In2 +3V3, GND pours both faces, 474 vias 0.45/0.20 |
 | Fab | **ORDERED 2026-09-30** from JLCPCB, Standard PCBA both sides. Upload set in `production/jlcpcb/` (see below) |
-| Firmware | not started |
+| Firmware | **drafted 2026-10-01, BUILDS, NOT RUN** — `firmware/` (ESP-IDF 5.5.5, LAU house style): JTAG config flow, `.bit` parser, SDMMC library, MCP server, HTTP upload, OTA with rollback. Bring-up checklist in `firmware/README.md` §5 |
+| MCP server | **in the firmware, untested** — stateless streamable HTTP at `http://<name>.local/mcp`, bearer token, LAN only; 7 tools (`SD_BITSTREAM_LIBRARY.md` §6) |
+| Programming the ESP32 | first flash over pads TP1–TP8 out of the stack (§6.0, `firmware/README.md` §3); OTA over WiFi after |
 | Electrical unknowns | **none** — J3 mapped, 3.3 V confirmed, FTDI isolation confirmed |
 | Module | **ESP32-S3-MINI-1U-N8** (decided 2026-09-16, supersedes the C3) — external wired antenna, top face |
 | Antenna | external, routed outside the aluminium shroud (§6.4) |
